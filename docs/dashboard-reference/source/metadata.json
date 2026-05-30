@@ -1,0 +1,8 @@
+{
+  "name": "Remix: Dòng Họ Cao Ninh Bình - Quản Trị",
+  "description": "Hệ thống quản trị di sản, gia phả số hóa, sự kiện giỗ cúng, ngân sách dòng tộc Cao Ninh Binh tích hợp Trợ lý văn sự Hán Nôm Gemini AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

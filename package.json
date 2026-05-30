@@ -1,0 +1,47 @@
+{
+  "name": "gia-pha-web-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/use-test-admin-password.mjs",
+    "dev": "node scripts/dev-full.mjs",
+    "dev:vite": "vite --configLoader runner --port=3000 --host=0.0.0.0",
+    "server": "node server.mjs",
+    "check:mojibake": "node scripts/check-mojibake.mjs",
+    "prebuild": "node scripts/check-mojibake.mjs && node scripts/use-test-admin-password.mjs",
+    "build": "vite build",
+    "preview": "vite preview",
+    "clean": "rm -rf dist server.js",
+    "lint": "node scripts/check-mojibake.mjs && tsc --noEmit",
+    "test:lineage-display": "tsx scripts/test-lineage-display.ts",
+    "test:lineage-import": "tsx scripts/test-lineage-import.ts",
+    "test:import-validation": "tsx scripts/test-import-validation.ts",
+    "export:virtual-nodes": "tsx scripts/export-virtual-lineage-nodes.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^2.4.0",
+    "@tailwindcss/vite": "^4.1.14",
+    "@vitejs/plugin-react": "^5.0.4",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "framer-motion": "^12.23.24",
+    "lucide-react": "^0.546.0",
+    "lunar-javascript": "^1.7.7",
+    "motion": "^12.23.24",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "vite": "^6.2.3",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.14.0",
+    "autoprefixer": "^10.4.21",
+    "esbuild": "^0.25.0",
+    "tailwindcss": "^4.1.14",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.3"
+  }
+}

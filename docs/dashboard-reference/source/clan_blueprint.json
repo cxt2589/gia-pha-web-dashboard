@@ -1,0 +1,182 @@
+{
+  "application": {
+    "name": "Hệ Thống Quản Lý Gia Phả Họ Cao Ninh Bình",
+    "version": "2.1.0",
+    "theme": "Imperial Heritage",
+    "framework": "React 18 + Vite + Tailwind CSS",
+    "animationLibrary": "motion/react",
+    "excelParserLibrary": "xlsx"
+  },
+  "designSystem": {
+    "colors": {
+      "primary": {
+        "hex": "#064e3b",
+        "tailwind": "emerald-950",
+        "usage": "Header, Sidebar, Main buttons"
+      },
+      "secondary": {
+        "hex": "#0f766e",
+        "tailwind": "teal-700",
+        "usage": "Muted actions, highlights"
+      },
+      "accent": {
+        "hex": "#fef3c7",
+        "tailwind": "amber-100",
+        "usage": "Special royal titles, admin badges"
+      },
+      "background": {
+        "hex": "#fafaf9",
+        "tailwind": "stone-50",
+        "usage": "Main content body background"
+      },
+      "border": {
+        "hex": "#e7e5e4",
+        "tailwind": "stone-200",
+        "usage": "Grid separators, card borders"
+      },
+      "genderMale": {
+        "hex": "#1e3a8a",
+        "tailwind": "blue-900",
+        "backgroundHex": "#eff6ff",
+        "tailwindBg": "blue-50",
+        "label": "Nghị"
+      },
+      "genderFemale": {
+        "hex": "#9d174d",
+        "tailwind": "pink-800",
+        "backgroundHex": "#fdf2f8",
+        "tailwindBg": "pink-50",
+        "label": "Nữ"
+      },
+      "deceased": {
+        "hex": "#991b1b",
+        "tailwind": "red-800",
+        "backgroundHex": "#fef2f2",
+        "tailwindBg": "red-50",
+        "label": "Đã quy tiên"
+      }
+    },
+    "typography": {
+      "serif": {
+        "fontFamily": "Playfair Display, Georgia, serif",
+        "class": "font-serif",
+        "usage": "Ancestor names, headings, monumental titles"
+      },
+      "sans": {
+        "fontFamily": "Inter, system-ui, sans-serif",
+        "class": "font-sans",
+        "usage": "General UI, cards, layout, tabular content"
+      },
+      "mono": {
+        "fontFamily": "Fira Code, JetBrains Mono, monospace",
+        "class": "font-mono",
+        "usage": "IDs, Phone numbers, Lunar years, calculations"
+      }
+    },
+    "transitions": {
+      "default": "all 200ms ease-in-out",
+      "mobileOverlay": "lg:hidden fixed inset-0 bg-black/60 z-35 backdrop-blur-xs"
+    }
+  },
+  "rolesAndPermissions": {
+    "system": "Multi-role concurrent assignment (Song hành đa chức sự)",
+    "availableRoles": [
+      {
+        "id": "admin",
+        "label": "👑 Chánh Tổng Quản",
+        "description": "Toàn quyền quản trị hệ thống, cấp đặc sắc và phân vai trò hoạt động."
+      },
+      {
+        "id": "treasurer",
+        "label": "💰 Thủ Quỹ Gia Tộc",
+        "description": "Quản lý dòng tiền, ghi nhận các quỹ hiển lạp, minh bạch hóa thu chi."
+      },
+      {
+        "id": "writer",
+        "label": "✍️ Sử Biên Ký",
+        "description": "Biên soạn gia chí, ghi chép tiểu sử tông chi và biên sử cổ vật dòng họ."
+      },
+      {
+        "id": "secretary",
+        "label": "📝 Thư Ký Họ",
+        "description": "Phụ trách truyền tin Zalo, quản lý dữ liệu chiến dịch và duyệt đinh viên."
+      },
+      {
+        "id": "user",
+        "label": "👥 Đinh Viên Tuyên Đức / Hương Đinh",
+        "description": "Thành viên gia đình, truy cập đọc hiểu phả hệ và gửi kiến nghị."
+      }
+    ]
+  },
+  "excelColumnSpecification55": [
+    { "index": 1, "field": "id", "name": "Mã định danh cá nhân", "type": "string", "required": false },
+    { "index": 2, "field": "name", "name": "Họ và tên đầy đủ", "type": "string", "required": true },
+    { "index": 3, "field": "gender", "name": "Giới tính", "type": "string (Nam/Nữ)", "required": true },
+    { "index": 4, "field": "alias", "name": "Tên thường gọi / Bí danh / Tên tự (nếu có)", "type": "string", "required": false },
+    { "index": 5, "field": "phone", "name": "Số điện thoại", "type": "string", "required": false },
+    { "index": 6, "field": "phoneBackup", "name": "Số điện thoại phụ", "type": "string", "required": false },
+    { "index": 7, "field": "residency", "name": "Nơi ở", "type": "string", "required": false },
+    { "index": 8, "field": "email", "name": "Email", "type": "string", "required": false },
+    { "index": 9, "field": "birthYear", "name": "Ngày sinh (Trên giấy tờ)", "type": "string", "required": false },
+    { "index": 10, "field": "status", "name": "Tình trạng (còn sống/đã mất)", "type": "string", "required": true },
+    { "index": 11, "field": "deathYear", "name": "(Nếu đã mất) Ngày tháng năm mất (dương lịch)", "type": "string", "required": false },
+    { "index": 12, "field": "deathAnniversaryLunar", "name": "(Nếu đã mất) Ngày mất theo âm lịch / Kỵ nhật", "type": "string", "required": false },
+    { "index": 13, "field": "graveLocation", "name": "(Nếu đã mất) Nơi an táng", "type": "string", "required": false },
+    { "index": 14, "field": "generation", "name": "Đời thứ mấy", "type": "number", "required": true },
+    { "index": 15, "field": "fatherName", "name": "Họ và tên Cha ruột", "type": "string", "required": false },
+    { "index": 16, "field": "fatherAddress", "name": "Nơi ở của cha ruột", "type": "string", "required": false },
+    { "index": 17, "field": "fatherPhone", "name": "Số điện thoại của cha", "type": "string", "required": false },
+    { "index": 18, "field": "fatherBirthYear", "name": "Ngày sinh (Trên giấy tờ) của cha", "type": "string", "required": false },
+    { "index": 19, "field": "fatherStatus", "name": "Tình trạng (còn sống/đã mất) của cha", "type": "string", "required": false },
+    { "index": 20, "field": "fatherDeathYear", "name": "(Nếu đã mất) Ngày tháng năm mất (dương lịch) của cha", "type": "string", "required": false },
+    { "index": 21, "field": "fatherDeathAnniversaryLunar", "name": "(Nếu đã mất) Ngày mất theo âm lịch / Kỵ nhật của cha", "type": "string", "required": false },
+    { "index": 22, "field": "fatherGraveLocation", "name": "(Nếu đã mất) Nơi an táng của cha", "type": "string", "required": false },
+    { "index": 23, "field": "fatherId", "name": "Mã số cha", "type": "string", "required": false },
+    { "index": 24, "field": "motherName", "name": "Họ và tên Mẹ ruột", "type": "string", "required": false },
+    { "index": 25, "field": "motherAddress", "name": "Nơi ở của mẹ", "type": "string", "required": false },
+    { "index": 26, "field": "motherPhone", "name": "Số điện thoại của mẹ", "type": "string", "required": false },
+    { "index": 27, "field": "motherBirthYear", "name": "Ngày sinh (Trên giấy tờ) của mẹ", "type": "string", "required": false },
+    { "index": 28, "field": "motherStatus", "name": "Tình trạng của mẹ (còn sống/đã mất)", "type": "string", "required": false },
+    { "index": 29, "field": "motherDeathYear", "name": "(Nếu đã mất) Ngày tháng năm mất (dương lịch) của mẹ", "type": "string", "required": false },
+    { "index": 30, "field": "motherDeathAnniversaryLunar", "name": "(Nếu đã mất) Ngày mất theo âm lịch / Kỵ nhật của mẹ", "type": "string", "required": false },
+    { "index": 31, "field": "motherGraveLocation", "name": "(Nếu đã mất) Nơi an táng của mẹ", "type": "string", "required": false },
+    { "index": 32, "field": "spouseName", "name": "Họ và tên Vợ/Chồng", "type": "string", "required": false },
+    { "index": 33, "field": "spouseAddress", "name": "Nơi ở của Vợ/Chồng", "type": "string", "required": false },
+    { "index": 34, "field": "spousePhone", "name": "Số điện thoại của Vợ/Chồng", "type": "string", "required": false },
+    { "index": 35, "field": "spouseBirthYear", "name": "Ngày sinh (Trên giấy tờ) Vợ/Chồng", "type": "string", "required": false },
+    { "index": 36, "field": "spouseStatus", "name": "Tình trạng (còn sống/đã mất) Vợ/Chồng", "type": "string", "required": false },
+    { "index": 37, "field": "spouseDeathYear", "name": "(Nếu đã mất) Ngày tháng năm mất (dương lịch) Vợ/Chồng", "type": "string", "required": false },
+    { "index": 38, "field": "spouseDeathAnniversaryLunar", "name": "(Nếu đã mất) Ngày mất theo âm lịch / Kỵ nhật Vợ/Chồng", "type": "string", "required": false },
+    { "index": 39, "field": "spouseGraveLocation", "name": "(Nếu đã mất) Nơi an táng Vợ/Chồng", "type": "string", "required": false },
+    { "index": 40, "field": "child1Name", "name": "Con ruột 1", "type": "string", "required": false },
+    { "index": 41, "field": "child1Gender", "name": "Giới tính con ruột 1", "type": "string", "required": false },
+    { "index": 42, "field": "child2Name", "name": "Con ruột 2", "type": "string", "required": false },
+    { "index": 43, "field": "child2Gender", "name": "Giới tính con ruột 2", "type": "string", "required": false },
+    { "index": 44, "field": "child3Name", "name": "Con ruột 3", "type": "string", "required": false },
+    { "index": 45, "field": "child3Gender", "name": "Giới tính con ruột 3", "type": "string", "required": false },
+    { "index": 46, "field": "child4Name", "name": "Con ruột 4", "type": "string", "required": false },
+    { "index": 47, "field": "child4Gender", "name": "Giới tính con ruột 4", "type": "string", "required": false },
+    { "index": 48, "field": "child5Name", "name": "Con ruột 5", "type": "string", "required": false },
+    { "index": 49, "field": "child5Gender", "name": "Giới tính con ruột 5", "type": "string", "required": false },
+    { "index": 50, "field": "child6Name", "name": "Con ruột 6", "type": "string", "required": false },
+    { "index": 51, "field": "child6Gender", "name": "Giới tính con ruột 6", "type": "string", "required": false },
+    { "index": 52, "field": "child7Name", "name": "Con ruột 7", "type": "string", "required": false },
+    { "index": 53, "field": "child7Gender", "name": "Giới tính con ruột 7", "type": "string", "required": false },
+    { "index": 54, "field": "child8Name", "name": "Con ruột 8", "type": "string", "required": false },
+    { "index": 55, "field": "child8Gender", "name": "Giới tính con ruột 8", "type": "string", "required": false }
+  ],
+  "zaloBroadcastSystem": {
+    "audienceTypes": [
+      { "id": "all", "label": "Toàn bộ đinh viên dòng họ", "count": "unlimited" },
+      { "id": "groups", "label": "Ban hội hoạt động (Targeted groups)", "count": "by cohort" },
+      { "id": "individual", "label": "Đích danh đinh tộc nhân (Direct Messaging)", "count": "single" }
+    ],
+    "protectedGroups": [
+      "Ban Trị Sự",
+      "Thanh Niên Họ",
+      "Ngành Trưởng",
+      "Ngành Thứ",
+      "Hội Tương Trợ dòng họ"
+    ]
+  }
+}

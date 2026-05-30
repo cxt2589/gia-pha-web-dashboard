@@ -1,0 +1,6 @@
+{
+  "name": "Họ Cao Ninh Bình",
+  "description": "Kho lưu trữ di sản văn hóa phả ký, tộc ước và sơ đồ phả hệ chi họ Cao tại Phú Mỹ, Gia Viễn, Ninh Bình",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
