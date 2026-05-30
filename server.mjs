@@ -1288,6 +1288,7 @@ function buildVerificationKnowledgeAnswer(query, searchResult) {
 function publicExtractedAnniversaryCandidate(row) {
   const metadata = safeJsonParse(row.metadata_json, {});
   const status = normalizeExtractedCandidateStatus(row.status);
+  const fields = getExtractedAnniversaryFields(row, metadata);
   return {
     id: row.id,
     sourceId: row.source_id,
@@ -1307,8 +1308,131 @@ function publicExtractedAnniversaryCandidate(row) {
     matchConfidence: row.match_confidence,
     status,
     metadata,
-    fields: getExtractedAnniversaryFields(row, metadata),
+    fields,
+    currentValues: metadata.currentValues || {},
+    candidateMatches: Array.isArray(metadata.candidateMatches) ? metadata.candidateMatches : [],
     updatedAt: row.updated_at
+  };
+}
+
+function stripHanCharacters(value) {
+  return String(value || '').replace(/[\u3400-\u9fff]/gu, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function normalizePersonLookupText(value) {
+  return normalizeKnowledgeText(stripHanCharacters(value));
+}
+
+function getMemberDisplayName(member) {
+  return stripHanCharacters(member?.name || '').replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function publicLineageMemberSearchResult(member, score = 0, confidence = 'none', reason = '') {
+  return {
+    memberId: member.id,
+    fullName: getMemberDisplayName(member) || member.name,
+    generation: member.generation,
+    fatherName: member.fatherName || '',
+    motherName: member.motherName || '',
+    branchName: member.branch || '',
+    confidence,
+    score,
+    reason,
+    currentValues: {
+      birth: member.birthYear || member.solarBirthDate || '',
+      death: member.deathYear || member.solarDeathDate || '',
+      lunar_anniversary: member.deathAnniversaryLunar || '',
+      hometown: member.birthPlace || member.residence || '',
+      grave: member.graveLocation || ''
+    }
+  };
+}
+
+function scoreMemberForQuery(query, member) {
+  const queryNorm = normalizePersonLookupText(query);
+  const fullName = getMemberDisplayName(member);
+  const fullNorm = normalizePersonLookupText(fullName);
+  const rawNameNorm = normalizePersonLookupText(member.name);
+  const queryTerms = queryNorm.split(' ').filter((term) => term.length >= 2);
+  const nameTerms = fullNorm.split(' ').filter(Boolean);
+  const shortName = nameTerms.at(-1) || '';
+  let score = 0;
+  const reasons = [];
+  if (fullNorm && queryNorm === fullNorm) {
+    score += 120;
+    reasons.push('exact full name');
+  } else if (fullNorm && queryNorm.includes(fullNorm)) {
+    score += 100;
+    reasons.push('contains full name');
+  } else if (fullNorm && fullNorm.includes(queryNorm) && queryNorm.length >= 5) {
+    score += 70;
+    reasons.push('partial full name');
+  }
+  const allTerms = queryTerms.length > 1 && queryTerms.every((term) => rawNameNorm.includes(term));
+  if (allTerms) {
+    score += 50;
+    reasons.push('all name terms');
+  }
+  if (shortName && queryTerms.length === 1 && queryTerms[0] === shortName) {
+    score += 25;
+    reasons.push('short name only');
+  }
+  if (member.branch && normalizePersonLookupText(member.branch).includes(queryNorm)) score += 8;
+  if (member.fatherName && normalizePersonLookupText(member.fatherName).includes(queryNorm)) score += 6;
+  if (member.motherName && normalizePersonLookupText(member.motherName).includes(queryNorm)) score += 6;
+  let confidence = 'none';
+  if (score >= 120) confidence = 'exact';
+  else if (score >= 85) confidence = 'strong';
+  else if (score >= 50) confidence = 'medium';
+  else if (score >= 25) confidence = 'weak';
+  return { score, confidence, reason: reasons.join(', ') || 'normalized text match' };
+}
+
+async function searchLineageMembers(query, { limit = 12 } = {}) {
+  const tree = await readLineageTreeForAI();
+  const members = tree ? flattenLineageTree(tree) : [];
+  const scored = members
+    .map((member) => ({ member, ...scoreMemberForQuery(query, member) }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.member.generation - b.member.generation)
+    .slice(0, Math.max(1, Math.min(50, Number(limit) || 12)));
+  const topScore = scored[0]?.score || 0;
+  const topCount = scored.filter((item) => item.score === topScore).length;
+  return scored.map((item) => {
+    const confidence = item.confidence === 'exact' && topCount > 1 ? 'ambiguous' : item.confidence;
+    const reason = topCount > 1 && item.score === topScore ? `${item.reason}; ambiguous top match` : item.reason;
+    return publicLineageMemberSearchResult(item.member, item.score, confidence, reason);
+  });
+}
+
+function buildCandidateMatchesFromMembers(candidate, members) {
+  const scored = members
+    .map((member) => ({ member, ...scoreMemberForQuery(candidate.person_name, member) }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.member.generation - b.member.generation)
+    .slice(0, 6);
+  const topScore = scored[0]?.score || 0;
+  const topCount = scored.filter((item) => item.score === topScore).length;
+  return scored.map((item) => {
+    const confidence = item.confidence === 'exact' && topCount > 1 ? 'ambiguous' : item.confidence;
+    return publicLineageMemberSearchResult(item.member, item.score, confidence, item.reason);
+  });
+}
+
+async function hydrateExtractedCandidateReviewData(publicCandidate) {
+  const tree = await readLineageTreeForAI();
+  const members = tree ? flattenLineageTree(tree) : [];
+  const rowLike = {
+    person_name: publicCandidate.personName,
+    matched_member_id: publicCandidate.matchedMemberId
+  };
+  const candidateMatches = buildCandidateMatchesFromMembers(rowLike, members);
+  const matched = members.find((member) => member.id === publicCandidate.matchedMemberId) || null;
+  const currentValues = matched ? publicLineageMemberSearchResult(matched).currentValues : {};
+  return {
+    ...publicCandidate,
+    currentValues,
+    candidateMatches
   };
 }
 
@@ -1374,7 +1498,7 @@ async function listExtractedAnniversaryCandidates({ q = '', status = '', type = 
   const statusFilter = normalizeExtractedCandidateStatus(status);
   const hasStatusFilter = Boolean(String(status || '').trim());
   const typeFilter = String(type || '').trim();
-  return rows
+  const filtered = rows
     .filter((row) => {
       const normalizedStatus = normalizeExtractedCandidateStatus(row.status);
       if (pendingOnly && normalizedStatus !== 'pending') return false;
@@ -1395,6 +1519,7 @@ async function listExtractedAnniversaryCandidates({ q = '', status = '', type = 
     })
     .slice(0, Math.max(1, Math.min(500, Number(limit) || 100)))
     .map(publicExtractedAnniversaryCandidate);
+  return Promise.all(filtered.map(hydrateExtractedCandidateReviewData));
 }
 
 async function updateExtractedAnniversaryCandidate(id, patch, adminUser) {
@@ -1438,7 +1563,7 @@ async function updateExtractedAnniversaryCandidate(id, patch, adminUser) {
         updated_at = datetime('now')
     WHERE id = ?
   `).run(nextStatus, matchedMemberId, matchedMemberName, matchConfidence, JSON.stringify(nextMetadata), id);
-  return publicExtractedAnniversaryCandidate(database.prepare('SELECT * FROM extracted_anniversary_candidates WHERE id = ?').get(id));
+  return hydrateExtractedCandidateReviewData(publicExtractedAnniversaryCandidate(database.prepare('SELECT * FROM extracted_anniversary_candidates WHERE id = ?').get(id)));
 }
 
 function updateLineageNodeById(node, memberId, updater) {
@@ -1577,10 +1702,90 @@ async function applyExtractedAnniversaryCandidate(id, body = {}, adminUser = {})
 
   return {
     ok: true,
-    candidate: publicExtractedAnniversaryCandidate(database.prepare('SELECT * FROM extracted_anniversary_candidates WHERE id = ?').get(id)),
+    candidate: await hydrateExtractedCandidateReviewData(publicExtractedAnniversaryCandidate(database.prepare('SELECT * FROM extracted_anniversary_candidates WHERE id = ?').get(id))),
     changes,
     conflicts,
     auditId
+  };
+}
+
+async function bulkUpdateExtractedAnniversaryCandidates(body = {}, adminUser = {}) {
+  const action = String(body.action || '').trim();
+  const ids = Array.isArray(body.ids) ? body.ids.map((id) => String(id || '').trim()).filter(Boolean) : [];
+  if (!ids.length) {
+    const err = new Error('Missing candidate ids.');
+    err.status = 400;
+    throw err;
+  }
+  if (!['approve', 'reject', 'reset', 'apply'].includes(action)) {
+    const err = new Error('Unsupported bulk action.');
+    err.status = 400;
+    throw err;
+  }
+
+  const results = [];
+  for (const id of ids) {
+    try {
+      if (action === 'approve') {
+        const candidate = await updateExtractedAnniversaryCandidate(id, { status: 'approved' }, adminUser);
+        results.push({ id, ok: true, status: 'approved', candidate });
+      } else if (action === 'reject') {
+        const candidate = await updateExtractedAnniversaryCandidate(id, { status: 'rejected' }, adminUser);
+        results.push({ id, ok: true, status: 'rejected', candidate });
+      } else if (action === 'reset') {
+        const candidate = await updateExtractedAnniversaryCandidate(id, { status: 'pending' }, adminUser);
+        results.push({ id, ok: true, status: 'pending', candidate });
+      } else if (action === 'apply') {
+        const database = await getDatabase();
+        const row = database.prepare('SELECT status FROM extracted_anniversary_candidates WHERE id = ?').get(id);
+        if (!row) {
+          results.push({ id, ok: false, skipped: true, reason: 'not_found' });
+          continue;
+        }
+        if (normalizeExtractedCandidateStatus(row.status) !== 'approved') {
+          results.push({ id, ok: false, skipped: true, reason: 'not_approved' });
+          continue;
+        }
+        const applied = await applyExtractedAnniversaryCandidate(id, {
+          fieldTypes: body.fieldTypes,
+          force: body.force === true
+        }, adminUser);
+        results.push({ id, ok: true, status: 'applied', changes: applied.changes, conflicts: applied.conflicts });
+      }
+    } catch (err) {
+      results.push({ id, ok: false, error: err.message || String(err), statusCode: err.status || 500, conflicts: err.conflicts || [] });
+    }
+  }
+
+  const database = await getDatabase();
+  const auditId = `ann_audit_bulk_${sha256Base64Url(`${action}:${Date.now()}:${ids.join(',')}`).slice(0, 24)}`;
+  database.prepare(`
+    INSERT INTO extracted_anniversary_audit_logs
+      (id, candidate_id, member_id, action, field_changes_json, source_id, chunk_id, admin_user, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `).run(
+    auditId,
+    ids.join(','),
+    '',
+    `bulk_${action}`,
+    JSON.stringify({ results }),
+    '',
+    '',
+    adminUser?.username || adminUser?.fullName || ''
+  );
+
+  return {
+    ok: results.every((item) => item.ok || item.skipped),
+    action,
+    total: ids.length,
+    applied: results.filter((item) => item.status === 'applied').length,
+    approved: results.filter((item) => item.status === 'approved').length,
+    rejected: results.filter((item) => item.status === 'rejected').length,
+    reset: results.filter((item) => item.status === 'pending').length,
+    skipped: results.filter((item) => item.skipped).length,
+    failed: results.filter((item) => !item.ok && !item.skipped).length,
+    auditId,
+    results
   };
 }
 
@@ -1632,7 +1837,7 @@ function buildExtractedAnniversaryAnswer(query, candidates) {
     const statusText = status === 'applied'
       ? 'dữ liệu đã áp dụng'
       : status === 'approved'
-        ? 'dữ liệu đã duyệt'
+        ? 'đã được admin duyệt nhưng chưa cập nhật vào hồ sơ'
         : 'candidate trích xuất đang chờ duyệt';
     const facts = [
       row.death_anniversary_lunar ? `ngày giỗ/ngày tạ thế âm lịch: ${row.death_anniversary_lunar}` : '',
@@ -1652,7 +1857,7 @@ function buildExtractedAnniversaryAnswer(query, candidates) {
     ...lines,
     hasOnlyPending
       ? 'Các mục trên mới là gợi ý từ tài liệu, chưa được duyệt nên không coi là dữ liệu xác minh.'
-      : 'Dữ liệu đã duyệt/đã áp dụng được ưu tiên hơn candidate pending; nếu mâu thuẫn với database đã xác minh, ưu tiên database và cần admin kiểm tra.'
+      : 'Chỉ dữ liệu đã áp dụng vào hồ sơ được coi là dữ liệu xác minh; mục đã duyệt nhưng chưa áp dụng vẫn cần admin cập nhật trước khi dùng chính thức.'
   ].join('\n');
 }
 
@@ -2122,6 +2327,22 @@ app.get('/api/knowledge/sources', async (req, res) => {
   }
 });
 
+app.get('/api/lineage/member-search', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const q = String(req.query.q || '').trim();
+    if (!q) {
+      res.status(400).json({ error: 'Missing q query.' });
+      return;
+    }
+    const limit = Math.max(1, Math.min(50, Number(req.query.limit || 12) || 12));
+    res.json({ matches: await searchLineageMembers(q, { limit }) });
+  } catch (err) {
+    console.error('Failed to search lineage members:', err);
+    res.status(500).json({ error: 'Failed to search lineage members.' });
+  }
+});
+
 app.get('/api/knowledge/extracted-anniversaries', async (req, res) => {
   try {
     if (!await requireAdmin(req, res)) return;
@@ -2137,6 +2358,40 @@ app.get('/api/knowledge/extracted-anniversaries', async (req, res) => {
   }
 });
 
+app.get('/api/knowledge/chunks/:id', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const database = await getDatabase();
+    const row = database.prepare(`
+      SELECT c.*, s.title AS source_title, s.visibility AS source_visibility
+      FROM knowledge_chunks c
+      LEFT JOIN knowledge_sources s ON s.id = c.source_id
+      WHERE c.id = ?
+    `).get(String(req.params.id || ''));
+    if (!row) {
+      res.status(404).json({ error: 'Knowledge chunk not found.' });
+      return;
+    }
+    res.json({
+      chunk: {
+        sourceId: row.source_id,
+        chunkId: row.id,
+        title: row.source_title || row.title,
+        headingPath: row.heading_path,
+        content: row.content,
+        summary: row.summary,
+        tags: safeJsonParse(row.tags_json, []),
+        entityRefs: safeJsonParse(row.entity_refs_json, []),
+        visibility: row.visibility || row.source_visibility || 'public',
+        updatedAt: row.updated_at
+      }
+    });
+  } catch (err) {
+    console.error('Failed to read knowledge chunk:', err);
+    res.status(500).json({ error: 'Failed to read knowledge chunk.' });
+  }
+});
+
 app.patch('/api/knowledge/extracted-anniversaries/:id', async (req, res) => {
   try {
     const admin = await requireAdmin(req, res);
@@ -2146,6 +2401,17 @@ app.patch('/api/knowledge/extracted-anniversaries/:id', async (req, res) => {
   } catch (err) {
     console.error('Failed to update extracted anniversary candidate:', err);
     res.status(err.status || 500).json({ error: err.message || 'Failed to update extracted anniversary candidate.' });
+  }
+});
+
+app.post('/api/knowledge/extracted-anniversaries/bulk', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json(await bulkUpdateExtractedAnniversaryCandidates(req.body || {}, admin.authUser));
+  } catch (err) {
+    console.error('Failed to bulk update extracted anniversary candidates:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to bulk update extracted anniversary candidates.' });
   }
 });
 
@@ -2926,6 +3192,8 @@ function flattenLineageTree(node, parent = null, output = []) {
     solarBirthDate: String(node.solarBirthDate || '').trim(),
     solarDeathDate: String(node.solarDeathDate || '').trim(),
     deathAnniversaryLunar: String(node.deathAnniversaryLunar || node.lunarAnniversary || '').trim(),
+    birthPlace: String(node.birthPlace || '').trim(),
+    deathPlace: String(node.deathPlace || '').trim(),
     graveLocation: String(node.graveLocation || '').trim(),
     fatherName: String(node.fatherName || parent?.name || '').trim(),
     motherName: String(node.motherName || '').trim(),

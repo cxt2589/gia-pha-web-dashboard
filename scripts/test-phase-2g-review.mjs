@@ -90,10 +90,30 @@ function addTempMemberToTree(tree, memberId) {
   if (!Array.isArray(root.children)) root.children = [];
   root.children.push({
     id: memberId,
-    name: 'Phase 2G Test Member',
+    name: 'Cao Đình Kiểm Thử Phase 2G',
     generation: Number(root.generation || 0) + 1,
     parentId: root.id,
     title: 'Temporary test member',
+    branch: 'Chi test Phase 2G',
+    motherName: 'Mẹ Test',
+    isLiving: false,
+    children: []
+  });
+  root.children.push({
+    id: `${memberId}-dup-a`,
+    name: 'Cao Văn Trùng',
+    generation: Number(root.generation || 0) + 1,
+    parentId: root.id,
+    title: 'Temporary duplicate A',
+    isLiving: false,
+    children: []
+  });
+  root.children.push({
+    id: `${memberId}-dup-b`,
+    name: 'Cao Duy Trùng',
+    generation: Number(root.generation || 0) + 1,
+    parentId: root.id,
+    title: 'Temporary duplicate B',
     isLiving: false,
     children: []
   });
@@ -113,8 +133,8 @@ function insertTempCandidate(database, candidateId, memberId) {
     candidateId,
     'source_phase2g_test',
     'chunk_phase2g_test',
-    'Phase 2G Test Member',
-    'phase 2g test member',
+    'Cao Đình Kiểm Thử Phase 2G',
+    'cao dinh kiem thu phase 2g',
     'test',
     '',
     '',
@@ -125,7 +145,7 @@ function insertTempCandidate(database, candidateId, memberId) {
     'Doan nguon test Phase 2G',
     'Phase 2G Test Source',
     memberId,
-    'Phase 2G Test Member',
+    'Cao Đình Kiểm Thử Phase 2G',
     'manual',
     'pending',
     JSON.stringify({ phase: '2g-test' })
@@ -175,11 +195,26 @@ async function main() {
       detail: `HTTP ${publicList.response.status}`
     });
 
-    const adminList = await fetchJson('/api/knowledge/extracted-anniversaries?q=Phase%202G%20Test&limit=5', { headers: { Cookie: tempAdmin.cookie } });
+    const adminList = await fetchJson('/api/knowledge/extracted-anniversaries?q=Cao%20Dinh%20Kiem%20Thu&limit=5', { headers: { Cookie: tempAdmin.cookie } });
     results.push({
       id: 'admin-can-list',
       passed: adminList.response.ok && Array.isArray(adminList.data.candidates) && adminList.data.candidates.some((item) => item.id === candidateId),
       detail: `HTTP ${adminList.response.status}`
+    });
+
+    const memberSearch = await fetchJson('/api/lineage/member-search?q=cao%20dinh%20kiem%20thu&limit=8', { headers: { Cookie: tempAdmin.cookie } });
+    results.push({
+      id: 'member-search-no-diacritics',
+      passed: memberSearch.response.ok && memberSearch.data.matches?.some((item) => item.memberId === memberId && ['exact', 'strong'].includes(item.confidence)),
+      detail: `HTTP ${memberSearch.response.status}`
+    });
+
+    const shortNameSearch = await fetchJson('/api/lineage/member-search?q=trung&limit=8', { headers: { Cookie: tempAdmin.cookie } });
+    const shortMatches = Array.isArray(shortNameSearch.data.matches) ? shortNameSearch.data.matches.filter((item) => item.fullName.includes('Trùng')) : [];
+    results.push({
+      id: 'short-name-not-certain',
+      passed: shortNameSearch.response.ok && shortMatches.length >= 2 && shortMatches.every((item) => item.confidence !== 'exact'),
+      detail: `matches ${shortMatches.length}`
     });
 
     const reject = await fetchJson(`/api/knowledge/extracted-anniversaries/${candidateId}`, {
@@ -201,6 +236,33 @@ async function main() {
     await fetchJson(`/api/knowledge/extracted-anniversaries/${candidateId}`, {
       method: 'PATCH',
       headers,
+      body: JSON.stringify({ status: 'pending' })
+    });
+    const bulkApprove = await fetchJson('/api/knowledge/extracted-anniversaries/bulk', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ action: 'approve', ids: [candidateId] })
+    });
+    results.push({
+      id: 'bulk-approve',
+      passed: bulkApprove.response.ok && bulkApprove.data.approved === 1,
+      detail: `HTTP ${bulkApprove.response.status}`
+    });
+
+    const bulkReject = await fetchJson('/api/knowledge/extracted-anniversaries/bulk', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ action: 'reject', ids: [candidateId] })
+    });
+    results.push({
+      id: 'bulk-reject',
+      passed: bulkReject.response.ok && bulkReject.data.rejected === 1,
+      detail: `HTTP ${bulkReject.response.status}`
+    });
+
+    await fetchJson(`/api/knowledge/extracted-anniversaries/${candidateId}`, {
+      method: 'PATCH',
+      headers,
       body: JSON.stringify({ status: 'approved' })
     });
     const apply = await fetchJson(`/api/knowledge/extracted-anniversaries/${candidateId}/apply`, {
@@ -216,6 +278,49 @@ async function main() {
       id: 'apply-writes-member',
       passed: apply.response.ok && appliedText.includes('Ngay mung 9 thang Chin'),
       detail: `HTTP ${apply.response.status}`
+    });
+
+    const appliedQuestion = await fetchJson('/api/ai/chat', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        message: 'ngay gio Cao Dinh Kiem Thu Phase 2G la ngay nao?',
+        type: 'chat',
+        botType: 'dashboard',
+        intent: 'quality_check_phase_2h',
+        engine: 'local'
+      })
+    });
+    const appliedAnswer = String(appliedQuestion.data.text || '');
+    results.push({
+      id: 'ai-uses-applied',
+      passed: appliedQuestion.response.ok && /Ngay mung 9 thang Chin/i.test(appliedAnswer) && /applied|áp dụng|ap dung|đã áp dụng/i.test(appliedAnswer),
+      detail: appliedAnswer.slice(0, 180)
+    });
+
+    await fetchJson(`/api/knowledge/extracted-anniversaries/${candidateId}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ status: 'approved', reviewedFields: { lunar_anniversary: 'Ngay khac' } })
+    });
+    const conflictApply = await fetchJson(`/api/knowledge/extracted-anniversaries/${candidateId}/apply`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ memberId, fieldTypes: ['lunar_anniversary'] })
+    });
+    results.push({
+      id: 'bulk-apply-no-overwrite',
+      passed: conflictApply.response.status === 409,
+      detail: `HTTP ${conflictApply.response.status}`
+    });
+
+    const realCandidates = await fetchJson('/api/knowledge/extracted-anniversaries?q=Cao%20Van%20Moi&limit=10', { headers: { Cookie: tempAdmin.cookie } });
+    const chunkId = realCandidates.data.candidates?.find((item) => item.chunkId)?.chunkId;
+    const chunkResult = chunkId ? await fetchJson(`/api/knowledge/chunks/${encodeURIComponent(chunkId)}`, { headers: { Cookie: tempAdmin.cookie } }) : { response: { ok: false, status: 0 }, data: {} };
+    results.push({
+      id: 'source-popup-chunk',
+      passed: Boolean(chunkId) && chunkResult.response.ok && String(chunkResult.data.chunk?.content || '').length > 20,
+      detail: `chunk ${chunkId || 'missing'} HTTP ${chunkResult.response.status}`
     });
 
     const pendingQuestion = await fetchJson('/api/ai/chat', {

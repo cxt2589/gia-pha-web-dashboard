@@ -159,6 +159,18 @@ type ExtractedAnniversaryField = {
   effectiveValue?: string;
 };
 
+type LineageMemberMatch = {
+  memberId: string;
+  fullName: string;
+  generation?: number;
+  fatherName?: string;
+  motherName?: string;
+  branchName?: string;
+  confidence?: string;
+  reason?: string;
+  currentValues?: Record<string, string>;
+};
+
 type ExtractedAnniversaryCandidate = {
   id: string;
   sourceId: string;
@@ -173,7 +185,17 @@ type ExtractedAnniversaryCandidate = {
   matchConfidence?: string;
   status: "pending" | "approved" | "rejected" | "applied";
   fields: ExtractedAnniversaryField[];
+  currentValues?: Record<string, string>;
+  candidateMatches?: LineageMemberMatch[];
   updatedAt?: string;
+};
+
+type SourceChunkDetail = {
+  chunkId: string;
+  title: string;
+  headingPath?: string;
+  content: string;
+  visibility?: string;
 };
 
 const DEFAULT_ZALO_RULES: ZaloAutoReply[] = [
@@ -335,6 +357,11 @@ export default function AIGovernor({
   const [editingFieldType, setEditingFieldType] = useState("");
   const [editingValue, setEditingValue] = useState("");
   const [editingMemberId, setEditingMemberId] = useState("");
+  const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
+  const [memberSearchQuery, setMemberSearchQuery] = useState("");
+  const [memberSearchResults, setMemberSearchResults] = useState<LineageMemberMatch[]>([]);
+  const [sourceChunkDetail, setSourceChunkDetail] = useState<SourceChunkDetail | null>(null);
+  const [isSourceChunkOpen, setIsSourceChunkOpen] = useState(false);
 
   const auditItems = useMemo<AuditItem[]>(() => {
     const items: AuditItem[] = [];
@@ -401,6 +428,27 @@ export default function AIGovernor({
       }))
       .sort((a, b) => a.label.localeCompare(b.label, "vi"))
   ), [members]);
+
+  const selectedExtractedCandidates = useMemo(() => (
+    extractedCandidates.filter((candidate) => selectedCandidateIds.includes(candidate.id))
+  ), [extractedCandidates, selectedCandidateIds]);
+
+  const getCandidateCurrentValue = (candidate: ExtractedAnniversaryCandidate, fieldType: string) => (
+    candidate.currentValues?.[fieldType] || ""
+  );
+  const getCandidateMatchedInfo = (candidate: ExtractedAnniversaryCandidate) => (
+    candidate.candidateMatches?.find((match) => match.memberId === candidate.matchedMemberId)
+      || candidate.candidateMatches?.[0]
+      || null
+  );
+
+  const toggleCandidateSelection = (candidateId: string) => {
+    setSelectedCandidateIds((current) => (
+      current.includes(candidateId)
+        ? current.filter((id) => id !== candidateId)
+        : [...current, candidateId]
+    ));
+  };
 
   const systemCoverage = useMemo(() => {
     const treasuryTotal = transactions.reduce((sum, tx) => sum + (tx.type === "Thu" ? tx.amount : -tx.amount), 0);
@@ -560,12 +608,65 @@ export default function AIGovernor({
 
   const handleAssignCandidate = (candidate: ExtractedAnniversaryCandidate, memberId: string) => {
     const member = members.find((item) => item.id === memberId);
-    if (!member) return;
+    const apiMatch = [...memberSearchResults, ...(candidate.candidateMatches || [])].find((item) => item.memberId === memberId);
+    if (!member && !apiMatch) return;
     void patchExtractedCandidate(candidate.id, {
-      matchedMemberId: member.id,
-      matchedMemberName: member.name,
-      matchConfidence: "manual"
+      matchedMemberId: member?.id || apiMatch?.memberId,
+      matchedMemberName: member?.name || apiMatch?.fullName,
+      matchConfidence: apiMatch?.confidence || "manual"
     }, "Đã gán candidate với nhân vật được chọn.");
+  };
+
+  const searchMembersForCandidate = async (query: string) => {
+    setMemberSearchQuery(query);
+    if (!query.trim()) {
+      setMemberSearchResults([]);
+      return;
+    }
+    try {
+      const response = await fetch(`/api/lineage/member-search?q=${encodeURIComponent(query.trim())}&limit=12`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không tìm được nhân vật.");
+      setMemberSearchResults(Array.isArray(data.matches) ? data.matches : []);
+    } catch (err: any) {
+      setExtractedNote(`Lỗi tìm nhân vật: ${err?.message || "không xác định"}`);
+    }
+  };
+
+  const handleBulkExtractedAction = async (action: "approve" | "reject" | "reset" | "apply") => {
+    if (!selectedCandidateIds.length) {
+      setExtractedNote("Chưa chọn candidate nào.");
+      return;
+    }
+    const response = await fetch("/api/knowledge/extracted-anniversaries/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, ids: selectedCandidateIds })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setExtractedNote(data.error || "Không chạy được thao tác hàng loạt.");
+      return;
+    }
+    setExtractedNote(`Bulk ${action}: ${data.total} mục, applied ${data.applied || 0}, approved ${data.approved || 0}, rejected ${data.rejected || 0}, skipped ${data.skipped || 0}, failed ${data.failed || 0}.`);
+    setSelectedCandidateIds([]);
+    await loadExtractedCandidates();
+  };
+
+  const openSourceChunk = async (candidate: ExtractedAnniversaryCandidate) => {
+    if (!candidate.chunkId) {
+      setExtractedNote("Candidate chưa có chunkId nguồn.");
+      return;
+    }
+    try {
+      const response = await fetch(`/api/knowledge/chunks/${encodeURIComponent(candidate.chunkId)}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không đọc được chunk nguồn.");
+      setSourceChunkDetail(data.chunk || null);
+      setIsSourceChunkOpen(true);
+    } catch (err: any) {
+      setExtractedNote(`Không mở được nguồn: ${err?.message || "lỗi không xác định"}`);
+    }
   };
 
   const startEditCandidateField = (candidate: ExtractedAnniversaryCandidate, field: ExtractedAnniversaryField) => {
@@ -1322,12 +1423,27 @@ export default function AIGovernor({
                 </button>
               </div>
               {extractedNote && <p className="mt-2 rounded bg-white p-2 text-[11px] leading-relaxed text-stone-700">{extractedNote}</p>}
+              <div className="mt-3 flex flex-wrap items-center gap-2 rounded border border-stone-200 bg-white p-2">
+                <span className="text-[11px] font-bold text-stone-600">Đã chọn: {selectedCandidateIds.length}</span>
+                <button type="button" onClick={() => setSelectedCandidateIds(extractedCandidates.map((item) => item.id))} className="rounded border border-stone-200 px-2 py-1 text-[11px] font-bold text-stone-600">Chọn tất cả</button>
+                <button type="button" onClick={() => setSelectedCandidateIds([])} className="rounded border border-stone-200 px-2 py-1 text-[11px] font-bold text-stone-600">Bỏ chọn</button>
+                <button type="button" onClick={() => void handleBulkExtractedAction("approve")} className="rounded bg-emerald-700 px-2 py-1 text-[11px] font-bold text-white">Duyệt nhiều</button>
+                <button type="button" onClick={() => void handleBulkExtractedAction("reject")} className="rounded border border-red-200 px-2 py-1 text-[11px] font-bold text-red-700">Từ chối nhiều</button>
+                <button type="button" onClick={() => void handleBulkExtractedAction("reset")} className="rounded border border-stone-200 px-2 py-1 text-[11px] font-bold text-stone-600">Reset pending</button>
+                <button type="button" onClick={() => void handleBulkExtractedAction("apply")} className="rounded bg-red-900 px-2 py-1 text-[11px] font-bold text-white">Apply nhiều</button>
+              </div>
               <div className="mt-3 max-h-[520px] space-y-3 overflow-y-auto pr-1">
                 {extractedCandidates.map((candidate) => (
                   <article key={candidate.id} className="rounded border border-stone-200 bg-white p-3">
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={selectedCandidateIds.includes(candidate.id)}
+                            onChange={() => toggleCandidateSelection(candidate.id)}
+                            className="h-4 w-4 rounded border-stone-300"
+                          />
                           <h5 className="font-bold text-stone-850">{candidate.personName}</h5>
                           <span className={`rounded px-2 py-0.5 text-[10px] font-bold ${
                             candidate.status === "applied" ? "bg-emerald-50 text-emerald-700" :
@@ -1343,6 +1459,13 @@ export default function AIGovernor({
                           {candidate.headingPath || "-"} · {candidate.sourceId} · {candidate.chunkId || "-"}
                         </p>
                         <p className="mt-1 text-xs leading-relaxed text-stone-600">{truncateText(candidate.sourceQuote || "", 260)}</p>
+                        <button
+                          type="button"
+                          onClick={() => void openSourceChunk(candidate)}
+                          className="mt-2 rounded border border-stone-200 px-2 py-1 text-[11px] font-bold text-stone-600 hover:bg-stone-50"
+                        >
+                          Mở đoạn nguồn
+                        </button>
                       </div>
                       <div className="flex shrink-0 flex-wrap gap-2">
                         <button
@@ -1392,24 +1515,77 @@ export default function AIGovernor({
                         </div>
                       ))}
                     </div>
+                    <div className="mt-3 overflow-x-auto rounded border border-stone-100">
+                      <table className="min-w-full text-left text-[11px]">
+                        <thead className="bg-stone-50 text-stone-500">
+                          <tr>
+                            <th className="px-2 py-1">Loại</th>
+                            <th className="px-2 py-1">Hiện tại trong hồ sơ</th>
+                            <th className="px-2 py-1">Giá trị từ tài liệu</th>
+                            <th className="px-2 py-1">Nguồn/chunk</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {candidate.fields.map((field) => (
+                            <tr key={`${candidate.id}-${field.type}-compare`} className="border-t border-stone-100">
+                              <td className="px-2 py-1 font-bold text-amber-700">{field.type}</td>
+                              <td className="px-2 py-1 text-stone-600">{getCandidateCurrentValue(candidate, field.type) || "Trống"}</td>
+                              <td className="px-2 py-1 text-stone-800">{field.reviewedValue || field.value}</td>
+                              <td className="px-2 py-1 text-stone-500">{truncateText(candidate.headingPath || candidate.chunkId || "-", 90)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                     <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-[1fr_auto]">
-                      <select
-                        value={editingCandidateId === candidate.id ? editingMemberId : candidate.matchedMemberId || ""}
-                        onChange={(event) => {
-                          setEditingCandidateId(candidate.id);
-                          setEditingMemberId(event.target.value);
-                          handleAssignCandidate(candidate, event.target.value);
-                        }}
-                        className="min-w-0 rounded border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:border-amber-500"
-                      >
-                        <option value="">Chọn nhân vật để gán</option>
-                        {memberOptions.map((member) => (
-                          <option key={member.id} value={member.id}>{member.label}</option>
-                        ))}
-                      </select>
-                      <p className="rounded bg-stone-50 px-3 py-2 text-[11px] text-stone-500">
-                        Gợi ý: {candidate.matchedMemberName || "chưa có"}
-                      </p>
+                      <div className="min-w-0">
+                        <input
+                          value={editingCandidateId === candidate.id ? memberSearchQuery : ""}
+                          onFocus={() => {
+                            setEditingCandidateId(candidate.id);
+                            void searchMembersForCandidate(candidate.personName);
+                          }}
+                          onChange={(event) => {
+                            setEditingCandidateId(candidate.id);
+                            void searchMembersForCandidate(event.target.value);
+                          }}
+                          className="w-full rounded border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:border-amber-500"
+                          placeholder="Tìm nhân vật theo tên có dấu/không dấu"
+                        />
+                        {editingCandidateId === candidate.id && (memberSearchResults.length > 0 || (candidate.candidateMatches || []).length > 0) && (
+                          <div className="mt-1 max-h-44 overflow-y-auto rounded border border-stone-200 bg-white shadow-sm">
+                            {[...memberSearchResults, ...(memberSearchResults.length ? [] : candidate.candidateMatches || [])].map((match) => (
+                              <button
+                                key={match.memberId}
+                                type="button"
+                                onClick={() => {
+                                  setEditingMemberId(match.memberId);
+                                  handleAssignCandidate(candidate, match.memberId);
+                                }}
+                                className="block w-full border-b border-stone-100 px-3 py-2 text-left text-xs last:border-b-0 hover:bg-amber-50"
+                              >
+                                <span className="font-bold text-stone-800">{match.fullName}</span>
+                                <span className="ml-2 rounded bg-stone-100 px-1.5 py-0.5 text-[10px] font-bold text-stone-500">{match.confidence}</span>
+                                <span className="block text-[10px] text-stone-500">
+                                  Đời {match.generation ?? "-"} · Cha: {match.fatherName || "-"} · Mẹ: {match.motherName || "-"} · Chi: {match.branchName || "-"}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      {(() => {
+                        const matchedInfo = getCandidateMatchedInfo(candidate);
+                        return (
+                          <p className="rounded bg-stone-50 px-3 py-2 text-[11px] text-stone-500">
+                            Match: {candidate.matchedMemberName || "chưa có"}
+                            {" · "}Đời: {matchedInfo?.generation ?? "-"}
+                            {" · "}Cha: {matchedInfo?.fatherName || "-"}
+                            {" · "}Mẹ: {matchedInfo?.motherName || "-"}
+                            {" · "}Chi/ngành: {matchedInfo?.branchName || "-"}
+                          </p>
+                        );
+                      })()}
                     </div>
                     {editingCandidateId === candidate.id && editingFieldType && (
                       <div className="mt-3 rounded border border-amber-200 bg-amber-50 p-3">
@@ -1434,6 +1610,28 @@ export default function AIGovernor({
                   </p>
                 )}
               </div>
+              {isSourceChunkOpen && sourceChunkDetail && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+                  <div className="max-h-[85vh] w-full max-w-3xl overflow-hidden rounded-lg bg-white shadow-xl">
+                    <div className="flex items-start justify-between gap-3 border-b border-stone-200 p-4">
+                      <div>
+                        <h4 className="font-bold text-stone-900">{sourceChunkDetail.title}</h4>
+                        <p className="mt-1 text-xs text-stone-500">{sourceChunkDetail.headingPath || sourceChunkDetail.chunkId} · {sourceChunkDetail.visibility || "-"}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsSourceChunkOpen(false)}
+                        className="rounded border border-stone-200 px-3 py-1.5 text-xs font-bold text-stone-600 hover:bg-stone-50"
+                      >
+                        Đóng
+                      </button>
+                    </div>
+                    <div className="max-h-[65vh] overflow-y-auto p-4">
+                      <pre className="whitespace-pre-wrap text-sm leading-relaxed text-stone-700">{sourceChunkDetail.content}</pre>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
             <div className="mb-4 rounded-lg border border-stone-200 bg-white p-4">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
