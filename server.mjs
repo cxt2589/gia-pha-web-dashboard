@@ -1197,6 +1197,52 @@ function buildKnowledgeChunkLocalAnswer(searchResult) {
   ].join('\n');
 }
 
+function buildMissingAnniversaryVerificationAnswer(query, searchResult) {
+  const text = normalizeKnowledgeText(query);
+  if (!/\b(ngay gio|ky nhat|gio cu|gio ong|gio ba)\b/.test(text)) return '';
+  const isLang = text.includes('cao dinh lang') || text.includes('thuy to') || /\b(cu lang|ong lang|nhieu lang)\b/.test(text);
+  const isThuat = text.includes('cao dinh thuat') || text.includes('cao to');
+  if (!isLang && !isThuat) return '';
+
+  const personLabel = isLang ? 'cụ Cao Đình Lạng - Thủy Tổ' : 'cụ Cao Đình Thuật - Cao Tổ';
+  const sources = [...new Set((searchResult?.chunks || []).map((row) => row.source_title || row.title).filter(Boolean))].slice(0, 4);
+  return [
+    `Chưa tìm thấy dữ liệu xác minh trực tiếp về ngày giỗ của ${personLabel} trong kho tri thức hiện tại.`,
+    sources.length ? `Các nguồn đã đối chiếu: ${sources.join('; ')}.` : '',
+    'Nếu trong database/lịch giỗ có bản ghi riêng, cần ưu tiên bản ghi đó. Nếu chưa có, không tự suy đoán ngày âm lịch/dương lịch từ tài liệu tham chiếu.'
+  ].filter(Boolean).join('\n');
+}
+
+function buildVerificationKnowledgeAnswer(query, searchResult) {
+  const text = normalizeKnowledgeText(query);
+  if (!/(han nom|kiem chung|xac minh|loi ocr|loi bien tap)/.test(text)) return null;
+  const chunks = (searchResult?.chunks || [])
+    .filter((row) => {
+      const tags = safeJsonParse(row.tags_json, row.tags || []);
+      const haystack = normalizeKnowledgeText([
+        row.source_title,
+        row.title,
+        row.heading_path,
+        Array.isArray(tags) ? tags.join(' ') : '',
+        row.content
+      ].join(' '));
+      return haystack.includes('diem can kiem chung') ||
+        haystack.includes('han nom') ||
+        haystack.includes('loi ocr') ||
+        haystack.includes('kiem chung');
+    })
+    .slice(0, 3);
+  if (!chunks.length) return null;
+  return {
+    chunks,
+    text: [
+      'Tài liệu cần kiểm chứng Hán Nôm/admin xác minh đang được ưu tiên trong kho tri thức là:',
+      ...chunks.map((row) => `- ${row.source_title || row.title}: ${compactText(row.content, 360)}`),
+      'Khi dùng các đoạn này, AI không tự sửa Hán Nôm/OCR và phải đánh dấu phần cần Ban trị sự kiểm chứng.'
+    ].join('\n')
+  };
+}
+
 const AI_QUALITY_EVAL_CASES = [
   {
     id: 'alias-cao-to',
@@ -2977,6 +3023,56 @@ async function handleAIGatewayRequest(req, res) {
       authScope: requestContext.authScope || 'anonymous'
     });
     gatewayKnowledgeResult = localKnowledge;
+    const missingAnniversaryAnswer = buildMissingAnniversaryVerificationAnswer(userQuery || message, localKnowledge);
+    if (missingAnniversaryAnswer) {
+      const sourceIds = [...new Set(localKnowledge.chunks.map((row) => row.source_id))];
+      const knowledgeResponse = {
+        model: 'local-knowledge',
+        provider: 'local',
+        engine: 'local',
+        botType: requestContext.botType,
+        intent: requestContext.intent,
+        text: missingAnniversaryAnswer,
+        knowledgeMatchesCount: localKnowledge.chunks.length,
+        knowledgeSourceIds: sourceIds
+      };
+      logGateway({
+        engine: 'local-knowledge',
+        model: 'local-knowledge',
+        status: 200,
+        cached: false,
+        durationMs: Date.now() - startedAt,
+        knowledgeMatchesCount: localKnowledge.chunks.length,
+        knowledgeSourceIds: sourceIds
+      });
+      res.json(knowledgeResponse);
+      return;
+    }
+    const verificationAnswer = buildVerificationKnowledgeAnswer(userQuery || message, localKnowledge);
+    if (verificationAnswer) {
+      const sourceIds = [...new Set(verificationAnswer.chunks.map((row) => row.source_id))];
+      const knowledgeResponse = {
+        model: 'local-knowledge',
+        provider: 'local',
+        engine: 'local',
+        botType: requestContext.botType,
+        intent: requestContext.intent,
+        text: verificationAnswer.text,
+        knowledgeMatchesCount: verificationAnswer.chunks.length,
+        knowledgeSourceIds: sourceIds
+      };
+      logGateway({
+        engine: 'local-knowledge',
+        model: 'local-knowledge',
+        status: 200,
+        cached: false,
+        durationMs: Date.now() - startedAt,
+        knowledgeMatchesCount: verificationAnswer.chunks.length,
+        knowledgeSourceIds: sourceIds
+      });
+      res.json(knowledgeResponse);
+      return;
+    }
     const localKnowledgeAnswer = buildAliasLookupAnswer(localKnowledge);
     if (localKnowledgeAnswer) {
       const knowledgeResponse = {

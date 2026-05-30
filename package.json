@@ -15,6 +15,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "node scripts/check-mojibake.mjs && tsc --noEmit",
     "test:ai-quality": "node scripts/run-ai-quality-checks.mjs",
+    "test:ai-quality:phase2e": "node scripts/ai-quality-check-phase-2e.mjs",
     "import:cao-toc-txt": "node scripts/import-cao-toc-txt-knowledge.mjs",
     "test:lineage-display": "tsx scripts/test-lineage-display.ts",
     "test:lineage-import": "tsx scripts/test-lineage-import.ts",
