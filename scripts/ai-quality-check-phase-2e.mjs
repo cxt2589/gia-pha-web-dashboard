@@ -154,6 +154,7 @@ function putState(database, key, value) {
 
 function installTempAdminSession() {
   const database = new DatabaseSync(databaseFile);
+  database.exec('PRAGMA busy_timeout = 5000');
   const token = `phase2e_${crypto.randomBytes(16).toString('hex')}`;
   const userId = 'oauth_local_phase2e-admin';
   const sessions = getState(database, 'auth-sessions', {});
@@ -183,17 +184,32 @@ function installTempAdminSession() {
     });
     putState(database, 'auth-users', users);
   }
+  database.close();
 
   return {
     cookie: `caogia_auth_session=${token}`,
-    cleanup() {
-      const cleanupDb = new DatabaseSync(databaseFile);
-      const nextSessions = getState(cleanupDb, 'auth-sessions', {});
-      delete nextSessions[token];
-      putState(cleanupDb, 'auth-sessions', nextSessions);
-      const nextUsers = getState(cleanupDb, 'auth-users', [])
-        .filter((user) => user.id !== userId && user.username !== 'phase2e-admin');
-      putState(cleanupDb, 'auth-users', nextUsers);
+    cleanup: async function cleanup() {
+      let lastError = null;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          const cleanupDb = new DatabaseSync(databaseFile);
+          cleanupDb.exec('PRAGMA busy_timeout = 5000');
+          const nextSessions = getState(cleanupDb, 'auth-sessions', {});
+          delete nextSessions[token];
+          putState(cleanupDb, 'auth-sessions', nextSessions);
+          const nextUsers = getState(cleanupDb, 'auth-users', [])
+            .filter((user) => user.id !== userId && user.username !== 'phase2e-admin');
+          putState(cleanupDb, 'auth-users', nextUsers);
+          cleanupDb.close();
+          return true;
+        } catch (err) {
+          lastError = err;
+          await new Promise((resolveSleep) => setTimeout(resolveSleep, 300 * (attempt + 1)));
+        }
+      }
+      console.warn(`Phase 2E temp admin cleanup skipped after retries: ${lastError?.message || lastError}`);
+      console.warn('Run cleanup manually if needed: remove auth-sessions token prefix "phase2e_" and user "phase2e-admin".');
+      return false;
     }
   };
 }
@@ -363,5 +379,5 @@ try {
   console.log(JSON.stringify(summary, null, 2));
   if (failed.length) process.exit(1);
 } finally {
-  tempAdmin?.cleanup();
+  await tempAdmin?.cleanup();
 }
