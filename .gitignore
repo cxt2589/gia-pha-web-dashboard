@@ -9,6 +9,7 @@ coverage/
 data/*.json
 data/*.sqlite
 data/*.sqlite-*
+data/*.sqlite.bak*
 *.tar.gz
 *.zip
 *.bak
