@@ -836,6 +836,54 @@ export default function AIGovernor({
                 </button>
               </div>
             </div>
+
+            <div className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm xl:col-span-3">
+              <h3 className="mb-3 flex items-center gap-2 font-serif text-lg font-bold text-red-950">
+                <ClipboardList className="h-5 w-5 text-amber-700" />
+                Nhật ký AI
+              </h3>
+              <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-5">
+                <p className="rounded-lg bg-stone-50 p-3">
+                  <span className="block text-[10px] font-bold uppercase tracking-wide text-stone-400">Requests</span>
+                  <strong className="mt-1 block text-red-950">{aiLogSummary?.requestCount ?? "-"}</strong>
+                </p>
+                <p className="rounded-lg bg-stone-50 p-3">
+                  <span className="block text-[10px] font-bold uppercase tracking-wide text-stone-400">Cache</span>
+                  <strong className="mt-1 block text-red-950">{aiLogSummary?.cacheHitCount ?? "-"}</strong>
+                </p>
+                <p className="rounded-lg bg-stone-50 p-3">
+                  <span className="block text-[10px] font-bold uppercase tracking-wide text-stone-400">Errors</span>
+                  <strong className="mt-1 block text-red-950">{aiLogSummary?.errorCount ?? "-"}</strong>
+                </p>
+                <p className="rounded-lg bg-stone-50 p-3">
+                  <span className="block text-[10px] font-bold uppercase tracking-wide text-stone-400">Avg</span>
+                  <strong className="mt-1 block text-red-950">{aiLogSummary?.avgDurationMs ?? "-"}ms</strong>
+                </p>
+                <p className="rounded-lg bg-stone-50 p-3">
+                  <span className="block text-[10px] font-bold uppercase tracking-wide text-stone-400">Tokens</span>
+                  <strong className="mt-1 block text-red-950">{aiLogSummary?.estimatedTokens ?? "-"}</strong>
+                </p>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setActiveMode("knowledge")}
+                  className="rounded bg-red-900 px-3 py-2 text-xs font-bold text-white hover:bg-red-950"
+                >
+                  Mở nhật ký chi tiết
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void loadAIRequestLogs()}
+                  disabled={isAiLogsLoading}
+                  className="inline-flex items-center gap-2 rounded border border-stone-200 px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-60"
+                >
+                  <RefreshCw className={`h-4 w-4 ${isAiLogsLoading ? "animate-spin" : ""}`} />
+                  Tải lại
+                </button>
+              </div>
+              {aiLogNote && <p className="mt-2 rounded bg-amber-50 p-2 text-[11px] text-amber-800">{aiLogNote}</p>}
+            </div>
           </div>
 
           <section className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
