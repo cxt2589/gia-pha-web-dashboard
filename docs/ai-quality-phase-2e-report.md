@@ -1,15 +1,15 @@
 # Phase 2E AI Quality Report
 
-Generated at: 2026-05-30T21:14:38.639Z
+Generated at: 2026-05-30T21:35:10.890Z
 
 ## Summary
 
-- Base URL: http://127.0.0.1:5194
+- Base URL: http://127.0.0.1:5196
 - Commit target: a945e95 or newer
-- Total cases: 10
-- Passed: 10
+- Total cases: 14
+- Passed: 14
 - Failed: 0
-- Knowledge status: sources=11, chunks=215, aliases=15, indexedSources=11
+- Knowledge status: sources=12, chunks=277, aliases=15, indexedSources=12
 
 ## Rules Checked
 
@@ -23,11 +23,15 @@ Generated at: 2026-05-30T21:14:38.639Z
 
 | Case | Pass | Knowledge | Sources | Reason |
 |---|---:|---:|---:|---|
-| alias-cao-to | PASS | 6 | 4 | Cao Dinh Thuat must be Cao To. |
+| alias-cao-to | PASS | 6 | 5 | Cao Dinh Thuat must be Cao To. |
 | alias-thuy-to | PASS | 6 | 3 | Cao Dinh Lang must be Thuy To. |
 | alias-cu-lang | PASS | 6 | 3 | ok |
 | anniversary-lang-unverified | PASS | 6 | 2 | If no verified anniversary date exists, the AI must not invent one. |
 | anniversary-thuat-unverified | PASS | 6 | 2 | ok |
+| death-lang-unverified | PASS | 6 | 3 | ok |
+| anniversary-moi-candidate | PASS | 7 | 1 | ok |
+| grave-moi-candidate | PASS | 7 | 1 | ok |
+| hometown-moi-candidate | PASS | 7 | 1 | ok |
 | origin-cao-toc | PASS | 6 | 1 | ok |
 | han-nom-docs | PASS | 3 | 1 | ok |
 | admin-verification-points | PASS | 2 | 2 | ok |
@@ -46,7 +50,7 @@ Top search sources:
 - Cao Tộc Phả - Điểm cần kiểm chứng, lỗi Hán/Nôm, lỗi OCR (source_M4sobpfDTlwXlpFfyExW_uzN, score 164)
 - Cao Tộc Phả - Lịch sử, nguồn gốc, mốc thời gian, địa danh (source_9fI2EDwePIm8SPZEPnjyQeoU, score 164)
 - Cao Tộc Phả - Phả hệ và danh sách nhân vật theo đời (source_WYYX50YpozEH5CdTace2dGi1, score 164)
-- Cao Tộc Phả - Điểm cần kiểm chứng, lỗi Hán/Nôm, lỗi OCR (source_M4sobpfDTlwXlpFfyExW_uzN, score 164)
+- Cao Tộc Phả - Ngày sinh, ngày mất, quê quán, mộ chí (source_i2VHgoq43EvqUXwav81i9Vf7, score 164)
 
 ### alias-thuy-to
 
@@ -95,6 +99,54 @@ Top search sources:
 - Cao Tộc Phả - Lịch sử, nguồn gốc, mốc thời gian, địa danh (source_9fI2EDwePIm8SPZEPnjyQeoU, score 132)
 - Cao Tộc Phả - Điểm cần kiểm chứng, lỗi Hán/Nôm, lỗi OCR (source_M4sobpfDTlwXlpFfyExW_uzN, score 132)
 - Cao Tộc Phả - Lịch sử, nguồn gốc, mốc thời gian, địa danh (source_9fI2EDwePIm8SPZEPnjyQeoU, score 132)
+
+### death-lang-unverified
+
+Question: ngày mất cụ Cao Đình Lạng là ngày nào?
+
+Answer: Chưa tìm thấy dữ liệu xác minh trực tiếp về ngày mất/tạ thế của cụ Cao Đình Lạng - Thủy Tổ trong kho tri thức hiện tại. Các nguồn đã đối chiếu: Cao Tộc Phả - Điểm cần kiểm chứng, lỗi Hán/Nôm, lỗi OCR; Cao Tộc Phả - Lịch sử, nguồn gốc, mốc thời gian, địa danh; Cao Tộc Phả - Phả hệ và danh sách nhân vật theo đời. Nếu trong database/lịch giỗ có bản ghi riêng, cần ưu tiên bản ghi đó. Nếu chưa có, không tự suy đoán ngày âm lịch/dương lịch từ tài liệu tham chiếu.
+
+Top search sources:
+- Cao Tộc Phả - Điểm cần kiểm chứng, lỗi Hán/Nôm, lỗi OCR (source_M4sobpfDTlwXlpFfyExW_uzN, score 132)
+- Cao Tộc Phả - Lịch sử, nguồn gốc, mốc thời gian, địa danh (source_9fI2EDwePIm8SPZEPnjyQeoU, score 132)
+- Cao Tộc Phả - Phả hệ và danh sách nhân vật theo đời (source_WYYX50YpozEH5CdTace2dGi1, score 132)
+- Cao Tộc Phả - Điểm cần kiểm chứng, lỗi Hán/Nôm, lỗi OCR (source_M4sobpfDTlwXlpFfyExW_uzN, score 132)
+
+### anniversary-moi-candidate
+
+Question: ngày giỗ Cao Văn Mới là ngày nào?
+
+Answer: Theo candidate trích xuất từ Cao Tộc Phả file 04, tôi tìm thấy: - Cao Văn Mới: ngày giỗ/ngày tạ thế âm lịch: Ngày mùng 10 tháng Bảy; ngày mất/tạ thế: Ngày mùng 10 tháng Bảy, năm Âm lịch; ngày/năm sinh: Giáp Dần – 1874; quê quán: thôn Giáp Ba, xã Quỹ Đê, huyện Trực Ninh, tỉnh Nam Định; mộ chí: [Trang 34] Mộ chí của ông bà: [Trang 34] Phần mộ của ông và các bà đều đã được quy tụ về Lăng Cao Tổ họ Cao ở cánh đồng Hạ Quan xã Trực Hưng, huyện Trực Ninh chu đáo.; chưa khớp chắc với cây phả. Nguồn: Cao Tộc Phả - Ngày sinh
+
+Top search sources:
+- Cao Tộc Phả - Lịch sử, nguồn gốc, mốc thời gian, địa danh (source_9fI2EDwePIm8SPZEPnjyQeoU, score 132)
+- Cao Tộc Phả - Lịch sử, nguồn gốc, mốc thời gian, địa danh (source_9fI2EDwePIm8SPZEPnjyQeoU, score 132)
+- Cao Tộc Phả - Lịch sử, nguồn gốc, mốc thời gian, địa danh (source_9fI2EDwePIm8SPZEPnjyQeoU, score 132)
+- Cao Tộc Phả - Lịch sử, nguồn gốc, mốc thời gian, địa danh (source_9fI2EDwePIm8SPZEPnjyQeoU, score 132)
+
+### grave-moi-candidate
+
+Question: mộ chí Cao Văn Mới ở đâu?
+
+Answer: Theo candidate trích xuất từ Cao Tộc Phả file 04, tôi tìm thấy: - Cao Văn Mới: ngày giỗ/ngày tạ thế âm lịch: Ngày mùng 10 tháng Bảy; ngày mất/tạ thế: Ngày mùng 10 tháng Bảy, năm Âm lịch; ngày/năm sinh: Giáp Dần – 1874; quê quán: thôn Giáp Ba, xã Quỹ Đê, huyện Trực Ninh, tỉnh Nam Định; mộ chí: [Trang 34] Mộ chí của ông bà: [Trang 34] Phần mộ của ông và các bà đều đã được quy tụ về Lăng Cao Tổ họ Cao ở cánh đồng Hạ Quan xã Trực Hưng, huyện Trực Ninh chu đáo.; chưa khớp chắc với cây phả. Nguồn: Cao Tộc Phả - Ngày sinh
+
+Top search sources:
+- Cao Tộc Phả - Phả hệ và danh sách nhân vật theo đời (source_WYYX50YpozEH5CdTace2dGi1, score 96)
+- Cao Tộc Phả - Lịch sử, nguồn gốc, mốc thời gian, địa danh (source_9fI2EDwePIm8SPZEPnjyQeoU, score 96)
+- Cao Tộc Phả - Phả hệ và danh sách nhân vật theo đời (source_WYYX50YpozEH5CdTace2dGi1, score 96)
+- Cao Tộc Phả - Lịch sử, nguồn gốc, mốc thời gian, địa danh (source_9fI2EDwePIm8SPZEPnjyQeoU, score 96)
+
+### hometown-moi-candidate
+
+Question: quê quán Cao Văn Mới ở đâu?
+
+Answer: Theo candidate trích xuất từ Cao Tộc Phả file 04, tôi tìm thấy: - Cao Văn Mới: ngày giỗ/ngày tạ thế âm lịch: Ngày mùng 10 tháng Bảy; ngày mất/tạ thế: Ngày mùng 10 tháng Bảy, năm Âm lịch; ngày/năm sinh: Giáp Dần – 1874; quê quán: thôn Giáp Ba, xã Quỹ Đê, huyện Trực Ninh, tỉnh Nam Định; mộ chí: [Trang 34] Mộ chí của ông bà: [Trang 34] Phần mộ của ông và các bà đều đã được quy tụ về Lăng Cao Tổ họ Cao ở cánh đồng Hạ Quan xã Trực Hưng, huyện Trực Ninh chu đáo.; chưa khớp chắc với cây phả. Nguồn: Cao Tộc Phả - Ngày sinh
+
+Top search sources:
+- Cao Tộc Phả - Phả hệ và danh sách nhân vật theo đời (source_WYYX50YpozEH5CdTace2dGi1, score 114)
+- Cao Tộc Phả - Phả hệ và danh sách nhân vật theo đời (source_WYYX50YpozEH5CdTace2dGi1, score 114)
+- Cao Tộc Phả - Phả hệ và danh sách nhân vật theo đời (source_WYYX50YpozEH5CdTace2dGi1, score 114)
+- Cao Tộc Phả - Phả hệ và danh sách nhân vật theo đời (source_WYYX50YpozEH5CdTace2dGi1, score 114)
 
 ### origin-cao-toc
 

@@ -17,7 +17,11 @@ const T = {
   thuyToWho: 'Th\u1ee7y T\u1ed5 l\u00e0 ai?',
   cuLangWho: 'c\u1ee5 L\u1ea1ng l\u00e0 ai?',
   langAnniversary: 'ng\u00e0y gi\u1ed7 c\u1ee5 Cao \u0110\u00ecnh L\u1ea1ng l\u00e0 ng\u00e0y n\u00e0o?',
+  langDeath: 'ng\u00e0y m\u1ea5t c\u1ee5 Cao \u0110\u00ecnh L\u1ea1ng l\u00e0 ng\u00e0y n\u00e0o?',
   thuatAnniversary: 'ng\u00e0y gi\u1ed7 c\u1ee5 Cao \u0110\u00ecnh Thu\u1eadt l\u00e0 ng\u00e0y n\u00e0o?',
+  moiAnniversary: 'ng\u00e0y gi\u1ed7 Cao V\u0103n M\u1edbi l\u00e0 ng\u00e0y n\u00e0o?',
+  moiGrave: 'm\u1ed9 ch\u00ed Cao V\u0103n M\u1edbi \u1edf \u0111\u00e2u?',
+  moiHometown: 'qu\u00ea qu\u00e1n Cao V\u0103n M\u1edbi \u1edf \u0111\u00e2u?',
   origin: 'h\u1ecd Cao c\u00f3 ngu\u1ed3n g\u1ed1c t\u1eeb \u0111\u00e2u?',
   hanNomDocs: 't\u00e0i li\u1ec7u n\u00e0o \u0111ang c\u1ea7n ki\u1ec3m ch\u1ee9ng H\u00e1n N\u00f4m?',
   adminVerify: 'c\u00f3 nh\u1eefng \u0111i\u1ec3m n\u00e0o trong t\u00e0i li\u1ec7u c\u1ea7n admin x\u00e1c minh?',
@@ -30,6 +34,7 @@ const T = {
   thuan: 'Thu\u1ea7n',
   unverified: 'Ch\u01b0a c\u00f3 d\u1eef li\u1ec7u x\u00e1c minh trong kho tri th\u1ee9c hi\u1ec7n t\u1ea1i',
   missingAnniversary: 'Ch\u01b0a t\u00ecm th\u1ea5y d\u1eef li\u1ec7u x\u00e1c minh tr\u1ef1c ti\u1ebfp v\u1ec1 ng\u00e0y gi\u1ed7',
+  missingDeath: 'Ch\u01b0a t\u00ecm th\u1ea5y d\u1eef li\u1ec7u x\u00e1c minh tr\u1ef1c ti\u1ebfp v\u1ec1 ng\u00e0y m\u1ea5t',
   hanNom: 'H\u00e1n N\u00f4m',
   verify: 'ki\u1ec3m ch\u1ee9ng',
   caoNinhBinh: 'Cao Ninh B\u00ecnh',
@@ -79,6 +84,38 @@ const cases = [
     search: 'ng\u00e0y gi\u1ed7 Cao \u0110\u00ecnh Thu\u1eadt',
     expectedContains: [T.caoDinhThuat, T.missingAnniversary],
     mustNotContain: ['20/02/2026', T.caoNinhBinh, T.caoQuyCong, T.caoVanLam],
+    requiresKnowledge: true
+  },
+  {
+    id: 'death-lang-unverified',
+    question: T.langDeath,
+    search: 'ng\u00e0y m\u1ea5t Cao \u0110\u00ecnh L\u1ea1ng',
+    expectedContains: [T.caoDinhLang, T.missingDeath],
+    mustNotContain: ['20/02/2026', T.caoNinhBinh, T.caoQuyCong, T.caoVanLam],
+    requiresKnowledge: true
+  },
+  {
+    id: 'anniversary-moi-candidate',
+    question: T.moiAnniversary,
+    search: 'ng\u00e0y gi\u1ed7 Cao V\u0103n M\u1edbi',
+    expectedContains: ['Cao V\u0103n M\u1edbi', 'Ng\u00e0y m\u00f9ng 10 th\u00e1ng B\u1ea3y', 'candidate tr\u00edch xu\u1ea5t'],
+    mustNotContain: [T.caoNinhBinh, T.caoQuyCong, T.caoVanLam],
+    requiresKnowledge: true
+  },
+  {
+    id: 'grave-moi-candidate',
+    question: T.moiGrave,
+    search: 'm\u1ed9 ch\u00ed Cao V\u0103n M\u1edbi',
+    expectedContains: ['Cao V\u0103n M\u1edbi', 'L\u0103ng Cao T\u1ed5', 'H\u1ea1 Quan'],
+    mustNotContain: [T.caoNinhBinh, T.caoQuyCong, T.caoVanLam],
+    requiresKnowledge: true
+  },
+  {
+    id: 'hometown-moi-candidate',
+    question: T.moiHometown,
+    search: 'qu\u00ea qu\u00e1n Cao V\u0103n M\u1edbi',
+    expectedContains: ['Cao V\u0103n M\u1edbi', 'Gi\u00e1p Ba', 'Nam \u0110\u1ecbnh'],
+    mustNotContain: [T.caoNinhBinh, T.caoQuyCong, T.caoVanLam],
     requiresKnowledge: true
   },
   {

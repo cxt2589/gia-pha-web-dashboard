@@ -472,10 +472,35 @@ async function getDatabase() {
       prompt_snippet TEXT NOT NULL DEFAULT ''
     );
 
+    CREATE TABLE IF NOT EXISTS extracted_anniversary_candidates (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL,
+      chunk_id TEXT NOT NULL DEFAULT '',
+      person_name TEXT NOT NULL,
+      person_name_norm TEXT NOT NULL,
+      generation TEXT NOT NULL DEFAULT '',
+      branch TEXT NOT NULL DEFAULT '',
+      birth_text TEXT NOT NULL DEFAULT '',
+      death_text TEXT NOT NULL DEFAULT '',
+      death_anniversary_lunar TEXT NOT NULL DEFAULT '',
+      hometown TEXT NOT NULL DEFAULT '',
+      grave_text TEXT NOT NULL DEFAULT '',
+      source_quote TEXT NOT NULL DEFAULT '',
+      heading_path TEXT NOT NULL DEFAULT '',
+      matched_member_id TEXT NOT NULL DEFAULT '',
+      matched_member_name TEXT NOT NULL DEFAULT '',
+      match_confidence TEXT NOT NULL DEFAULT 'none',
+      status TEXT NOT NULL DEFAULT 'candidate',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_norm ON knowledge_chunks(content_norm);
     CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm ON entity_aliases(alias_norm);
     CREATE INDEX IF NOT EXISTS idx_entity_aliases_ascii ON entity_aliases(alias_ascii);
     CREATE INDEX IF NOT EXISTS idx_ai_request_logs_created ON ai_request_logs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_extracted_ann_person ON extracted_anniversary_candidates(person_name_norm);
+    CREATE INDEX IF NOT EXISTS idx_extracted_ann_source ON extracted_anniversary_candidates(source_id);
   `);
   ensureTableColumn(db, 'knowledge_sources', 'summary', "ALTER TABLE knowledge_sources ADD COLUMN summary TEXT NOT NULL DEFAULT ''");
   ensureTableColumn(db, 'knowledge_sources', 'tags_json', "ALTER TABLE knowledge_sources ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'");
@@ -1199,15 +1224,18 @@ function buildKnowledgeChunkLocalAnswer(searchResult) {
 
 function buildMissingAnniversaryVerificationAnswer(query, searchResult) {
   const text = normalizeKnowledgeText(query);
-  if (!/\b(ngay gio|ky nhat|gio cu|gio ong|gio ba)\b/.test(text)) return '';
+  const asksAnniversary = /\b(ngay gio|ky nhat|gio cu|gio ong|gio ba)\b/.test(text);
+  const asksDeath = /\b(ngay mat|nam mat|ta the)\b/.test(text);
+  if (!asksAnniversary && !asksDeath) return '';
   const isLang = text.includes('cao dinh lang') || text.includes('thuy to') || /\b(cu lang|ong lang|nhieu lang)\b/.test(text);
   const isThuat = text.includes('cao dinh thuat') || text.includes('cao to');
   if (!isLang && !isThuat) return '';
 
   const personLabel = isLang ? 'cụ Cao Đình Lạng - Thủy Tổ' : 'cụ Cao Đình Thuật - Cao Tổ';
+  const fieldLabel = asksDeath ? 'ngày mất/tạ thế' : 'ngày giỗ';
   const sources = [...new Set((searchResult?.chunks || []).map((row) => row.source_title || row.title).filter(Boolean))].slice(0, 4);
   return [
-    `Chưa tìm thấy dữ liệu xác minh trực tiếp về ngày giỗ của ${personLabel} trong kho tri thức hiện tại.`,
+    `Chưa tìm thấy dữ liệu xác minh trực tiếp về ${fieldLabel} của ${personLabel} trong kho tri thức hiện tại.`,
     sources.length ? `Các nguồn đã đối chiếu: ${sources.join('; ')}.` : '',
     'Nếu trong database/lịch giỗ có bản ghi riêng, cần ưu tiên bản ghi đó. Nếu chưa có, không tự suy đoán ngày âm lịch/dương lịch từ tài liệu tham chiếu.'
   ].filter(Boolean).join('\n');
@@ -1241,6 +1269,112 @@ function buildVerificationKnowledgeAnswer(query, searchResult) {
       'Khi dùng các đoạn này, AI không tự sửa Hán Nôm/OCR và phải đánh dấu phần cần Ban trị sự kiểm chứng.'
     ].join('\n')
   };
+}
+
+function publicExtractedAnniversaryCandidate(row) {
+  return {
+    id: row.id,
+    sourceId: row.source_id,
+    chunkId: row.chunk_id,
+    personName: row.person_name,
+    generation: row.generation,
+    branch: row.branch,
+    birthText: row.birth_text,
+    deathText: row.death_text,
+    deathAnniversaryLunar: row.death_anniversary_lunar,
+    hometown: row.hometown,
+    graveText: row.grave_text,
+    sourceQuote: row.source_quote,
+    headingPath: row.heading_path,
+    matchedMemberId: row.matched_member_id,
+    matchedMemberName: row.matched_member_name,
+    matchConfidence: row.match_confidence,
+    status: row.status,
+    metadata: safeJsonParse(row.metadata_json, {}),
+    updatedAt: row.updated_at
+  };
+}
+
+async function listExtractedAnniversaryCandidates({ q = '', limit = 100 } = {}) {
+  const database = await getDatabase();
+  const rows = database
+    .prepare('SELECT * FROM extracted_anniversary_candidates ORDER BY person_name_norm, updated_at DESC LIMIT ?')
+    .all(Math.max(1, Math.min(500, Number(limit) || 100)));
+  const queryNorm = normalizeKnowledgeText(q);
+  return rows
+    .filter((row) => {
+      if (!queryNorm) return true;
+      return normalizeKnowledgeText([
+        row.person_name,
+        row.matched_member_name,
+        row.birth_text,
+        row.death_text,
+        row.death_anniversary_lunar,
+        row.hometown,
+        row.grave_text,
+        row.source_quote
+      ].join(' ')).includes(queryNorm);
+    })
+    .map(publicExtractedAnniversaryCandidate);
+}
+
+function isVitalRecordQuestion(query) {
+  const text = normalizeKnowledgeText(query);
+  return /\b(ngay gio|ky nhat|ngay mat|nam mat|ta the|mo chi|mo phan|lang mo|que quan|noi an tang)\b/.test(text);
+}
+
+async function searchExtractedAnniversaryCandidatesForQuery(query, { authScope = 'anonymous', limit = 5 } = {}) {
+  if (!['admin', 'kyc_verified'].includes(authScope)) return [];
+  const database = await getDatabase();
+  const queryNorm = normalizeKnowledgeText(query);
+  const rows = database.prepare('SELECT * FROM extracted_anniversary_candidates').all();
+  return rows
+    .map((row) => {
+      const personNorm = row.person_name_norm || normalizeKnowledgeText(row.person_name);
+      const matchedNorm = normalizeKnowledgeText(row.matched_member_name);
+      let score = 0;
+      if (personNorm && queryNorm.includes(personNorm)) score += 120;
+      if (matchedNorm && queryNorm.includes(matchedNorm)) score += 110;
+      return { ...row, score };
+    })
+    .filter((row) => row.score >= 100)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+function buildExtractedAnniversaryAnswer(query, candidates) {
+  if (!isVitalRecordQuestion(query) || !candidates.length) return null;
+  const text = normalizeKnowledgeText(query);
+  const wantsAnniversary = /\b(ngay gio|ky nhat)\b/.test(text);
+  const wantsDeath = /\b(ngay mat|nam mat|ta the)\b/.test(text);
+  const wantsGrave = /\b(mo chi|mo phan|lang mo|noi an tang)\b/.test(text);
+  const wantsHometown = /\b(que quan|nguoi lang|nguoi thon)\b/.test(text);
+  const usable = candidates.filter((row) => {
+    if (wantsAnniversary) return row.death_anniversary_lunar || row.death_text;
+    if (wantsDeath) return row.death_text || row.death_anniversary_lunar;
+    if (wantsGrave) return row.grave_text;
+    if (wantsHometown) return row.hometown;
+    return row.birth_text || row.death_text || row.death_anniversary_lunar || row.hometown || row.grave_text;
+  });
+  if (!usable.length) return null;
+  const lines = usable.slice(0, 3).map((row) => {
+    const facts = [
+      row.death_anniversary_lunar ? `ngày giỗ/ngày tạ thế âm lịch: ${row.death_anniversary_lunar}` : '',
+      row.death_text && row.death_text !== row.death_anniversary_lunar ? `ngày mất/tạ thế: ${row.death_text}` : '',
+      row.birth_text ? `ngày/năm sinh: ${row.birth_text}` : '',
+      row.hometown ? `quê quán: ${row.hometown}` : '',
+      row.grave_text ? `mộ chí: ${compactText(row.grave_text, 260)}` : ''
+    ].filter(Boolean).join('; ');
+    const match = row.match_confidence === 'exact' || row.match_confidence === 'partial'
+      ? `; đối chiếu cây phả: ${row.matched_member_name || row.matched_member_id} (${row.match_confidence})`
+      : '; chưa khớp chắc với cây phả';
+    return `- ${row.person_name}: ${facts || 'có candidate nhưng thiếu trường phù hợp'}${match}. Nguồn: ${row.heading_path}.`;
+  });
+  return [
+    'Theo candidate trích xuất từ Cao Tộc Phả file 04, tôi tìm thấy:',
+    ...lines,
+    'Đây là dữ liệu trích xuất để đối chiếu, chưa tự ghi đè database/cây phả. Nếu mâu thuẫn với database đã xác minh, ưu tiên database và cần admin kiểm tra.'
+  ].join('\n');
 }
 
 const AI_QUALITY_EVAL_CASES = [
@@ -1706,6 +1840,18 @@ app.get('/api/knowledge/sources', async (req, res) => {
   } catch (err) {
     console.error('Failed to list knowledge sources:', err);
     res.status(500).json({ error: 'Failed to list knowledge sources.' });
+  }
+});
+
+app.get('/api/knowledge/extracted-anniversaries', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const q = String(req.query.q || '').trim();
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit || 100) || 100));
+    res.json({ candidates: await listExtractedAnniversaryCandidates({ q, limit }) });
+  } catch (err) {
+    console.error('Failed to list extracted anniversary candidates:', err);
+    res.status(500).json({ error: 'Failed to list extracted anniversary candidates.' });
   }
 });
 
@@ -3023,6 +3169,35 @@ async function handleAIGatewayRequest(req, res) {
       authScope: requestContext.authScope || 'anonymous'
     });
     gatewayKnowledgeResult = localKnowledge;
+    const anniversaryCandidates = await searchExtractedAnniversaryCandidatesForQuery(userQuery || message, {
+      authScope: requestContext.authScope || 'anonymous',
+      limit: 5
+    });
+    const extractedAnniversaryAnswer = buildExtractedAnniversaryAnswer(userQuery || message, anniversaryCandidates);
+    if (extractedAnniversaryAnswer) {
+      const sourceIds = [...new Set(anniversaryCandidates.map((row) => row.source_id).filter(Boolean))];
+      const knowledgeResponse = {
+        model: 'local-knowledge',
+        provider: 'local',
+        engine: 'local',
+        botType: requestContext.botType,
+        intent: requestContext.intent,
+        text: extractedAnniversaryAnswer,
+        knowledgeMatchesCount: localKnowledge.chunks.length + anniversaryCandidates.length,
+        knowledgeSourceIds: sourceIds.length ? sourceIds : [...new Set(localKnowledge.chunks.map((row) => row.source_id))]
+      };
+      logGateway({
+        engine: 'local-knowledge',
+        model: 'local-knowledge',
+        status: 200,
+        cached: false,
+        durationMs: Date.now() - startedAt,
+        knowledgeMatchesCount: knowledgeResponse.knowledgeMatchesCount,
+        knowledgeSourceIds: knowledgeResponse.knowledgeSourceIds
+      });
+      res.json(knowledgeResponse);
+      return;
+    }
     const missingAnniversaryAnswer = buildMissingAnniversaryVerificationAnswer(userQuery || message, localKnowledge);
     if (missingAnniversaryAnswer) {
       const sourceIds = [...new Set(localKnowledge.chunks.map((row) => row.source_id))];
