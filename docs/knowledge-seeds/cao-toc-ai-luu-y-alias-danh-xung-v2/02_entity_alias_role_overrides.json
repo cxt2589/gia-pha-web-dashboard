@@ -1,0 +1,220 @@
+{
+  "version": 1,
+  "scope": "cao_toc_phu_my_ai_knowledge",
+  "clan_scope": "cao_toc_phu_my",
+  "system_scope": "ho_cao_giatochocao",
+  "domain": "giatochocao.site",
+  "updated_reason": "Ghi chú do người dùng/dòng họ cung cấp về danh xưng, alias và quy tắc xác nhận Hán/Nôm.",
+  "global_rules": {
+    "do_not_auto_correct_han_nom": true,
+    "han_nom_correction_requires_family_confirmation": true,
+    "allow_local_and_short_names": true,
+    "if_short_name_ambiguous": "ask_clarifying_question_or_return_candidates",
+    "if_no_verified_data": "Chưa có dữ liệu xác minh trong kho tri thức hiện tại."
+  },
+  "entities": [
+    {
+      "canonical_name": "Cao Đình Lạng",
+      "entity_type": "person",
+      "required_title": "Thủy Tổ",
+      "generation": 1,
+      "relationship_note": "Người được tài liệu họ Cao Phú Mỹ ghi là Thủy Tổ đời thứ nhất.",
+      "aliases": [
+        {
+          "value": "Cao Đình Lạng",
+          "type": "full_name",
+          "confidence": "confirmed_by_family_instruction"
+        },
+        {
+          "value": "Nhiêu Lạng",
+          "type": "common_name",
+          "confidence": "source_text"
+        },
+        {
+          "value": "Lạng",
+          "type": "short_name",
+          "confidence": "family_instruction"
+        },
+        {
+          "value": "cụ Lạng",
+          "type": "honorific_short_name",
+          "confidence": "family_instruction"
+        },
+        {
+          "value": "ông Lạng",
+          "type": "honorific_short_name",
+          "confidence": "family_instruction"
+        },
+        {
+          "value": "cụ Nhiêu Lạng",
+          "type": "honorific_common_name",
+          "confidence": "family_instruction"
+        },
+        {
+          "value": "cao dinh lang",
+          "type": "ascii_search",
+          "confidence": "generated_by_rule"
+        },
+        {
+          "value": "lang",
+          "type": "ascii_short_name",
+          "confidence": "generated_by_rule"
+        },
+        {
+          "value": "nhieu lang",
+          "type": "ascii_common_name",
+          "confidence": "generated_by_rule"
+        }
+      ],
+      "han_nom_candidates": [
+        {
+          "value": "高廷兩",
+          "status": "needs_family_confirmation",
+          "note": "Tài liệu có xuất hiện/nhắc dạng này; cần đối chiếu bản gốc Phú Ý/từ đường trước khi chốt."
+        },
+        {
+          "value": "高廷諒",
+          "status": "needs_family_confirmation",
+          "note": "Tài liệu có nhắc khả năng khác; cần xác nhận từ dòng họ."
+        }
+      ],
+      "answering_rules": [
+        "Khi trả lời về nhân vật này, gọi là cụ Cao Đình Lạng - Thủy Tổ.",
+        "Nếu người dùng hỏi 'Lạng' hoặc 'cụ Lạng' và không có nhân vật khác trùng tên, map về Cao Đình Lạng.",
+        "Không đổi chữ Hán/Nôm nếu chưa có xác nhận."
+      ]
+    },
+    {
+      "canonical_name": "Cao Đình Thuật",
+      "entity_type": "person",
+      "required_title": "Cao Tổ",
+      "generation": 0,
+      "lineage_position_note": "Đứng trước Thủy Tổ Cao Đình Lạng trong thứ tự hiển thị/kỹ thuật. Khi trả lời người dùng, ưu tiên danh xưng Cao Tổ.",
+      "relationship_note": "Thân phụ của cụ Cao Đình Lạng; bậc trên Thủy Tổ trong ghi chú dòng họ.",
+      "aliases": [
+        {
+          "value": "Cao Đình Thuật",
+          "type": "full_name",
+          "confidence": "confirmed_by_family_instruction"
+        },
+        {
+          "value": "Thuật",
+          "type": "short_name",
+          "confidence": "generated_by_rule"
+        },
+        {
+          "value": "cụ Thuật",
+          "type": "honorific_short_name",
+          "confidence": "family_instruction"
+        },
+        {
+          "value": "Cao Tổ",
+          "type": "required_title",
+          "confidence": "family_instruction"
+        },
+        {
+          "value": "cao dinh thuat",
+          "type": "ascii_search",
+          "confidence": "generated_by_rule"
+        },
+        {
+          "value": "thuat",
+          "type": "ascii_short_name",
+          "confidence": "generated_by_rule"
+        },
+        {
+          "value": "cao to",
+          "type": "ascii_required_title",
+          "confidence": "generated_by_rule"
+        }
+      ],
+      "han_nom_candidates": [
+        {
+          "value": "高廷術",
+          "status": "needs_family_confirmation",
+          "note": "Dùng theo tài liệu đã extract; vẫn nên xác nhận từ bản gốc Hán/Nôm."
+        }
+      ],
+      "answering_rules": [
+        "Khi trả lời về nhân vật này, gọi là cụ Cao Đình Thuật - Cao Tổ.",
+        "Không gọi cụ Cao Đình Thuật là Thủy Tổ.",
+        "Nếu người dùng hỏi 'Cao Tổ' trong phạm vi họ Cao Phú Mỹ, ưu tiên map về Cao Đình Thuật."
+      ]
+    },
+    {
+      "canonical_name": "Cao Văn Thuần",
+      "entity_type": "person",
+      "required_title": null,
+      "example_only": true,
+      "verification_status": "needs_verification",
+      "usage_note": "Đây là ví dụ về cơ chế gợi ý khi người dùng nhớ thiếu họ/tên đệm hoặc nhớ sai tên, không phải dữ liệu nhân vật đã xác nhận nếu chưa có trong phả đồ/tài liệu gốc.",
+      "aliases": [
+        {
+          "value": "Cao Văn Thuần",
+          "type": "full_name",
+          "confidence": "source_or_family_context"
+        },
+        {
+          "value": "Thuần",
+          "type": "short_name",
+          "confidence": "family_instruction_example"
+        },
+        {
+          "value": "cụ Thuần",
+          "type": "honorific_short_name",
+          "confidence": "generated_by_rule"
+        },
+        {
+          "value": "ông Thuần",
+          "type": "honorific_short_name",
+          "confidence": "generated_by_rule"
+        },
+        {
+          "value": "cao van thuan",
+          "type": "ascii_search",
+          "confidence": "generated_by_rule"
+        },
+        {
+          "value": "thuan",
+          "type": "ascii_short_name",
+          "confidence": "generated_by_rule"
+        }
+      ],
+      "answering_rules": [
+        "Nếu người dùng chỉ hỏi 'Thuần', search theo short_name. Nếu có một ứng viên rõ ràng trong dữ liệu đã xác minh, có thể trả lời với cách diễn đạt 'tôi tìm thấy người phù hợp'.",
+        "Nếu có nhiều người tên Thuần hoặc chỉ là match gần đúng, phải hỏi lại hoặc trả danh sách ứng viên.",
+        "Không khẳng định Cao Văn Thuần là dữ liệu đã xác minh nếu chưa có trong phả đồ/tài liệu gốc."
+      ]
+    }
+  ],
+  "han_nom_review_policy": {
+    "statuses": [
+      "confirmed",
+      "needs_family_confirmation",
+      "needs_han_nom_review",
+      "ocr_suspected",
+      "variant_allowed"
+    ],
+    "default_for_suspected_errors": "needs_family_confirmation",
+    "display_rule": "Khi hiển thị chữ Hán/Nôm chưa xác nhận, kèm nhãn 'cần xác nhận'.",
+    "update_rule": "Chỉ admin hoặc người được ủy quyền mới được chuyển status thành confirmed."
+  },
+  "search_alias_policy": {
+      "normalization": [
+        "unicode_nfc",
+        "lowercase",
+        "trim_spaces",
+        "remove_vietnamese_diacritics_for_ascii_index",
+        "remove_honorifics_for_matching: cụ, ông, bà, bác, chú, cô, cụ tổ",
+        "preserve_required_title_aliases: Cao Tổ, Thủy Tổ"
+      ],
+    "match_priority": [
+      "exact_full_name",
+      "exact_alias",
+      "exact_han_nom",
+      "unique_short_name",
+      "fuzzy_or_partial_name"
+    ],
+    "ambiguity_rule": "Nếu short_name/fuzzy match trả nhiều người có score gần nhau, không chọn bừa; hỏi lại hoặc trả candidates."
+  }
+}

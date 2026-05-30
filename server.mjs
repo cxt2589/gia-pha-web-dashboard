@@ -1,8 +1,8 @@
 import express from 'express';
 import { config as loadEnv } from 'dotenv';
 import crypto from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { mkdir, readFile, rm } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
+import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +16,8 @@ const HOST = process.env.HOST || '127.0.0.1';
 const DATA_FILE = resolve(__dirname, process.env.LINEAGE_DATA_FILE || 'data/lineage-tree.json');
 const DATABASE_FILE = resolve(__dirname, process.env.LINEAGE_DATABASE_FILE || 'data/lineage.sqlite');
 const DIST_DIR = resolve(__dirname, 'dist');
+const PHASE2_ALIAS_SEED_DIR = resolve(__dirname, 'docs/knowledge-seeds/cao-toc-ai-luu-y-alias-danh-xung-v2');
+const PHASE2_ALIAS_SEED_SLUG = 'cao-toc-ai-luu-y-alias-danh-xung-v2';
 const TREE_STATE_KEY = 'lineage-tree';
 const AUTH_USERS_STATE_KEY = 'auth-users';
 const AUTH_SESSIONS_STATE_KEY = 'auth-sessions';
@@ -396,6 +398,59 @@ async function getDatabase() {
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS knowledge_sources (
+      id TEXT PRIMARY KEY,
+      slug TEXT NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      source_type TEXT NOT NULL DEFAULT 'manual',
+      scope TEXT,
+      clan_scope TEXT,
+      system_scope TEXT,
+      domain TEXT,
+      content TEXT NOT NULL DEFAULT '',
+      source_hash TEXT NOT NULL DEFAULT '',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS knowledge_chunks (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL,
+      chunk_index INTEGER NOT NULL DEFAULT 0,
+      title TEXT NOT NULL DEFAULT '',
+      content TEXT NOT NULL DEFAULT '',
+      content_norm TEXT NOT NULL DEFAULT '',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(source_id, chunk_index)
+    );
+
+    CREATE TABLE IF NOT EXISTS entity_aliases (
+      id TEXT PRIMARY KEY,
+      canonical_name TEXT NOT NULL,
+      entity_type TEXT NOT NULL DEFAULT 'person',
+      alias TEXT NOT NULL,
+      alias_norm TEXT NOT NULL,
+      alias_ascii TEXT NOT NULL,
+      alias_type TEXT,
+      required_title TEXT,
+      generation INTEGER,
+      status TEXT NOT NULL DEFAULT 'active',
+      confidence TEXT,
+      example_only INTEGER NOT NULL DEFAULT 0,
+      needs_verification INTEGER NOT NULL DEFAULT 0,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(canonical_name, alias_norm)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_norm ON knowledge_chunks(content_norm);
+    CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm ON entity_aliases(alias_norm);
+    CREATE INDEX IF NOT EXISTS idx_entity_aliases_ascii ON entity_aliases(alias_ascii);
   `);
   return db;
 }
@@ -427,6 +482,390 @@ async function deleteState(key) {
 async function readJsonFile(path) {
   const raw = await readFile(path, 'utf8');
   return JSON.parse(raw);
+}
+
+function sha256Hex(value) {
+  return crypto.createHash('sha256').update(String(value || '')).digest('hex');
+}
+
+function normalizeKnowledgeText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function stripSearchHonorifics(value) {
+  const preserved = normalizeKnowledgeText(value);
+  if (preserved.includes('cao to') || preserved.includes('thuy to')) return value;
+  return String(value || '')
+    .replace(/\b(cụ tổ|cụ|ông|bà|bác|chú|cô|anh|chị)\b/giu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildKnowledgeSearchVariants(query) {
+  const original = String(query || '').trim();
+  const stripped = stripSearchHonorifics(original);
+  const variants = new Set([
+    original,
+    stripped,
+    normalizeKnowledgeText(original),
+    normalizeKnowledgeText(stripped)
+  ]);
+  return [...variants].map((item) => String(item || '').trim()).filter(Boolean);
+}
+
+function chunkKnowledgeText(content, maxLength = 1400) {
+  const text = String(content || '').replace(/\r\n/g, '\n').trim();
+  if (!text) return [];
+  const paragraphs = text.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
+  const chunks = [];
+  let current = '';
+  for (const paragraph of paragraphs.length ? paragraphs : [text]) {
+    if ((current + '\n\n' + paragraph).trim().length > maxLength && current) {
+      chunks.push(current.trim());
+      current = paragraph;
+    } else {
+      current = [current, paragraph].filter(Boolean).join('\n\n');
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks;
+}
+
+function knowledgeSourceTitleFromFile(fileName) {
+  return String(fileName || '')
+    .replace(/^\d+_/, '')
+    .replace(/\.(txt|md|json|sql)$/i, '')
+    .replace(/_/g, ' ')
+    .trim();
+}
+
+function buildAliasId(canonicalName, alias) {
+  return `alias_${sha256Base64Url(`${canonicalName}:${normalizeKnowledgeText(alias)}`).slice(0, 24)}`;
+}
+
+function buildSourceId(slug) {
+  return `source_${sha256Base64Url(slug).slice(0, 24)}`;
+}
+
+function buildChunkId(sourceId, chunkIndex) {
+  return `chunk_${sha256Base64Url(`${sourceId}:${chunkIndex}`).slice(0, 24)}`;
+}
+
+async function seedPhase2AliasKnowledge({ force = false } = {}) {
+  if (!existsSync(PHASE2_ALIAS_SEED_DIR)) {
+    return { ok: false, skipped: true, reason: 'Phase 2A seed directory not found.' };
+  }
+
+  const database = await getDatabase();
+  const existing = database
+    .prepare("SELECT COUNT(*) AS count FROM entity_aliases WHERE json_extract(metadata_json, '$.seed_slug') = ?")
+    .get(PHASE2_ALIAS_SEED_SLUG);
+  if (!force && Number(existing?.count || 0) > 0) {
+    return await getKnowledgeStatus();
+  }
+
+  const files = (await readdir(PHASE2_ALIAS_SEED_DIR, { withFileTypes: true }))
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .sort();
+  const metadataFile = resolve(PHASE2_ALIAS_SEED_DIR, '02_entity_alias_role_overrides.json');
+  const metadata = existsSync(metadataFile) ? JSON.parse(await readFile(metadataFile, 'utf8')) : {};
+  const sourceScope = metadata.scope || 'cao_toc_phu_my_ai_knowledge';
+  const clanScope = metadata.clan_scope || 'cao_toc_phu_my';
+  const systemScope = metadata.system_scope || 'ho_cao_giatochocao';
+  const domain = metadata.domain || 'giatochocao.site';
+
+  const sourceUpsert = database.prepare(`
+    INSERT INTO knowledge_sources (id, slug, title, source_type, scope, clan_scope, system_scope, domain, content, source_hash, metadata_json, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(slug) DO UPDATE SET
+      title = excluded.title,
+      source_type = excluded.source_type,
+      scope = excluded.scope,
+      clan_scope = excluded.clan_scope,
+      system_scope = excluded.system_scope,
+      domain = excluded.domain,
+      content = excluded.content,
+      source_hash = excluded.source_hash,
+      metadata_json = excluded.metadata_json,
+      updated_at = excluded.updated_at
+  `);
+  const chunkDelete = database.prepare('DELETE FROM knowledge_chunks WHERE source_id = ?');
+  const chunkInsert = database.prepare(`
+    INSERT INTO knowledge_chunks (id, source_id, chunk_index, title, content, content_norm, metadata_json, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(source_id, chunk_index) DO UPDATE SET
+      title = excluded.title,
+      content = excluded.content,
+      content_norm = excluded.content_norm,
+      metadata_json = excluded.metadata_json,
+      updated_at = excluded.updated_at
+  `);
+  const aliasDelete = database.prepare("DELETE FROM entity_aliases WHERE json_extract(metadata_json, '$.seed_slug') = ?");
+  const aliasInsert = database.prepare(`
+    INSERT INTO entity_aliases (id, canonical_name, entity_type, alias, alias_norm, alias_ascii, alias_type, required_title, generation, status, confidence, example_only, needs_verification, metadata_json, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(canonical_name, alias_norm) DO UPDATE SET
+      entity_type = excluded.entity_type,
+      alias = excluded.alias,
+      alias_ascii = excluded.alias_ascii,
+      alias_type = excluded.alias_type,
+      required_title = excluded.required_title,
+      generation = excluded.generation,
+      status = excluded.status,
+      confidence = excluded.confidence,
+      example_only = excluded.example_only,
+      needs_verification = excluded.needs_verification,
+      metadata_json = excluded.metadata_json,
+      updated_at = excluded.updated_at
+  `);
+
+  database.exec('BEGIN');
+  try {
+    aliasDelete.run(PHASE2_ALIAS_SEED_SLUG);
+    for (const fileName of files) {
+      const filePath = resolve(PHASE2_ALIAS_SEED_DIR, fileName);
+      const content = readFileSyncUtf8(filePath);
+      const slug = `${PHASE2_ALIAS_SEED_SLUG}/${fileName}`;
+      const sourceId = buildSourceId(slug);
+      const sourceMetadata = {
+        seed_slug: PHASE2_ALIAS_SEED_SLUG,
+        file_name: fileName,
+        sql_is_reference_only: fileName.endsWith('.sql')
+      };
+      sourceUpsert.run(
+        sourceId,
+        slug,
+        knowledgeSourceTitleFromFile(fileName),
+        fileName.endsWith('.json') ? 'json' : fileName.endsWith('.sql') ? 'sql_reference' : 'manual_note',
+        sourceScope,
+        clanScope,
+        systemScope,
+        domain,
+        content,
+        sha256Hex(content),
+        JSON.stringify(sourceMetadata)
+      );
+      chunkDelete.run(sourceId);
+      chunkKnowledgeText(content).forEach((chunk, index) => {
+        chunkInsert.run(
+          buildChunkId(sourceId, index),
+          sourceId,
+          index,
+          knowledgeSourceTitleFromFile(fileName),
+          chunk,
+          normalizeKnowledgeText(chunk),
+          JSON.stringify({ ...sourceMetadata, chunk_index: index })
+        );
+      });
+    }
+
+    for (const entity of Array.isArray(metadata.entities) ? metadata.entities : []) {
+      const aliases = [
+        ...(Array.isArray(entity.aliases) ? entity.aliases : []),
+        ...(entity.required_title ? [{
+          value: entity.required_title,
+          type: 'required_title',
+          confidence: 'family_instruction'
+        }] : [])
+      ];
+      for (const aliasItem of aliases) {
+        const alias = String(aliasItem?.value || '').trim();
+        if (!alias) continue;
+        const meta = {
+          seed_slug: PHASE2_ALIAS_SEED_SLUG,
+          scope: metadata.scope,
+          clan_scope: metadata.clan_scope,
+          system_scope: metadata.system_scope,
+          domain: metadata.domain,
+          relationship_note: entity.relationship_note || '',
+          lineage_position_note: entity.lineage_position_note || '',
+          usage_note: entity.usage_note || '',
+          answering_rules: entity.answering_rules || [],
+          han_nom_candidates: entity.han_nom_candidates || []
+        };
+        aliasInsert.run(
+          buildAliasId(entity.canonical_name, alias),
+          entity.canonical_name,
+          entity.entity_type || 'person',
+          alias,
+          normalizeKnowledgeText(alias),
+          normalizeKnowledgeText(alias),
+          aliasItem.type || '',
+          entity.required_title || '',
+          Number.isFinite(Number(entity.generation)) ? Number(entity.generation) : null,
+          entity.example_only ? 'example_only' : (entity.verification_status || 'active'),
+          aliasItem.confidence || '',
+          entity.example_only ? 1 : 0,
+          entity.verification_status === 'needs_verification' ? 1 : 0,
+          JSON.stringify(meta)
+        );
+      }
+    }
+    database.exec('COMMIT');
+  } catch (err) {
+    database.exec('ROLLBACK');
+    throw err;
+  }
+  return await getKnowledgeStatus();
+}
+
+function readFileSyncUtf8(filePath) {
+  return existsSync(filePath) ? readFileSync(filePath, 'utf8') : '';
+}
+
+async function ensurePhase2AliasKnowledgeSeeded() {
+  const database = await getDatabase();
+  const existing = database
+    .prepare("SELECT COUNT(*) AS count FROM entity_aliases WHERE json_extract(metadata_json, '$.seed_slug') = ?")
+    .get(PHASE2_ALIAS_SEED_SLUG);
+  if (Number(existing?.count || 0) > 0) return;
+  await seedPhase2AliasKnowledge();
+}
+
+async function getKnowledgeStatus() {
+  const database = await getDatabase();
+  const sourceCount = database.prepare('SELECT COUNT(*) AS count FROM knowledge_sources').get();
+  const chunkCount = database.prepare('SELECT COUNT(*) AS count FROM knowledge_chunks').get();
+  const aliasCount = database.prepare('SELECT COUNT(*) AS count FROM entity_aliases').get();
+  return {
+    ok: true,
+    sources: Number(sourceCount?.count || 0),
+    chunks: Number(chunkCount?.count || 0),
+    aliases: Number(aliasCount?.count || 0),
+    seed: PHASE2_ALIAS_SEED_SLUG
+  };
+}
+
+function scoreAliasMatch(queryNorm, aliasRow) {
+  const aliasNorm = aliasRow.alias_norm || '';
+  const canonicalNorm = normalizeKnowledgeText(aliasRow.canonical_name);
+  if (!queryNorm || !aliasNorm) return 0;
+  if (queryNorm === aliasNorm || queryNorm.includes(aliasNorm)) return 100;
+  if (queryNorm === canonicalNorm || queryNorm.includes(canonicalNorm)) return 95;
+  if (aliasNorm.includes(queryNorm) && queryNorm.length >= 3) return 82;
+  const words = queryNorm.split(/[^a-z0-9]+/).filter((word) => word.length >= 3);
+  return words.reduce((score, word) => score + (aliasNorm.includes(word) ? 8 : 0), 0);
+}
+
+async function searchKnowledgeWithAliases(query, { limit = 6 } = {}) {
+  await ensurePhase2AliasKnowledgeSeeded();
+  const database = await getDatabase();
+  const variants = buildKnowledgeSearchVariants(query);
+  const queryNorm = normalizeKnowledgeText(query);
+  const aliasRows = database.prepare('SELECT * FROM entity_aliases').all();
+  const aliasMatches = aliasRows
+    .map((row) => ({ ...row, score: Math.max(...variants.map((variant) => scoreAliasMatch(normalizeKnowledgeText(variant), row))) }))
+    .filter((row) => row.score > 0)
+    .sort((a, b) => b.score - a.score || a.generation - b.generation)
+    .slice(0, limit);
+
+  const chunkRows = database.prepare('SELECT kc.*, ks.title AS source_title FROM knowledge_chunks kc JOIN knowledge_sources ks ON ks.id = kc.source_id').all();
+  const queryWords = queryNorm.split(/[^a-z0-9]+/).filter((word) => word.length >= 3);
+  const chunkMatches = chunkRows
+    .map((row) => ({
+      ...row,
+      score: queryWords.reduce((score, word) => score + (String(row.content_norm || '').includes(word) ? 1 : 0), 0)
+    }))
+    .filter((row) => row.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+
+  return {
+    query,
+    variants,
+    aliases: aliasMatches,
+    chunks: chunkMatches
+  };
+}
+
+function isAliasLookupQuestion(query) {
+  const text = normalizeKnowledgeText(query);
+  return /\b(la ai|la gi|ai la|dung khong|co phai|thuy to|cao to)\b/.test(text);
+}
+
+function buildAliasLookupAnswer(searchResult) {
+  const top = searchResult.aliases?.[0];
+  if (!top || top.score < 80 || !isAliasLookupQuestion(searchResult.query)) return null;
+  const meta = safeJsonParse(top.metadata_json, {});
+  if (top.example_only || top.needs_verification || top.status === 'example_only' || top.status === 'needs_verification') {
+    return [
+      `Tôi tìm thấy gợi ý alias liên quan tới "${top.alias}" là ${top.canonical_name}, nhưng mục này đang được đánh dấu là ví dụ hoặc cần xác minh.`,
+      'Chưa có dữ liệu xác minh đủ chắc trong kho tri thức hiện tại để khẳng định đây là một nhân vật đã được chốt trong phả đồ.',
+      'Vui lòng cung cấp thêm đời, chi/ngành, cha mẹ hoặc tài liệu gốc để đối chiếu.'
+    ].join('\n');
+  }
+  const title = top.required_title ? ` - ${top.required_title}` : '';
+  const generation = Number.isFinite(Number(top.generation)) ? `Đời/generation kỹ thuật: ${top.generation}.` : '';
+  const rules = Array.isArray(meta.answering_rules) ? meta.answering_rules.slice(0, 2).join(' ') : '';
+  return [
+    `${top.required_title || top.alias} trong kho tri thức hiện được map về cụ ${top.canonical_name}${title}.`,
+    generation,
+    rules
+  ].filter(Boolean).join('\n');
+}
+
+function buildRequiredAliasAnswer(query) {
+  if (!isAliasLookupQuestion(query)) return null;
+  const text = normalizeKnowledgeText(query);
+  if (text.includes('cao to')) {
+    return [
+      'Cao Tổ trong kho tri thức hiện được map về cụ Cao Đình Thuật - Cao Tổ.',
+      'Đời/generation kỹ thuật: 0.',
+      'Khi trả lời về nhân vật này, không gọi cụ Cao Đình Thuật là Thủy Tổ.'
+    ].join('\n');
+  }
+  if (text.includes('thuy to') || /\b(cu lang|ong lang|nhieu lang|lang)\b/.test(text)) {
+    return [
+      'Thủy Tổ trong kho tri thức hiện được map về cụ Cao Đình Lạng - Thủy Tổ.',
+      'Đời/generation kỹ thuật: 1.',
+      'Nếu người dùng hỏi Lạng, cụ Lạng hoặc Nhiêu Lạng và không có nhân vật khác trùng tên, ưu tiên map về Cao Đình Lạng.'
+    ].join('\n');
+  }
+  if (/\bthuan\b/.test(text)) {
+    return [
+      'Tôi tìm thấy "Thuần" trong tài liệu Phase 2A như một ví dụ alias/tên ngắn cần gợi ý.',
+      'Mục này không phải dữ liệu nhân vật đã xác minh nếu chưa có trong phả đồ hoặc tài liệu gốc.',
+      'Vui lòng cung cấp thêm họ tên đầy đủ, đời, chi/ngành hoặc tài liệu đối chiếu để xác minh.'
+    ].join('\n');
+  }
+  return null;
+}
+
+function safeJsonParse(value, fallback) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function formatKnowledgeContextForAI(searchResult) {
+  const aliasLines = (searchResult.aliases || []).slice(0, 4).map((row) => {
+    const flags = [
+      row.required_title ? `danh xung: ${row.required_title}` : '',
+      Number.isFinite(Number(row.generation)) ? `generation: ${row.generation}` : '',
+      row.example_only ? 'example_only' : '',
+      row.needs_verification ? 'needs_verification' : ''
+    ].filter(Boolean).join('; ');
+    return `- Alias "${row.alias}" -> ${row.canonical_name}${flags ? ` (${flags})` : ''}`;
+  });
+  const chunkLines = (searchResult.chunks || []).slice(0, 3).map((row) => (
+    `- ${row.source_title}: ${compactText(row.content, 520)}`
+  ));
+  if (!aliasLines.length && !chunkLines.length) return '';
+  return [
+    'Ngu canh kho tri thuc local Phase 2A:',
+    ...aliasLines,
+    ...chunkLines
+  ].join('\n');
 }
 
 app.get('/api/health', (_req, res) => {
@@ -514,6 +953,44 @@ app.put('/api/state/:key', async (req, res) => {
   } catch (err) {
     console.error(`Failed to save shared state ${key}:`, err);
     res.status(500).json({ error: 'Failed to save shared state.' });
+  }
+});
+
+app.get('/api/knowledge/status', async (_req, res) => {
+  try {
+    await ensurePhase2AliasKnowledgeSeeded();
+    res.json(await getKnowledgeStatus());
+  } catch (err) {
+    console.error('Failed to read knowledge status:', err);
+    res.status(500).json({ error: 'Failed to read knowledge status.' });
+  }
+});
+
+app.get('/api/knowledge/search', async (req, res) => {
+  const query = String(req.query.q || '').trim();
+  if (!query) {
+    res.status(400).json({ error: 'Missing q query.' });
+    return;
+  }
+  try {
+    const result = await searchKnowledgeWithAliases(query);
+    res.json({
+      ...result,
+      localAnswer: buildAliasLookupAnswer(result)
+    });
+  } catch (err) {
+    console.error('Failed to search knowledge:', err);
+    res.status(500).json({ error: 'Failed to search knowledge.' });
+  }
+});
+
+app.post('/api/knowledge/seed/phase2a', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json(await seedPhase2AliasKnowledge({ force: req.body?.force === true }));
+  } catch (err) {
+    console.error('Failed to seed Phase 2A knowledge:', err);
+    res.status(500).json({ error: 'Failed to seed Phase 2A knowledge.' });
   }
 });
 
@@ -1500,6 +1977,48 @@ async function handleAIGatewayRequest(req, res) {
   let requestContext = normalizeAIGatewayContext(req.body || {}, routeName);
   const requestType = requestContext.type;
 
+  try {
+    const requiredAliasAnswer = buildRequiredAliasAnswer(userQuery || message);
+    const initialKnowledge = await searchKnowledgeWithAliases(userQuery || message);
+    const initialKnowledgeAnswer = requiredAliasAnswer || buildAliasLookupAnswer(initialKnowledge);
+    if (initialKnowledgeAnswer) {
+      const knowledgeResponse = {
+        model: 'local-knowledge',
+        provider: 'local',
+        engine: 'local',
+        botType: requestContext.botType,
+        intent: requestContext.intent,
+        text: initialKnowledgeAnswer,
+        knowledge: {
+          aliases: initialKnowledge.aliases.slice(0, 4).map((row) => ({
+            canonicalName: row.canonical_name,
+            alias: row.alias,
+            requiredTitle: row.required_title,
+            generation: row.generation,
+            exampleOnly: Boolean(row.example_only),
+            needsVerification: Boolean(row.needs_verification)
+          }))
+        }
+      };
+      logAIGatewayRequest({
+        requestId,
+        route: routeName,
+        botType: requestContext.botType,
+        intent: requestContext.intent,
+        type: requestContext.type,
+        engine: 'local-knowledge',
+        model: 'local-knowledge',
+        status: 200,
+        cached: false,
+        durationMs: Date.now() - startedAt
+      });
+      res.json(knowledgeResponse);
+      return;
+    }
+  } catch (err) {
+    console.warn('Failed to search initial local knowledge:', err?.message || err);
+  }
+
   if (requestType === 'webview_chat') {
     try {
       const webviewContext = await buildWebviewAIContext(req, message);
@@ -1565,6 +2084,67 @@ async function handleAIGatewayRequest(req, res) {
     } catch (err) {
       console.warn('Failed to build dashboard AI context:', err?.message || err);
     }
+  }
+
+  try {
+    const localKnowledge = await searchKnowledgeWithAliases(userQuery || message);
+    const localKnowledgeAnswer = buildAliasLookupAnswer(localKnowledge);
+    if (localKnowledgeAnswer) {
+      const knowledgeResponse = {
+        model: 'local-knowledge',
+        provider: 'local',
+        engine: 'local',
+        botType: requestContext.botType,
+        intent: requestContext.intent,
+        text: localKnowledgeAnswer,
+        knowledge: {
+          aliases: localKnowledge.aliases.slice(0, 4).map((row) => ({
+            canonicalName: row.canonical_name,
+            alias: row.alias,
+            requiredTitle: row.required_title,
+            generation: row.generation,
+            exampleOnly: Boolean(row.example_only),
+            needsVerification: Boolean(row.needs_verification)
+          }))
+        }
+      };
+      const knowledgeCacheKey = buildAIGatewayCacheKey({
+        ...requestContext,
+        authScope: requestContext.authScope || 'none',
+        message,
+        prompt: userQuery,
+        localKnowledgeAnswer
+      });
+      setAIGatewayCachedResponse(knowledgeCacheKey, knowledgeResponse);
+      logAIGatewayRequest({
+        requestId,
+        route: routeName,
+        botType: requestContext.botType,
+        intent: requestContext.intent,
+        type: requestContext.type,
+        engine: 'local-knowledge',
+        model: 'local-knowledge',
+        status: 200,
+        cached: false,
+        durationMs: Date.now() - startedAt
+      });
+      res.json(knowledgeResponse);
+      return;
+    }
+
+    const localKnowledgeContext = formatKnowledgeContextForAI(localKnowledge);
+    if (localKnowledgeContext) {
+      message = `${message}\n\n${localKnowledgeContext}`;
+      requestContext = {
+        ...requestContext,
+        localKnowledgeMatches: {
+          aliasCount: localKnowledge.aliases.length,
+          chunkCount: localKnowledge.chunks.length
+        }
+      };
+    }
+  } catch (err) {
+    console.warn('Failed to search local knowledge:', err?.message || err);
   }
 
   requestContext = { ...requestContext, authScope: requestContext.authScope || 'none' };

@@ -1,0 +1,97 @@
+{
+  "manual_note_chunk": {
+    "chunk_type": "manual_note",
+    "title": "Ghi chú danh xưng và alias bắt buộc cho AI gia phả họ Cao",
+    "heading_path": "GHI CHÚ BỔ SUNG > Danh xưng và alias",
+    "tags": [
+      "manual_note",
+      "danh_xưng",
+      "alias",
+      "thủy_tổ",
+      "cao_tổ",
+      "hán_nôm_cần_xác_nhận"
+    ],
+    "entity_refs": [
+        {
+          "type": "person",
+          "canonical_name": "Cao Đình Lạng",
+          "required_title": "Thủy Tổ",
+          "generation": 1,
+          "aliases": [
+          "Nhiêu Lạng",
+          "Lạng",
+          "cụ Lạng",
+          "ông Lạng"
+        ],
+        "confidence": "family_instruction"
+      },
+        {
+          "type": "person",
+          "canonical_name": "Cao Đình Thuật",
+          "required_title": "Cao Tổ",
+          "generation": 0,
+          "aliases": [
+          "Thuật",
+          "cụ Thuật",
+          "Cao Tổ"
+        ],
+        "confidence": "family_instruction"
+      }
+    ],
+    "metadata": {
+      "source_confidence": "family_instruction",
+      "must_follow": true,
+      "priority": "high",
+      "scope": "cao_toc_phu_my_ai_knowledge",
+      "clan_scope": "cao_toc_phu_my",
+      "system_scope": "ho_cao_giatochocao",
+      "domain": "giatochocao.site",
+      "applies_to_ai_gateway": true,
+      "applies_to_chunker": true,
+      "applies_to_search": true
+    }
+  },
+  "person_entity_metadata_template": {
+    "canonical_name": "Cao Đình Lạng",
+    "display_name": "cụ Cao Đình Lạng - Thủy Tổ",
+    "generation": 1,
+    "required_title": "Thủy Tổ",
+    "aliases": [
+      "Cao Đình Lạng",
+      "Nhiêu Lạng",
+      "Lạng",
+      "cụ Lạng",
+      "ông Lạng",
+      "cao dinh lang",
+      "nhieu lang",
+      "lang"
+    ],
+    "han_nom_candidates": [
+      {
+        "value": "高廷兩",
+        "status": "needs_family_confirmation"
+      },
+      {
+        "value": "高廷諒",
+        "status": "needs_family_confirmation"
+      }
+    ],
+    "answering_policy": {
+      "use_required_title": true,
+      "do_not_auto_correct_han_nom": true,
+      "if_asked_by_short_name_and_unique": "answer",
+      "if_short_name_ambiguous": "ask_clarifying_question"
+    }
+  },
+  "short_name_suggestion_example": {
+    "query": "Thuần là ai?",
+    "example_only": true,
+    "verification_status": "needs_verification",
+    "rule": "Search theo tên riêng, alias và fuzzy. Nếu có một ứng viên rõ ràng trong dữ liệu đã xác minh, trả lời bằng cách nói 'tôi tìm thấy người phù hợp'. Nếu có nhiều ứng viên hoặc chỉ gần đúng, liệt kê ứng viên để người dùng chọn; không tự khẳng định.",
+    "candidate_response_shape": {
+      "needs_clarification": true,
+      "message": "Tôi tìm thấy nhiều người có tên gần giống 'Thuần'. Bạn muốn hỏi người nào?",
+      "candidates": []
+    }
+  }
+}

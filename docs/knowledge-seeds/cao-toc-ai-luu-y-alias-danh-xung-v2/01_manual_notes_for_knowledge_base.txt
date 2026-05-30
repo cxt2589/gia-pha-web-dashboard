@@ -1,0 +1,67 @@
+# GHI CHÚ BỔ SUNG CHO KHO TRI THỨC AI GIA PHẢ HỌ CAO
+
+## 1. Danh xưng bắt buộc
+
+### Cụ Cao Đình Lạng
+- Tên chuẩn: Cao Đình Lạng.
+- Tên thường gọi: Nhiêu Lạng, Lạng.
+- Danh xưng bắt buộc khi trả lời: Thủy Tổ.
+- Không gọi cụ Cao Đình Lạng là Cao Tổ nếu trong hệ thống đã có phân biệt với cụ Cao Đình Thuật.
+- Khi người dùng hỏi “cụ Lạng”, “ông Lạng”, “Nhiêu Lạng”, “Cao Đình Lạng”, AI cần hiểu là cùng một nhân vật nếu không có nhân vật khác trùng tên.
+
+### Cụ Cao Đình Thuật
+- Tên chuẩn: Cao Đình Thuật.
+- Danh xưng bắt buộc khi trả lời: Cao Tổ.
+- Quan hệ: thân phụ của cụ Cao Đình Lạng, tức bậc trên Thủy Tổ trong tài liệu họ Cao Phú Mỹ.
+- Trong hệ thống kỹ thuật có thể sắp xếp cụ ở đời 0 hoặc display_order đứng trước Thủy Tổ; tuy nhiên khi trả lời người dùng, ưu tiên danh xưng Cao Tổ thay vì trình bày máy móc là “đời 0” nếu không cần.
+- Khi người dùng hỏi “cụ Thuật”, “Cao Đình Thuật”, “Cao Tổ”, AI cần hiểu là cùng một nhân vật nếu không có nhân vật khác trùng tên.
+
+## 2. Quy tắc với chữ Hán/Nôm nghi vấn
+
+Một số tên Hán/Nôm trong tài liệu cũ có dấu hiệu sai, thiếu, OCR lỗi hoặc không thống nhất. Tuy nhiên:
+
+- Không được tự ý sửa vào dữ liệu chính.
+- Chỉ đánh dấu là `needs_family_confirmation` hoặc `needs_han_nom_review`.
+- Khi trả lời người dùng, nếu nhắc đến chữ Hán/Nôm nghi vấn, phải nói rõ: “chữ Hán/Nôm này đang cần dòng họ xác nhận”.
+- Chỉ cập nhật chữ Hán/Nôm chính thức khi có xác nhận từ dòng họ hoặc ban quản trị.
+
+Ví dụ nhóm cần xác nhận:
+- Cao Đình Lạng có thể xuất hiện với Hán tự khác nhau trong tài liệu: cần đối chiếu bản Phú Ý/từ đường.
+- Cao Duy Khương có thể có chữ Hán khác nhau: cần xác nhận chữ đúng.
+- Cao Văn Du, Cao Văn Kỳ, Cao Văn Doanh, Cao Văn Thận, Cao Văn Vân, Cao Thị Lượt và một số tên khác cần rà lại trước khi sửa.
+
+## 3. Quy tắc tên địa phương, tên thường gọi, tên rút gọn
+
+Do cách gọi địa phương và ký ức dòng họ có thể khác nhau, hệ thống cần hỗ trợ alias:
+
+- Tên đầy đủ: Cao Đình Lạng.
+- Tên bỏ họ: Đình Lạng.
+- Tên riêng: Lạng.
+- Tên thường gọi: Nhiêu Lạng.
+- Cách gọi kính xưng: cụ Lạng, ông Lạng, cụ Nhiêu Lạng.
+- Dạng không dấu: cao dinh lang, lang, nhieu lang.
+
+Tương tự, nếu người dùng chỉ hỏi “Thuần”, hệ thống phải tìm theo tên riêng. Nếu chỉ có một người phù hợp, có thể trả lời trực tiếp. Nếu có nhiều người tên Thuần, AI phải hỏi lại hoặc đưa danh sách lựa chọn, không đoán.
+
+Lưu ý: “Thuần” trong ghi chú này là ví dụ về trường hợp con cháu nhớ thiếu họ, thiếu tên đệm hoặc nhớ tên thường gọi. Chỉ được xác nhận thành một nhân vật cụ thể nếu người đó đã có trong phả đồ, tài liệu gốc hoặc được admin xác nhận. Nếu chỉ là match gần đúng, hệ thống phải dùng cách diễn đạt “tôi tìm thấy người phù hợp/gần giống” hoặc liệt kê ứng viên.
+
+## 4. Quy tắc chống bịa dữ liệu
+
+- Nếu dữ liệu không có trong VPS/database/kho tri thức, AI phải trả lời: “Chưa có dữ liệu xác minh trong kho tri thức hiện tại.”
+- Không tự suy đoán quan hệ cha-con, đời thứ, ngày sinh, ngày mất, quê quán, mộ chí.
+- Không tự sửa chữ Hán/Nôm chỉ dựa vào cảm giác hoặc suy luận của AI.
+- Nếu có dữ liệu nhưng ghi “không rõ”, “chưa rõ”, “không ai biết”, AI phải giữ nguyên tinh thần đó.
+
+## 5. Gợi ý lưu vào knowledge_chunks
+
+Tạo một chunk loại `manual_note` hoặc `correction_note` với metadata:
+
+```json
+{
+  "chunk_type": "manual_note",
+  "priority": "high",
+  "applies_to": ["Cao Đình Lạng", "Cao Đình Thuật", "han_nom_review", "alias_search"],
+  "source_confidence": "family_instruction",
+  "must_follow": true
+}
+```
