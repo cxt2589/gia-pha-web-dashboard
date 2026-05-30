@@ -130,6 +130,27 @@ type AIRequestLogSummary = {
   estimatedTokens: number;
 };
 
+type AIEvalCase = {
+  id: string;
+  question: string;
+  engine: string;
+  expectedContains: string[];
+  mustNotContain: string[];
+  scope: string;
+};
+
+type AIEvalResult = {
+  id: string;
+  question: string;
+  passed: boolean;
+  missing: string[];
+  forbidden: string[];
+  answer: string;
+  durationMs: number;
+  knowledgeMatchesCount: number;
+  knowledgeSourceIds: string[];
+};
+
 const DEFAULT_ZALO_RULES: ZaloAutoReply[] = [
   {
     id: "r1",
@@ -275,6 +296,10 @@ export default function AIGovernor({
   const [aiLogSummary, setAiLogSummary] = useState<AIRequestLogSummary | null>(null);
   const [isAiLogsLoading, setIsAiLogsLoading] = useState(false);
   const [aiLogNote, setAiLogNote] = useState("");
+  const [aiEvalCases, setAiEvalCases] = useState<AIEvalCase[]>([]);
+  const [aiEvalResults, setAiEvalResults] = useState<AIEvalResult[]>([]);
+  const [isAiEvalRunning, setIsAiEvalRunning] = useState(false);
+  const [aiEvalNote, setAiEvalNote] = useState("");
 
   const auditItems = useMemo<AuditItem[]>(() => {
     const items: AuditItem[] = [];
@@ -501,9 +526,42 @@ export default function AIGovernor({
     }
   };
 
+  const loadAIEvalCases = async () => {
+    try {
+      const response = await fetch("/api/ai/eval/cases");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không đọc được bộ kiểm thử AI.");
+      setAiEvalCases(Array.isArray(data.cases) ? data.cases : []);
+    } catch (err: any) {
+      setAiEvalNote(`Không đọc được bộ kiểm thử AI: ${err?.message || "lỗi không xác định"}`);
+    }
+  };
+
+  const runAIEval = async () => {
+    setIsAiEvalRunning(true);
+    setAiEvalNote("");
+    try {
+      const response = await fetch("/api/ai/eval/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không chạy được kiểm thử AI.");
+      setAiEvalResults(Array.isArray(data.results) ? data.results : []);
+      setAiEvalNote(`Kết quả: ${data.passed}/${data.total} case đạt.`);
+      void loadAIRequestLogs();
+    } catch (err: any) {
+      setAiEvalNote(`Lỗi kiểm thử AI: ${err?.message || "không xác định"}`);
+    } finally {
+      setIsAiEvalRunning(false);
+    }
+  };
+
   useEffect(() => {
     void loadKnowledgeBackend();
     void loadAIRequestLogs();
+    void loadAIEvalCases();
   }, []);
 
   const handleScanWholeSystem = async () => {
@@ -1102,6 +1160,67 @@ export default function AIGovernor({
                 {!aiLogs.length && (
                   <p className="p-3 text-xs text-stone-500">Chưa có log AI hoặc tài khoản hiện tại chưa được phép xem.</p>
                 )}
+              </div>
+            </div>
+            <div className="mb-4 rounded-lg border border-stone-200 bg-[#fbfaf6] p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <h4 className="flex items-center gap-2 font-bold text-stone-850">
+                    <CheckCircle2 className="h-4 w-4 text-amber-700" />
+                    Kiểm thử AI
+                  </h4>
+                  <p className="mt-1 text-xs leading-relaxed text-stone-500">
+                    Chạy bộ câu hỏi cố định để kiểm tra alias, Hán Nôm, dữ liệu chưa xác minh và chính sách KYC.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void runAIEval()}
+                  disabled={isAiEvalRunning}
+                  className="inline-flex items-center justify-center gap-2 rounded bg-red-900 px-3 py-2 text-xs font-bold text-white hover:bg-red-950 disabled:opacity-60"
+                >
+                  {isAiEvalRunning ? <RefreshCw className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                  Chạy kiểm thử
+                </button>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold text-stone-600">
+                <span className="rounded bg-white px-2 py-1">Cases: {aiEvalCases.length || "-"}</span>
+                <span className="rounded bg-white px-2 py-1">Pass: {aiEvalResults.filter((item) => item.passed).length || "-"}</span>
+                <span className="rounded bg-white px-2 py-1">Fail: {aiEvalResults.filter((item) => !item.passed).length || "-"}</span>
+              </div>
+              {aiEvalNote && <p className="mt-2 rounded bg-white p-2 text-[11px] text-stone-700">{aiEvalNote}</p>}
+              <div className="mt-3 max-h-[300px] space-y-2 overflow-y-auto pr-1">
+                {(aiEvalResults.length ? aiEvalResults : aiEvalCases.map((item) => ({
+                  id: item.id,
+                  question: item.question,
+                  passed: false,
+                  missing: [],
+                  forbidden: [],
+                  answer: "",
+                  durationMs: 0,
+                  knowledgeMatchesCount: 0,
+                  knowledgeSourceIds: []
+                }))).map((result) => (
+                  <article key={result.id} className="rounded border border-stone-200 bg-white p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <h5 className="font-bold text-stone-850">{result.question}</h5>
+                        <p className="mt-0.5 text-[10px] font-semibold text-stone-400">
+                          {result.knowledgeMatchesCount} chunks · {result.durationMs}ms
+                        </p>
+                      </div>
+                      <span className={`rounded px-2 py-0.5 text-[10px] font-bold ${result.answer ? (result.passed ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700") : "bg-stone-100 text-stone-500"}`}>
+                        {result.answer ? (result.passed ? "PASS" : "FAIL") : "READY"}
+                      </span>
+                    </div>
+                    {result.answer && <p className="mt-2 text-xs leading-relaxed text-stone-600">{truncateText(result.answer, 260)}</p>}
+                    {(result.missing.length > 0 || result.forbidden.length > 0) && (
+                      <p className="mt-2 text-[11px] text-red-700">
+                        Thiếu: {result.missing.join(", ") || "-"} · Cấm: {result.forbidden.join(", ") || "-"}
+                      </p>
+                    )}
+                  </article>
+                ))}
               </div>
             </div>
             {templateText && (

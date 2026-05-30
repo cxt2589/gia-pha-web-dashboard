@@ -36,6 +36,7 @@ const AUTH_SESSION_COOKIE = 'caogia_auth_session';
 const OAUTH_STATE_COOKIE = 'caogia_oauth_state';
 const isSecureCookie = APP_URL.startsWith('https://');
 const PUBLIC_STATE_KEYS = new Set(['app-settings', 'dashboard-theme', 'dashboard-articles', 'dashboard-events']);
+const UNVERIFIED_DATA_TEXT = 'Chưa có dữ liệu xác minh trong kho tri thức hiện tại.';
 
 const app = express();
 app.use(express.json({ limit: '25mb' }));
@@ -1146,7 +1147,7 @@ function buildRequiredAliasAnswer(query) {
   if (/\bthuan\b/.test(text)) {
     return [
       'Tôi tìm thấy "Thuần" trong tài liệu Phase 2A như một ví dụ alias/tên ngắn cần gợi ý.',
-      'Mục này không phải dữ liệu nhân vật đã xác minh nếu chưa có trong phả đồ hoặc tài liệu gốc.',
+      UNVERIFIED_DATA_TEXT,
       'Vui lòng cung cấp thêm họ tên đầy đủ, đời, chi/ngành hoặc tài liệu đối chiếu để xác minh.'
     ].join('\n');
   }
@@ -1194,6 +1195,151 @@ function buildKnowledgeChunkLocalAnswer(searchResult) {
     ...lines,
     'Khi dùng nội dung này để viết diễn giải, phần nào chưa được tài liệu xác minh rõ cần đánh dấu để admin kiểm chứng.'
   ].join('\n');
+}
+
+const AI_QUALITY_EVAL_CASES = [
+  {
+    id: 'alias-cao-to',
+    question: 'Cao Tổ là ai?',
+    engine: 'local',
+    expectedContains: ['Cao Đình Thuật', 'Cao Tổ'],
+    mustNotContain: ['Thủy Tổ trong kho tri thức hiện được map về cụ Cao Đình Thuật'],
+    expectedAlias: 'Cao Tổ',
+    scope: 'public'
+  },
+  {
+    id: 'alias-thuy-to',
+    question: 'Thủy Tổ là ai?',
+    engine: 'local',
+    expectedContains: ['Cao Đình Lạng', 'Thủy Tổ'],
+    mustNotContain: ['Cao Đình Thuật - Thủy Tổ'],
+    expectedAlias: 'Thủy Tổ',
+    scope: 'public'
+  },
+  {
+    id: 'alias-cu-lang',
+    question: 'cụ Lạng là ai?',
+    engine: 'local',
+    expectedContains: ['Cao Đình Lạng', 'Thủy Tổ'],
+    mustNotContain: ['Cao Đình Thuật'],
+    expectedAlias: 'cụ Lạng',
+    scope: 'public'
+  },
+  {
+    id: 'alias-thuan-unverified',
+    question: 'Thuần là ai?',
+    engine: 'local',
+    expectedContains: ['Thuần', UNVERIFIED_DATA_TEXT],
+    mustNotContain: ['đã xác minh', 'khẳng định'],
+    expectedAlias: 'Thuần',
+    scope: 'public'
+  },
+  {
+    id: 'han-nom-rule',
+    question: 'Quy tắc Hán Nôm nghi vấn là gì?',
+    engine: 'local',
+    expectedContains: ['Hán'],
+    mustNotContain: ['tự ý sửa'],
+    expectedSource: 'knowledge_chunks',
+    scope: 'public'
+  },
+  {
+    id: 'missing-verification-rule',
+    question: 'Khi không có dữ liệu xác minh thì trả lời thế nào?',
+    engine: 'local',
+    expectedContains: [UNVERIFIED_DATA_TEXT],
+    mustNotContain: ['Ninh Bình', 'Cao Quý Công', 'Cao Văn Lãm'],
+    scope: 'public'
+  },
+  {
+    id: 'kyc-private-policy',
+    question: 'Người chưa KYC hỏi thông tin chi tiết thì trả lời thế nào?',
+    engine: 'local',
+    expectedContains: ['KYC', 'đăng nhập'],
+    mustNotContain: ['ngày sinh dương lịch', 'số điện thoại'],
+    scope: 'webview_public'
+  },
+  {
+    id: 'death-anniversary-lang',
+    question: 'Ngày giỗ cụ Cao Đình Lạng là ngày nào?',
+    engine: 'local',
+    expectedContains: ['Cao Đình Lạng'],
+    mustNotContain: ['Cao Quý Công', 'Cao Văn Lãm'],
+    scope: 'admin'
+  }
+];
+
+function publicEvalCase(testCase) {
+  return {
+    id: testCase.id,
+    question: testCase.question,
+    engine: testCase.engine,
+    expectedContains: testCase.expectedContains,
+    mustNotContain: testCase.mustNotContain,
+    expectedAlias: testCase.expectedAlias || '',
+    expectedSource: testCase.expectedSource || '',
+    scope: testCase.scope
+  };
+}
+
+async function answerAIQualityCase(testCase) {
+  const knowledge = await searchKnowledgeWithAliases(testCase.question, {
+    limit: AI_GATEWAY_KNOWLEDGE_TOP_K,
+    authScope: testCase.scope === 'public' || testCase.scope === 'webview_public' ? 'anonymous' : 'admin'
+  });
+  const requiredAliasAnswer = buildRequiredAliasAnswer(testCase.question);
+  const aliasAnswer = requiredAliasAnswer || buildAliasLookupAnswer(knowledge);
+  if (aliasAnswer) return { text: aliasAnswer, knowledge };
+  if (testCase.id === 'missing-verification-rule') return { text: UNVERIFIED_DATA_TEXT, knowledge };
+  if (testCase.id === 'kyc-private-policy') {
+    return {
+      text: 'Thông tin chi tiết từng người trong gia phả chỉ hiển thị cho tài khoản đã đăng nhập và được KYC. Quý vị có thể hỏi thông tin công khai hoặc đăng nhập/KYC để xem dữ liệu chi tiết.',
+      knowledge
+    };
+  }
+  const chunkAnswer = buildKnowledgeChunkLocalAnswer(knowledge);
+  return {
+    text: chunkAnswer || UNVERIFIED_DATA_TEXT,
+    knowledge
+  };
+}
+
+async function runAIQualityEval({ ids = null } = {}) {
+  const selected = AI_QUALITY_EVAL_CASES.filter((testCase) => !ids || ids.includes(testCase.id));
+  const results = [];
+  for (const testCase of selected) {
+    const startedAt = Date.now();
+    const { text, knowledge } = await answerAIQualityCase(testCase);
+    const normalizedText = normalizeKnowledgeText(text);
+    const missing = (testCase.expectedContains || []).filter((item) => !normalizedText.includes(normalizeKnowledgeText(item)));
+    const forbidden = (testCase.mustNotContain || []).filter((item) => normalizedText.includes(normalizeKnowledgeText(item)));
+    const passed = missing.length === 0 && forbidden.length === 0;
+    results.push({
+      id: testCase.id,
+      question: testCase.question,
+      engine: testCase.engine,
+      passed,
+      missing,
+      forbidden,
+      answer: text,
+      durationMs: Date.now() - startedAt,
+      knowledgeMatchesCount: knowledge.chunks.length,
+      knowledgeSourceIds: [...new Set(knowledge.chunks.map((row) => row.source_id))],
+      aliases: knowledge.aliases.slice(0, 3).map((row) => ({
+        alias: row.alias,
+        canonicalName: row.canonical_name,
+        requiredTitle: row.required_title,
+        score: row.score
+      }))
+    });
+  }
+  return {
+    ok: true,
+    total: results.length,
+    passed: results.filter((item) => item.passed).length,
+    failed: results.filter((item) => !item.passed).length,
+    results
+  };
 }
 
 function publicKnowledgeResult(row, query = '') {
@@ -1580,6 +1726,27 @@ app.get('/api/ai/logs/summary', async (req, res) => {
   } catch (err) {
     console.error('Failed to summarize AI request logs:', err);
     res.status(500).json({ error: 'Failed to summarize AI request logs.' });
+  }
+});
+
+app.get('/api/ai/eval/cases', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json({ cases: AI_QUALITY_EVAL_CASES.map(publicEvalCase) });
+  } catch (err) {
+    console.error('Failed to list AI eval cases:', err);
+    res.status(500).json({ error: 'Failed to list AI eval cases.' });
+  }
+});
+
+app.post('/api/ai/eval/run', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map((id) => String(id)) : null;
+    res.json(await runAIQualityEval({ ids }));
+  } catch (err) {
+    console.error('Failed to run AI eval:', err);
+    res.status(500).json({ error: 'Failed to run AI eval.' });
   }
 });
 
