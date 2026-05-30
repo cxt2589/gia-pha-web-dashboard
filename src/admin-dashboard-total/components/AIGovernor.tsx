@@ -100,6 +100,36 @@ type KnowledgeSearchResult = {
   matchedTerms?: string[];
 };
 
+type AIRequestLog = {
+  id: string;
+  createdAt: string;
+  route: string;
+  botType: string;
+  intent: string;
+  engine: string;
+  provider: string;
+  model: string;
+  status: number;
+  cached: boolean;
+  durationMs: number;
+  contextChars: number;
+  estimatedTokens: number;
+  contextTrimmed: boolean;
+  knowledgeMatchesCount: number;
+  knowledgeSourceIds?: string[];
+  errorMessage?: string;
+  promptSnippet?: string;
+};
+
+type AIRequestLogSummary = {
+  requestCount: number;
+  cacheHitCount: number;
+  errorCount: number;
+  avgDurationMs: number;
+  totalContextChars: number;
+  estimatedTokens: number;
+};
+
 const DEFAULT_ZALO_RULES: ZaloAutoReply[] = [
   {
     id: "r1",
@@ -241,6 +271,10 @@ export default function AIGovernor({
   const [isKnowledgeLoading, setIsKnowledgeLoading] = useState(false);
   const [isKnowledgeSearching, setIsKnowledgeSearching] = useState(false);
   const [knowledgeApiNote, setKnowledgeApiNote] = useState("");
+  const [aiLogs, setAiLogs] = useState<AIRequestLog[]>([]);
+  const [aiLogSummary, setAiLogSummary] = useState<AIRequestLogSummary | null>(null);
+  const [isAiLogsLoading, setIsAiLogsLoading] = useState(false);
+  const [aiLogNote, setAiLogNote] = useState("");
 
   const auditItems = useMemo<AuditItem[]>(() => {
     const items: AuditItem[] = [];
@@ -441,8 +475,35 @@ export default function AIGovernor({
     await loadKnowledgeBackend();
   };
 
+  const loadAIRequestLogs = async () => {
+    setIsAiLogsLoading(true);
+    try {
+      const [summaryResponse, logsResponse] = await Promise.all([
+        fetch("/api/ai/logs/summary"),
+        fetch("/api/ai/logs?limit=40")
+      ]);
+      if (summaryResponse.ok) {
+        setAiLogSummary(await summaryResponse.json());
+      }
+      if (logsResponse.ok) {
+        const data = await logsResponse.json();
+        setAiLogs(Array.isArray(data.logs) ? data.logs : []);
+      }
+      if (!summaryResponse.ok || !logsResponse.ok) {
+        setAiLogNote("Chưa đọc được nhật ký AI. Tài khoản hiện tại có thể chưa có quyền admin.");
+      } else {
+        setAiLogNote("");
+      }
+    } catch (err: any) {
+      setAiLogNote(`Không đọc được nhật ký AI: ${err?.message || "lỗi không xác định"}`);
+    } finally {
+      setIsAiLogsLoading(false);
+    }
+  };
+
   useEffect(() => {
     void loadKnowledgeBackend();
+    void loadAIRequestLogs();
   }, []);
 
   const handleScanWholeSystem = async () => {
@@ -950,6 +1011,48 @@ export default function AIGovernor({
                   <p className="rounded border border-dashed border-stone-200 bg-white p-3 text-xs text-stone-500">
                     Chưa đọc được danh sách source backend hoặc kho tri thức chưa có tài liệu upload thêm.
                   </p>
+                )}
+              </div>
+            </div>
+            <div className="mb-4 rounded-lg border border-stone-200 bg-white p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <h4 className="flex items-center gap-2 font-bold text-stone-850">
+                    <ClipboardList className="h-4 w-4 text-amber-700" />
+                    Nhật ký AI
+                  </h4>
+                  <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-bold text-stone-600">
+                    <span className="rounded bg-[#fbfaf6] px-2 py-1">Requests: {aiLogSummary?.requestCount ?? "-"}</span>
+                    <span className="rounded bg-[#fbfaf6] px-2 py-1">Cache: {aiLogSummary?.cacheHitCount ?? "-"}</span>
+                    <span className="rounded bg-[#fbfaf6] px-2 py-1">Errors: {aiLogSummary?.errorCount ?? "-"}</span>
+                    <span className="rounded bg-[#fbfaf6] px-2 py-1">Avg: {aiLogSummary?.avgDurationMs ?? "-"}ms</span>
+                    <span className="rounded bg-[#fbfaf6] px-2 py-1">Est tokens: {aiLogSummary?.estimatedTokens ?? "-"}</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadAIRequestLogs()}
+                  disabled={isAiLogsLoading}
+                  className="inline-flex items-center justify-center gap-2 rounded border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-60"
+                >
+                  <RefreshCw className={`h-4 w-4 ${isAiLogsLoading ? "animate-spin" : ""}`} />
+                  Tải log
+                </button>
+              </div>
+              {aiLogNote && <p className="mt-2 rounded bg-amber-50 p-2 text-[11px] text-amber-800">{aiLogNote}</p>}
+              <div className="mt-3 max-h-[240px] overflow-y-auto rounded border border-stone-100">
+                {aiLogs.slice(0, 12).map((log) => (
+                  <div key={log.id} className="grid grid-cols-2 gap-2 border-b border-stone-100 p-2 text-[11px] last:border-b-0 md:grid-cols-6">
+                    <span className="font-semibold text-stone-700">{new Date(log.createdAt).toLocaleString("vi-VN")}</span>
+                    <span>{log.botType || "-"} / {log.intent || "-"}</span>
+                    <span>{log.engine || log.provider || "-"}</span>
+                    <span className={log.status >= 400 ? "font-bold text-red-700" : "font-bold text-emerald-700"}>{log.status}</span>
+                    <span>{log.cached ? "cache" : `${log.durationMs}ms`}</span>
+                    <span>{log.knowledgeMatchesCount} chunks · {log.estimatedTokens} tok{log.contextTrimmed ? " · trimmed" : ""}</span>
+                  </div>
+                ))}
+                {!aiLogs.length && (
+                  <p className="p-3 text-xs text-stone-500">Chưa có log AI hoặc tài khoản hiện tại chưa được phép xem.</p>
                 )}
               </div>
             </div>

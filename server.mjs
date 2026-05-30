@@ -448,9 +448,33 @@ async function getDatabase() {
       UNIQUE(canonical_name, alias_norm)
     );
 
+    CREATE TABLE IF NOT EXISTS ai_request_logs (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      route TEXT NOT NULL DEFAULT '',
+      bot_type TEXT NOT NULL DEFAULT '',
+      intent TEXT NOT NULL DEFAULT '',
+      engine TEXT NOT NULL DEFAULT '',
+      provider TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL DEFAULT '',
+      status INTEGER NOT NULL DEFAULT 0,
+      cached INTEGER NOT NULL DEFAULT 0,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      request_chars INTEGER NOT NULL DEFAULT 0,
+      context_chars INTEGER NOT NULL DEFAULT 0,
+      estimated_tokens INTEGER NOT NULL DEFAULT 0,
+      context_trimmed INTEGER NOT NULL DEFAULT 0,
+      knowledge_matches_count INTEGER NOT NULL DEFAULT 0,
+      knowledge_source_ids_json TEXT NOT NULL DEFAULT '[]',
+      error_code TEXT NOT NULL DEFAULT '',
+      error_message TEXT NOT NULL DEFAULT '',
+      prompt_snippet TEXT NOT NULL DEFAULT ''
+    );
+
     CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_norm ON knowledge_chunks(content_norm);
     CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm ON entity_aliases(alias_norm);
     CREATE INDEX IF NOT EXISTS idx_entity_aliases_ascii ON entity_aliases(alias_ascii);
+    CREATE INDEX IF NOT EXISTS idx_ai_request_logs_created ON ai_request_logs(created_at);
   `);
   ensureTableColumn(db, 'knowledge_sources', 'summary', "ALTER TABLE knowledge_sources ADD COLUMN summary TEXT NOT NULL DEFAULT ''");
   ensureTableColumn(db, 'knowledge_sources', 'tags_json', "ALTER TABLE knowledge_sources ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'");
@@ -461,9 +485,14 @@ async function getDatabase() {
   ensureTableColumn(db, 'knowledge_chunks', 'tags_json', "ALTER TABLE knowledge_chunks ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'");
   ensureTableColumn(db, 'knowledge_chunks', 'entity_refs_json', "ALTER TABLE knowledge_chunks ADD COLUMN entity_refs_json TEXT NOT NULL DEFAULT '[]'");
   ensureTableColumn(db, 'knowledge_chunks', 'visibility', "ALTER TABLE knowledge_chunks ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'");
+  ensureTableColumn(db, 'knowledge_chunks', 'heading_path', "ALTER TABLE knowledge_chunks ADD COLUMN heading_path TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'knowledge_chunks', 'content_ascii', "ALTER TABLE knowledge_chunks ADD COLUMN content_ascii TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'knowledge_chunks', 'char_count', "ALTER TABLE knowledge_chunks ADD COLUMN char_count INTEGER NOT NULL DEFAULT 0");
+  ensureTableColumn(db, 'knowledge_chunks', 'token_estimate', "ALTER TABLE knowledge_chunks ADD COLUMN token_estimate INTEGER NOT NULL DEFAULT 0");
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_knowledge_sources_visibility ON knowledge_sources(visibility);
     CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_visibility ON knowledge_chunks(visibility);
+    CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_ascii ON knowledge_chunks(content_ascii);
   `);
   return db;
 }
@@ -558,6 +587,139 @@ function chunkKnowledgeText(content, maxLength = 1400) {
   }
   if (current.trim()) chunks.push(current.trim());
   return chunks;
+}
+
+function estimateTextTokens(value) {
+  return Math.ceil(String(value || '').length / 4);
+}
+
+function createLocalSummary(content, maxLength = 320) {
+  const lines = String(content || '')
+    .replace(/\r\n/g, '\n')
+    .split(/\n+/)
+    .map((line) => line.replace(/^#+\s*/, '').trim())
+    .filter((line) => line.length >= 20);
+  return compactText(lines.slice(0, 3).join(' '), maxLength) || compactText(content, maxLength);
+}
+
+function inferKnowledgeTags(title, content) {
+  const text = normalizeKnowledgeText([title, content].join(' '));
+  const raw = String(content || '');
+  const tags = new Set();
+  if (/(cao to|thuy to|danh xung|alias)/.test(text)) tags.add('alias');
+  if (/(han nom|chu han|chu nom)/.test(text) || /[\u3400-\u9fff]/.test(raw)) tags.add('han_nom');
+  if (/(ngay gio|ky nhat|ngay mat|nam mat)/.test(text)) tags.add('ngay_gio');
+  if (/(nam sinh|sinh nam|doi |generation|chi nhanh|chi nganh)/.test(text)) tags.add('pha_he');
+  if (/(zalo|chatbox|webview)/.test(text)) tags.add('kenh_tra_loi');
+  if (/(quy tac|guardrail|khong duoc|can xac minh)/.test(text)) tags.add('quy_tac');
+  return [...tags];
+}
+
+function inferKnowledgeEntityRefs(title, content) {
+  const raw = [title, content].join('\n');
+  const refs = new Set();
+  const nameMatches = raw.match(/\bCao\s+(?:Đình|Duy|Văn|Xuân|Hữu|Quang|Thế|Minh|Mạnh|Cao)\s+[A-ZÀ-Ỹ][\p{L}\p{M}'’-]+/gu) || [];
+  nameMatches.slice(0, 30).forEach((name) => refs.add(name.replace(/\s+/g, ' ').trim()));
+  [
+    ['Cao Tổ', /cao\s*tổ/i],
+    ['Thủy Tổ', /thủy\s*tổ/i],
+    ['ngày giỗ', /ngày\s+giỗ|kỵ\s+nhật/i],
+    ['ngày mất', /ngày\s+mất|năm\s+mất/i],
+    ['năm sinh', /năm\s+sinh|sinh\s+năm/i],
+    ['chi/ngành', /chi\s*\/?\s*ngành|chi\s+nhánh/i],
+    ['đời', /\bđời\b|generation/i],
+    ['Hán Nôm', /Hán\s*Nôm|[\u3400-\u9fff]/i]
+  ].forEach(([label, pattern]) => {
+    if (pattern.test(raw)) refs.add(label);
+  });
+  return [...refs].slice(0, 40);
+}
+
+function normalizeImportedKnowledgeContent(payload = {}) {
+  const content = String(payload.content || '').trim();
+  const sourceType = String(payload.type || payload.sourceType || '').toLowerCase();
+  const title = String(payload.title || '').toLowerCase();
+  if (!content) return content;
+  if (sourceType.includes('json') || title.endsWith('.json')) {
+    try {
+      return JSON.stringify(JSON.parse(content), null, 2);
+    } catch {
+      return content;
+    }
+  }
+  return content;
+}
+
+function splitLongKnowledgeBlock(block, maxLength, overlap) {
+  const text = String(block || '').trim();
+  if (text.length <= maxLength) return [text].filter(Boolean);
+  const chunks = [];
+  let start = 0;
+  while (start < text.length) {
+    let end = Math.min(text.length, start + maxLength);
+    if (end < text.length) {
+      const breakAt = Math.max(text.lastIndexOf('\n', end), text.lastIndexOf('. ', end), text.lastIndexOf('; ', end));
+      if (breakAt > start + Math.floor(maxLength * 0.55)) end = breakAt + 1;
+    }
+    const slice = text.slice(start, end).trim();
+    if (slice) chunks.push(slice);
+    if (end >= text.length) break;
+    start = Math.max(0, end - overlap);
+  }
+  return chunks;
+}
+
+function buildKnowledgeChunks(content, { title = '', maxLength = 1100, overlap = 140 } = {}) {
+  const text = String(content || '').replace(/\r\n/g, '\n').trim();
+  if (!text) return [];
+  const lines = text.split('\n');
+  const sections = [];
+  const headingPath = [];
+  let currentHeading = title;
+  let current = [];
+
+  function flushSection() {
+    const body = current.join('\n').trim();
+    if (body) sections.push({ headingPath: currentHeading || title, content: body });
+    current = [];
+  }
+
+  for (const line of lines) {
+    const heading = line.match(/^(#{1,6})\s+(.+)$|^(.{1,120})\n?$/);
+    const markdownHeading = line.match(/^(#{1,6})\s+(.+)$/);
+    const numberedHeading = line.match(/^(\d+(?:\.\d+)*\.?|[IVX]+\.)\s+(.{3,100})$/i);
+    const plainHeading = !markdownHeading && !numberedHeading && line.trim().length <= 80 && current.length === 0 && /[:：]$/.test(line.trim());
+    if (markdownHeading || numberedHeading || plainHeading) {
+      flushSection();
+      const level = markdownHeading ? markdownHeading[1].length : 2;
+      const textHeading = (markdownHeading?.[2] || numberedHeading?.[2] || line).replace(/[:：]$/, '').trim();
+      headingPath.splice(Math.max(0, level - 1));
+      headingPath[level - 1] = textHeading;
+      currentHeading = [title, ...headingPath.filter(Boolean)].filter(Boolean).join(' > ');
+      continue;
+    }
+    current.push(line);
+  }
+  flushSection();
+
+  const blocks = sections.length ? sections : [{ headingPath: title, content: text }];
+  const chunks = [];
+  for (const section of blocks) {
+    let currentBlock = '';
+    const paragraphs = section.content.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
+    for (const paragraph of paragraphs.length ? paragraphs : [section.content]) {
+      if ((currentBlock + '\n\n' + paragraph).trim().length > maxLength && currentBlock) {
+        splitLongKnowledgeBlock(currentBlock, maxLength, overlap).forEach((part) => chunks.push({ headingPath: section.headingPath, content: part }));
+        currentBlock = paragraph;
+      } else {
+        currentBlock = [currentBlock, paragraph].filter(Boolean).join('\n\n');
+      }
+    }
+    if (currentBlock.trim()) {
+      splitLongKnowledgeBlock(currentBlock, maxLength, overlap).forEach((part) => chunks.push({ headingPath: section.headingPath, content: part }));
+    }
+  }
+  return chunks.map((chunk, index) => ({ ...chunk, index }));
 }
 
 function normalizeStringArray(value) {
@@ -848,11 +1010,12 @@ function scoreKnowledgeChunk(queryNorm, terms, row) {
   const titleNorm = normalizeKnowledgeText(row.title || row.source_title || '');
   const summaryNorm = normalizeKnowledgeText(row.summary || '');
   const contentNorm = String(row.content_norm || '');
+  const contentAscii = String(row.content_ascii || '');
   const tags = safeJsonParse(row.tags_json, []);
   const entityRefs = safeJsonParse(row.entity_refs_json, []);
   const tagsNorm = normalizeKnowledgeText(tags.join(' '));
   const entityNorm = normalizeKnowledgeText(entityRefs.join(' '));
-  const searchable = [titleNorm, summaryNorm, contentNorm].join(' ');
+  const searchable = [titleNorm, summaryNorm, contentNorm, contentAscii].join(' ');
   const matchedTerms = terms.filter((term) => searchable.includes(term) || tagsNorm.includes(term) || entityNorm.includes(term));
   let score = 0;
   const reasons = [];
@@ -920,7 +1083,8 @@ async function searchKnowledgeWithAliases(query, { limit = 8, authScope = 'admin
       const score = scoreKnowledgeChunk(queryNorm, queryWords, {
         ...row,
         tags_json: row.tags_json || row.source_tags_json,
-        entity_refs_json: row.entity_refs_json || row.source_entity_refs_json
+        entity_refs_json: row.entity_refs_json || row.source_entity_refs_json,
+        content_ascii: row.content_ascii || ''
       });
       return { ...row, ...score };
     })
@@ -1045,7 +1209,10 @@ function publicKnowledgeResult(row, query = '') {
     systemScope: row.source_system_scope || '',
     visibility: row.visibility || row.source_visibility || 'public',
     reason: row.reason || '',
-    matchedTerms: row.matchedTerms || []
+    matchedTerms: row.matchedTerms || [],
+    headingPath: row.heading_path || '',
+    charCount: row.char_count || 0,
+    tokenEstimate: row.token_estimate || 0
   };
 }
 
@@ -1080,7 +1247,7 @@ async function listKnowledgeSources({ authScope = 'admin', limit = 80 } = {}) {
 
 async function createKnowledgeSource(payload = {}, authUser = null) {
   const title = String(payload.title || '').trim();
-  const content = String(payload.content || '').trim();
+  const content = normalizeImportedKnowledgeContent(payload);
   if (!title || !content) {
     const err = new Error('Knowledge source title and content are required.');
     err.status = 400;
@@ -1089,8 +1256,8 @@ async function createKnowledgeSource(payload = {}, authUser = null) {
 
   const database = await getDatabase();
   const visibility = normalizeVisibility(payload.visibility || payload.scope || 'admin', 'admin');
-  const tags = normalizeStringArray(payload.tags);
-  const entityRefs = normalizeStringArray(payload.entityRefs || payload.entity_refs);
+  const tags = [...new Set([...normalizeStringArray(payload.tags), ...inferKnowledgeTags(title, content)])];
+  const entityRefs = [...new Set([...normalizeStringArray(payload.entityRefs || payload.entity_refs), ...inferKnowledgeEntityRefs(title, content)])];
   const sourceType = normalizeGatewayText(payload.type || payload.sourceType || 'manual_upload') || 'manual_upload';
   const scope = String(payload.scope || 'dashboard_knowledge').trim();
   const systemScope = String(payload.systemScope || payload.system_scope || 'ho_cao_giatochocao').trim();
@@ -1098,7 +1265,7 @@ async function createKnowledgeSource(payload = {}, authUser = null) {
   const domain = String(payload.domain || 'giatochocao.site').trim();
   const slug = String(payload.slug || `${sourceType}-${sha256Base64Url(`${title}:${Date.now()}:${randomToken(6)}`).slice(0, 18)}`).trim();
   const sourceId = buildSourceId(slug);
-  const summary = String(payload.summary || compactText(content, 320)).trim();
+  const summary = String(payload.summary || createLocalSummary(content, 320)).trim();
   const metadata = {
     imported_by: authUser?.username || authUser?.email || authUser?.id || 'admin',
     imported_at: new Date().toISOString(),
@@ -1127,8 +1294,8 @@ async function createKnowledgeSource(payload = {}, authUser = null) {
   `);
   const chunkDelete = database.prepare('DELETE FROM knowledge_chunks WHERE source_id = ?');
   const chunkInsert = database.prepare(`
-    INSERT INTO knowledge_chunks (id, source_id, chunk_index, title, content, content_norm, metadata_json, summary, tags_json, entity_refs_json, visibility, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    INSERT INTO knowledge_chunks (id, source_id, chunk_index, title, content, content_norm, metadata_json, summary, tags_json, entity_refs_json, visibility, heading_path, content_ascii, char_count, token_estimate, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(source_id, chunk_index) DO UPDATE SET
       title = excluded.title,
       content = excluded.content,
@@ -1138,6 +1305,10 @@ async function createKnowledgeSource(payload = {}, authUser = null) {
       tags_json = excluded.tags_json,
       entity_refs_json = excluded.entity_refs_json,
       visibility = excluded.visibility,
+      heading_path = excluded.heading_path,
+      content_ascii = excluded.content_ascii,
+      char_count = excluded.char_count,
+      token_estimate = excluded.token_estimate,
       updated_at = excluded.updated_at
   `);
 
@@ -1161,19 +1332,26 @@ async function createKnowledgeSource(payload = {}, authUser = null) {
       visibility
     );
     chunkDelete.run(sourceId);
-    chunkKnowledgeText(content).forEach((chunk, index) => {
+    buildKnowledgeChunks(content, { title }).forEach((chunk, index) => {
+      const chunkContent = chunk.content;
+      const chunkSummary = createLocalSummary(chunkContent, 240);
+      const chunkNorm = normalizeKnowledgeText([title, summary, tags.join(' '), entityRefs.join(' '), chunk.headingPath, chunkContent].join('\n'));
       chunkInsert.run(
         buildChunkId(sourceId, index),
         sourceId,
         index,
         title,
-        chunk,
-        normalizeKnowledgeText([title, summary, tags.join(' '), entityRefs.join(' '), chunk].join('\n')),
-        JSON.stringify({ source: 'dashboard', chunk_index: index }),
-        compactText(chunk, 240),
+        chunkContent,
+        chunkNorm,
+        JSON.stringify({ source: 'dashboard', chunk_index: index, heading_path: chunk.headingPath }),
+        chunkSummary,
         JSON.stringify(tags),
         JSON.stringify(entityRefs),
-        visibility
+        visibility,
+        chunk.headingPath || title,
+        chunkNorm,
+        chunkContent.length,
+        estimateTextTokens(chunkContent)
       );
     });
     database.exec('COMMIT');
@@ -1381,6 +1559,27 @@ app.post('/api/knowledge/seed/phase2a', async (req, res) => {
   } catch (err) {
     console.error('Failed to seed Phase 2A knowledge:', err);
     res.status(500).json({ error: 'Failed to seed Phase 2A knowledge.' });
+  }
+});
+
+app.get('/api/ai/logs', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const limit = Math.max(1, Math.min(200, Number(req.query.limit || 50) || 50));
+    res.json({ logs: await listAIRequestLogs(limit) });
+  } catch (err) {
+    console.error('Failed to list AI request logs:', err);
+    res.status(500).json({ error: 'Failed to list AI request logs.' });
+  }
+});
+
+app.get('/api/ai/logs/summary', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json(await summarizeAIRequestLogs());
+  } catch (err) {
+    console.error('Failed to summarize AI request logs:', err);
+    res.status(500).json({ error: 'Failed to summarize AI request logs.' });
   }
 });
 
@@ -1830,6 +2029,105 @@ function logAIGatewayRequest(meta) {
     `durationMs=${meta.durationMs}`
   ].join(' ');
   console.info(`[ai-gateway] ${line}`);
+  recordAIRequestLog(meta).catch((err) => {
+    console.warn('Failed to persist AI request log:', err?.message || err);
+  });
+}
+
+async function recordAIRequestLog(meta = {}) {
+  const database = await getDatabase();
+  const knowledgeSourceIds = Array.isArray(meta.knowledgeSourceIds) ? meta.knowledgeSourceIds : [];
+  const promptSnippet = compactText(meta.promptSnippet || meta.prompt || '', 260);
+  database.prepare(`
+    INSERT INTO ai_request_logs (
+      id, route, bot_type, intent, engine, provider, model, status, cached, duration_ms,
+      request_chars, context_chars, estimated_tokens, context_trimmed,
+      knowledge_matches_count, knowledge_source_ids_json, error_code, error_message, prompt_snippet
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    meta.id || `ailog_${sha256Base64Url(`${meta.requestId || randomToken(8)}:${Date.now()}`).slice(0, 24)}`,
+    String(meta.route || ''),
+    String(meta.botType || ''),
+    String(meta.intent || ''),
+    String(meta.engine || ''),
+    String(meta.provider || meta.engine || ''),
+    String(meta.model || ''),
+    Number(meta.status || 0),
+    meta.cached ? 1 : 0,
+    Number(meta.durationMs || 0),
+    Number(meta.requestChars || 0),
+    Number(meta.contextChars || 0),
+    Number(meta.estimatedTokens || Math.ceil(Number(meta.contextChars || 0) / 4)),
+    meta.contextTrimmed ? 1 : 0,
+    Number(meta.knowledgeMatchesCount || 0),
+    JSON.stringify(knowledgeSourceIds),
+    String(meta.errorCode || ''),
+    compactText(meta.errorMessage || '', 260),
+    promptSnippet
+  );
+}
+
+async function listAIRequestLogs(limit = 50) {
+  const database = await getDatabase();
+  return database.prepare(`
+    SELECT * FROM ai_request_logs
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(Math.max(1, Math.min(200, limit))).map((row) => ({
+    id: row.id,
+    createdAt: row.created_at,
+    route: row.route,
+    botType: row.bot_type,
+    intent: row.intent,
+    engine: row.engine,
+    provider: row.provider,
+    model: row.model,
+    status: row.status,
+    cached: Boolean(row.cached),
+    durationMs: row.duration_ms,
+    requestChars: row.request_chars,
+    contextChars: row.context_chars,
+    estimatedTokens: row.estimated_tokens,
+    contextTrimmed: Boolean(row.context_trimmed),
+    knowledgeMatchesCount: row.knowledge_matches_count,
+    knowledgeSourceIds: safeJsonParse(row.knowledge_source_ids_json, []),
+    errorCode: row.error_code,
+    errorMessage: row.error_message,
+    promptSnippet: row.prompt_snippet
+  }));
+}
+
+async function summarizeAIRequestLogs() {
+  const database = await getDatabase();
+  const rows = database.prepare('SELECT * FROM ai_request_logs ORDER BY created_at DESC LIMIT 500').all();
+  const countBy = (key) => {
+    const counts = new Map();
+    rows.forEach((row) => {
+      const value = String(row[key] || '');
+      if (value) counts.set(value, (counts.get(value) || 0) + 1);
+    });
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name, count]) => ({ name, count }));
+  };
+  const sourceCounts = new Map();
+  rows.forEach((row) => {
+    safeJsonParse(row.knowledge_source_ids_json, []).forEach((id) => {
+      sourceCounts.set(id, (sourceCounts.get(id) || 0) + 1);
+    });
+  });
+  return {
+    ok: true,
+    requestCount: rows.length,
+    cacheHitCount: rows.filter((row) => row.cached).length,
+    errorCount: rows.filter((row) => Number(row.status) >= 400).length,
+    avgDurationMs: rows.length ? Math.round(rows.reduce((sum, row) => sum + Number(row.duration_ms || 0), 0) / rows.length) : 0,
+    totalRequestChars: rows.reduce((sum, row) => sum + Number(row.request_chars || 0), 0),
+    totalContextChars: rows.reduce((sum, row) => sum + Number(row.context_chars || 0), 0),
+    estimatedTokens: rows.reduce((sum, row) => sum + Number(row.estimated_tokens || 0), 0),
+    topBotTypes: countBy('bot_type'),
+    topIntents: countBy('intent'),
+    topKnowledgeSources: [...sourceCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([id, count]) => ({ id, count }))
+  };
 }
 
 function parseGeminiApiError(err) {
@@ -2369,6 +2667,21 @@ async function handleAIGatewayRequest(req, res) {
   let requestContext = normalizeAIGatewayContext(req.body || {}, routeName);
   const requestType = requestContext.type;
   let gatewayKnowledgeResult = null;
+  const logGateway = (fields = {}) => logAIGatewayRequest({
+    requestId,
+    route: routeName,
+    botType: requestContext.botType,
+    intent: requestContext.intent,
+    type: requestContext.type,
+    requestChars: userQuery.length,
+    contextChars: message.length,
+    estimatedTokens: estimateTextTokens(message),
+    promptSnippet: userQuery,
+    knowledgeMatchesCount: requestContext.localKnowledgeMatches?.chunkCount || fields.knowledgeMatchesCount || 0,
+    knowledgeSourceIds: requestContext.localKnowledgeMatches?.sourceIds || fields.knowledgeSourceIds || [],
+    contextTrimmed: Boolean(requestContext.contextTrimmed || fields.contextTrimmed),
+    ...fields
+  });
   try {
     const authContext = await getRequestAuthContext(req);
     requestContext = { ...requestContext, authScope: authContext.authScope || 'anonymous' };
@@ -2405,17 +2718,14 @@ async function handleAIGatewayRequest(req, res) {
           }))
         }
       };
-      logAIGatewayRequest({
-        requestId,
-        route: routeName,
-        botType: requestContext.botType,
-        intent: requestContext.intent,
-        type: requestContext.type,
+      logGateway({
         engine: 'local-knowledge',
         model: 'local-knowledge',
         status: 200,
         cached: false,
-        durationMs: Date.now() - startedAt
+        durationMs: Date.now() - startedAt,
+        knowledgeMatchesCount: initialKnowledge.chunks.length,
+        knowledgeSourceIds: [...new Set(initialKnowledge.chunks.map((row) => row.source_id))]
       });
       res.json(knowledgeResponse);
       return;
@@ -2436,12 +2746,7 @@ async function handleAIGatewayRequest(req, res) {
         });
         const cachedPolicyResponse = getAIGatewayCachedResponse(policyCacheKey);
         if (cachedPolicyResponse) {
-          logAIGatewayRequest({
-            requestId,
-            route: routeName,
-            botType: requestContext.botType,
-            intent: requestContext.intent,
-            type: requestContext.type,
+          logGateway({
             engine: 'policy',
             model: cachedPolicyResponse.model,
             status: 200,
@@ -2460,6 +2765,14 @@ async function handleAIGatewayRequest(req, res) {
           text: webviewContext.blockedText
         };
         setAIGatewayCachedResponse(policyCacheKey, policyResponse);
+        logGateway({
+          engine: 'policy',
+          provider: 'policy',
+          model: 'policy',
+          status: 200,
+          cached: false,
+          durationMs: Date.now() - startedAt
+        });
         res.json(policyResponse);
         return;
       }
@@ -2527,17 +2840,14 @@ async function handleAIGatewayRequest(req, res) {
         localKnowledgeAnswer
       });
       setAIGatewayCachedResponse(knowledgeCacheKey, knowledgeResponse);
-      logAIGatewayRequest({
-        requestId,
-        route: routeName,
-        botType: requestContext.botType,
-        intent: requestContext.intent,
-        type: requestContext.type,
+      logGateway({
         engine: 'local-knowledge',
         model: 'local-knowledge',
         status: 200,
         cached: false,
-        durationMs: Date.now() - startedAt
+        durationMs: Date.now() - startedAt,
+        knowledgeMatchesCount: localKnowledge.chunks.length,
+        knowledgeSourceIds: [...new Set(localKnowledge.chunks.map((row) => row.source_id))]
       });
       res.json(knowledgeResponse);
       return;
@@ -2560,6 +2870,9 @@ async function handleAIGatewayRequest(req, res) {
   }
 
   requestContext = { ...requestContext, authScope: requestContext.authScope || 'none' };
+  if (message.length > MAX_GEMINI_INPUT_CHARS) {
+    requestContext = { ...requestContext, contextTrimmed: true };
+  }
   const cacheKey = buildAIGatewayCacheKey({
     ...requestContext,
     message,
@@ -2567,12 +2880,7 @@ async function handleAIGatewayRequest(req, res) {
   });
   const cachedResponse = getAIGatewayCachedResponse(cacheKey);
   if (cachedResponse) {
-    logAIGatewayRequest({
-      requestId,
-      route: routeName,
-      botType: requestContext.botType,
-      intent: requestContext.intent,
-      type: requestContext.type,
+    logGateway({
       engine: requestContext.engine,
       model: cachedResponse.model,
       status: 200,
@@ -2597,12 +2905,7 @@ async function handleAIGatewayRequest(req, res) {
       knowledgeSourceIds: requestContext.localKnowledgeMatches?.sourceIds || []
     };
     setAIGatewayCachedResponse(cacheKey, localResponse);
-    logAIGatewayRequest({
-      requestId,
-      route: routeName,
-      botType: requestContext.botType,
-      intent: requestContext.intent,
-      type: requestContext.type,
+    logGateway({
       engine: 'local',
       model: 'local',
       status: 200,
@@ -2625,23 +2928,29 @@ async function handleAIGatewayRequest(req, res) {
       botType: requestContext.botType,
       intent: requestContext.intent
     };
-    logAIGatewayRequest({
-      requestId,
-      route: routeName,
-      botType: requestContext.botType,
-      intent: requestContext.intent,
-      type: requestContext.type,
+    logGateway({
       engine: 'chatgpt',
       model: requestContext.modelName,
       status,
       cached: false,
-      durationMs: Date.now() - startedAt
+      durationMs: Date.now() - startedAt,
+      errorCode: String(status),
+      errorMessage: providerResponse.details
     });
     res.status(status).json(providerResponse);
     return;
   }
 
   if (!apiKey) {
+    logGateway({
+      engine: requestContext.engine,
+      model: requestContext.modelName,
+      status: 503,
+      cached: false,
+      durationMs: Date.now() - startedAt,
+      errorCode: 'GEMINI_API_KEY',
+      errorMessage: 'GEMINI_API_KEY is not configured on the server.'
+    });
     res.status(503).json({ error: 'GEMINI_API_KEY is not configured on the server.' });
     return;
   }
@@ -2656,13 +2965,9 @@ async function handleAIGatewayRequest(req, res) {
       knowledgeSourceIds: requestContext.localKnowledgeMatches?.sourceIds || []
     };
     setAIGatewayCachedResponse(cacheKey, responsePayload);
-    logAIGatewayRequest({
-      requestId,
-      route: routeName,
-      botType: requestContext.botType,
-      intent: requestContext.intent,
-      type: requestContext.type,
+    logGateway({
       engine: responsePayload.engine,
+      provider: responsePayload.provider,
       model: responsePayload.model,
       status: 200,
       cached: false,
@@ -2672,17 +2977,14 @@ async function handleAIGatewayRequest(req, res) {
   } catch (err) {
     const parsed = err?.status ? err : parseGeminiApiError(err);
     console.error('Gemini request failed:', parsed.details, `| status=${parsed.status}`);
-    logAIGatewayRequest({
-      requestId,
-      route: routeName,
-      botType: requestContext.botType,
-      intent: requestContext.intent,
-      type: requestContext.type,
+    logGateway({
       engine: requestContext.engine,
       model: requestContext.modelName,
       status: parsed.status,
       cached: false,
-      durationMs: Date.now() - startedAt
+      durationMs: Date.now() - startedAt,
+      errorCode: String(parsed.status || ''),
+      errorMessage: parsed.details || parsed.error || ''
     });
     res.status(parsed.status).json(parsed);
   }
