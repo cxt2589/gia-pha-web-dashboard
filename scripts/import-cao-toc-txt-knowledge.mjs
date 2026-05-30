@@ -188,7 +188,18 @@ function buildKnowledgeChunks(content, { title = '', maxLength = 1100, overlap =
 }
 
 function readZipEntry(entryName) {
-  const raw = execFileSync('tar', ['-xOf', zipPath, entryName], { maxBuffer: 20 * 1024 * 1024 });
+  let raw;
+  try {
+    raw = execFileSync('unzip', ['-p', zipPath, entryName], { maxBuffer: 20 * 1024 * 1024 });
+  } catch (unzipErr) {
+    try {
+      raw = execFileSync('tar', ['-xOf', zipPath, entryName], { maxBuffer: 20 * 1024 * 1024 });
+    } catch {
+      const err = new Error(`Cannot read ${entryName} from ${zipPath}. Install unzip on Linux or verify the zip file.`);
+      err.cause = unzipErr;
+      throw err;
+    }
+  }
   return raw.toString('utf8').replace(/^\uFEFF/, '').trim();
 }
 
