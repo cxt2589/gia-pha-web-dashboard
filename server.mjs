@@ -452,7 +452,27 @@ async function getDatabase() {
     CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm ON entity_aliases(alias_norm);
     CREATE INDEX IF NOT EXISTS idx_entity_aliases_ascii ON entity_aliases(alias_ascii);
   `);
+  ensureTableColumn(db, 'knowledge_sources', 'summary', "ALTER TABLE knowledge_sources ADD COLUMN summary TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'knowledge_sources', 'tags_json', "ALTER TABLE knowledge_sources ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'");
+  ensureTableColumn(db, 'knowledge_sources', 'entity_refs_json', "ALTER TABLE knowledge_sources ADD COLUMN entity_refs_json TEXT NOT NULL DEFAULT '[]'");
+  ensureTableColumn(db, 'knowledge_sources', 'visibility', "ALTER TABLE knowledge_sources ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'");
+  ensureTableColumn(db, 'knowledge_sources', 'status', "ALTER TABLE knowledge_sources ADD COLUMN status TEXT NOT NULL DEFAULT 'indexed'");
+  ensureTableColumn(db, 'knowledge_chunks', 'summary', "ALTER TABLE knowledge_chunks ADD COLUMN summary TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'knowledge_chunks', 'tags_json', "ALTER TABLE knowledge_chunks ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'");
+  ensureTableColumn(db, 'knowledge_chunks', 'entity_refs_json', "ALTER TABLE knowledge_chunks ADD COLUMN entity_refs_json TEXT NOT NULL DEFAULT '[]'");
+  ensureTableColumn(db, 'knowledge_chunks', 'visibility', "ALTER TABLE knowledge_chunks ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'");
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_knowledge_sources_visibility ON knowledge_sources(visibility);
+    CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_visibility ON knowledge_chunks(visibility);
+  `);
   return db;
+}
+
+function ensureTableColumn(database, tableName, columnName, alterSql) {
+  const columns = database.prepare(`PRAGMA table_info(${tableName})`).all();
+  if (!columns.some((column) => column.name === columnName)) {
+    database.exec(alterSql);
+  }
 }
 
 async function readState(key) {
@@ -492,6 +512,8 @@ function normalizeKnowledgeText(value) {
   return String(value || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\u0111/g, 'd')
+    .replace(/\u0110/g, 'D')
     .replace(/đ/g, 'd')
     .replace(/Đ/g, 'D')
     .toLowerCase()
@@ -536,6 +558,53 @@ function chunkKnowledgeText(content, maxLength = 1400) {
   }
   if (current.trim()) chunks.push(current.trim());
   return chunks;
+}
+
+function normalizeStringArray(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean);
+  }
+  if (typeof value === 'string') {
+    return value.split(/[,;\n]+/).map((item) => item.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function normalizeVisibility(value, fallback = 'admin') {
+  const visibility = normalizeKnowledgeText(value || fallback);
+  if (['public', 'global', 'kyc', 'admin', 'private'].includes(visibility)) return visibility;
+  return fallback;
+}
+
+function getSnippet(content, queryNorm, maxLength = 260) {
+  const text = String(content || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= maxLength) return text;
+  const norm = normalizeKnowledgeText(text);
+  const words = queryNorm.split(/[^a-z0-9]+/).filter((word) => word.length >= 3);
+  const firstIndex = words
+    .map((word) => norm.indexOf(word))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)[0] ?? 0;
+  const start = Math.max(0, firstIndex - 80);
+  const snippet = text.slice(start, start + maxLength).trim();
+  return `${start > 0 ? '...' : ''}${snippet}${start + maxLength < text.length ? '...' : ''}`;
+}
+
+function canReadKnowledgeVisibility(visibility, authScope) {
+  const normalized = normalizeVisibility(visibility, 'public');
+  if (authScope === 'admin') return true;
+  if (authScope === 'kyc_verified') return ['public', 'global', 'kyc'].includes(normalized);
+  return ['public', 'global'].includes(normalized);
+}
+
+async function getRequestAuthContext(req) {
+  const session = await getAuthSession(req);
+  const authUser = await findAuthUserForSession(session);
+  return {
+    session,
+    authUser,
+    authScope: getAuthScope(session, authUser)
+  };
 }
 
 function knowledgeSourceTitleFromFile(fileName) {
@@ -583,8 +652,8 @@ async function seedPhase2AliasKnowledge({ force = false } = {}) {
   const domain = metadata.domain || 'giatochocao.site';
 
   const sourceUpsert = database.prepare(`
-    INSERT INTO knowledge_sources (id, slug, title, source_type, scope, clan_scope, system_scope, domain, content, source_hash, metadata_json, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    INSERT INTO knowledge_sources (id, slug, title, source_type, scope, clan_scope, system_scope, domain, content, source_hash, metadata_json, summary, tags_json, entity_refs_json, visibility, status, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(slug) DO UPDATE SET
       title = excluded.title,
       source_type = excluded.source_type,
@@ -595,17 +664,26 @@ async function seedPhase2AliasKnowledge({ force = false } = {}) {
       content = excluded.content,
       source_hash = excluded.source_hash,
       metadata_json = excluded.metadata_json,
+      summary = excluded.summary,
+      tags_json = excluded.tags_json,
+      entity_refs_json = excluded.entity_refs_json,
+      visibility = excluded.visibility,
+      status = excluded.status,
       updated_at = excluded.updated_at
   `);
   const chunkDelete = database.prepare('DELETE FROM knowledge_chunks WHERE source_id = ?');
   const chunkInsert = database.prepare(`
-    INSERT INTO knowledge_chunks (id, source_id, chunk_index, title, content, content_norm, metadata_json, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    INSERT INTO knowledge_chunks (id, source_id, chunk_index, title, content, content_norm, metadata_json, summary, tags_json, entity_refs_json, visibility, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(source_id, chunk_index) DO UPDATE SET
       title = excluded.title,
       content = excluded.content,
       content_norm = excluded.content_norm,
       metadata_json = excluded.metadata_json,
+      summary = excluded.summary,
+      tags_json = excluded.tags_json,
+      entity_refs_json = excluded.entity_refs_json,
+      visibility = excluded.visibility,
       updated_at = excluded.updated_at
   `);
   const aliasDelete = database.prepare("DELETE FROM entity_aliases WHERE json_extract(metadata_json, '$.seed_slug') = ?");
@@ -651,7 +729,12 @@ async function seedPhase2AliasKnowledge({ force = false } = {}) {
         domain,
         content,
         sha256Hex(content),
-        JSON.stringify(sourceMetadata)
+        JSON.stringify(sourceMetadata),
+        compactText(content, 320),
+        JSON.stringify(['alias', 'danh_xung', 'phase_2a']),
+        JSON.stringify(['Cao Đình Thuật', 'Cao Đình Lạng', 'Cao Văn Thuần']),
+        'public',
+        'indexed'
       );
       chunkDelete.run(sourceId);
       chunkKnowledgeText(content).forEach((chunk, index) => {
@@ -662,7 +745,11 @@ async function seedPhase2AliasKnowledge({ force = false } = {}) {
           knowledgeSourceTitleFromFile(fileName),
           chunk,
           normalizeKnowledgeText(chunk),
-          JSON.stringify({ ...sourceMetadata, chunk_index: index })
+          JSON.stringify({ ...sourceMetadata, chunk_index: index }),
+          compactText(chunk, 240),
+          JSON.stringify(['alias', 'danh_xung', 'phase_2a']),
+          JSON.stringify(['Cao Đình Thuật', 'Cao Đình Lạng', 'Cao Văn Thuần']),
+          'public'
         );
       });
     }
@@ -735,11 +822,13 @@ async function getKnowledgeStatus() {
   const sourceCount = database.prepare('SELECT COUNT(*) AS count FROM knowledge_sources').get();
   const chunkCount = database.prepare('SELECT COUNT(*) AS count FROM knowledge_chunks').get();
   const aliasCount = database.prepare('SELECT COUNT(*) AS count FROM entity_aliases').get();
+  const indexedCount = database.prepare("SELECT COUNT(*) AS count FROM knowledge_sources WHERE status = 'indexed'").get();
   return {
     ok: true,
     sources: Number(sourceCount?.count || 0),
     chunks: Number(chunkCount?.count || 0),
     aliases: Number(aliasCount?.count || 0),
+    indexedSources: Number(indexedCount?.count || 0),
     seed: PHASE2_ALIAS_SEED_SLUG
   };
 }
@@ -755,7 +844,50 @@ function scoreAliasMatch(queryNorm, aliasRow) {
   return words.reduce((score, word) => score + (aliasNorm.includes(word) ? 8 : 0), 0);
 }
 
-async function searchKnowledgeWithAliases(query, { limit = 6 } = {}) {
+function scoreKnowledgeChunk(queryNorm, terms, row) {
+  const titleNorm = normalizeKnowledgeText(row.title || row.source_title || '');
+  const summaryNorm = normalizeKnowledgeText(row.summary || '');
+  const contentNorm = String(row.content_norm || '');
+  const tags = safeJsonParse(row.tags_json, []);
+  const entityRefs = safeJsonParse(row.entity_refs_json, []);
+  const tagsNorm = normalizeKnowledgeText(tags.join(' '));
+  const entityNorm = normalizeKnowledgeText(entityRefs.join(' '));
+  const searchable = [titleNorm, summaryNorm, contentNorm].join(' ');
+  const matchedTerms = terms.filter((term) => searchable.includes(term) || tagsNorm.includes(term) || entityNorm.includes(term));
+  let score = 0;
+  const reasons = [];
+
+  if (queryNorm && (titleNorm.includes(queryNorm) || summaryNorm.includes(queryNorm) || contentNorm.includes(queryNorm))) {
+    score += 80;
+    reasons.push('exact_phrase');
+  }
+  if (terms.length && matchedTerms.length === terms.length) {
+    score += 42;
+    reasons.push('all_terms');
+  } else if (matchedTerms.length) {
+    score += matchedTerms.length * 10;
+    reasons.push('partial_terms');
+  }
+  const tagMatches = terms.filter((term) => tagsNorm.includes(term) || entityNorm.includes(term));
+  if (tagMatches.length) {
+    score += tagMatches.length * 18;
+    reasons.push('tag_entity_match');
+  }
+  if (titleNorm.includes(queryNorm) && queryNorm) {
+    score += 24;
+    reasons.push('title_match');
+  }
+
+  return {
+    score,
+    matchedTerms: [...new Set(matchedTerms)],
+    reason: [...new Set(reasons)].join(',') || 'term_match',
+    tags,
+    entityRefs
+  };
+}
+
+async function searchKnowledgeWithAliases(query, { limit = 8, authScope = 'admin' } = {}) {
   await ensurePhase2AliasKnowledgeSeeded();
   const database = await getDatabase();
   const variants = buildKnowledgeSearchVariants(query);
@@ -767,15 +899,33 @@ async function searchKnowledgeWithAliases(query, { limit = 6 } = {}) {
     .sort((a, b) => b.score - a.score || a.generation - b.generation)
     .slice(0, limit);
 
-  const chunkRows = database.prepare('SELECT kc.*, ks.title AS source_title FROM knowledge_chunks kc JOIN knowledge_sources ks ON ks.id = kc.source_id').all();
+  const chunkRows = database.prepare(`
+    SELECT
+      kc.*,
+      ks.title AS source_title,
+      ks.scope AS source_scope,
+      ks.system_scope AS source_system_scope,
+      ks.clan_scope AS source_clan_scope,
+      ks.domain AS source_domain,
+      ks.visibility AS source_visibility,
+      ks.tags_json AS source_tags_json,
+      ks.entity_refs_json AS source_entity_refs_json
+    FROM knowledge_chunks kc
+    JOIN knowledge_sources ks ON ks.id = kc.source_id
+  `).all();
   const queryWords = queryNorm.split(/[^a-z0-9]+/).filter((word) => word.length >= 3);
   const chunkMatches = chunkRows
-    .map((row) => ({
-      ...row,
-      score: queryWords.reduce((score, word) => score + (String(row.content_norm || '').includes(word) ? 1 : 0), 0)
-    }))
+    .filter((row) => canReadKnowledgeVisibility(row.visibility || row.source_visibility, authScope))
+    .map((row) => {
+      const score = scoreKnowledgeChunk(queryNorm, queryWords, {
+        ...row,
+        tags_json: row.tags_json || row.source_tags_json,
+        entity_refs_json: row.entity_refs_json || row.source_entity_refs_json
+      });
+      return { ...row, ...score };
+    })
     .filter((row) => row.score > 0)
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => b.score - a.score || a.chunk_index - b.chunk_index)
     .slice(0, limit);
 
   return {
@@ -857,15 +1007,196 @@ function formatKnowledgeContextForAI(searchResult) {
     ].filter(Boolean).join('; ');
     return `- Alias "${row.alias}" -> ${row.canonical_name}${flags ? ` (${flags})` : ''}`;
   });
-  const chunkLines = (searchResult.chunks || []).slice(0, 3).map((row) => (
+  const chunkLines = (searchResult.chunks || []).slice(0, AI_GATEWAY_KNOWLEDGE_TOP_K).map((row) => (
     `- ${row.source_title}: ${compactText(row.content, 520)}`
   ));
   if (!aliasLines.length && !chunkLines.length) return '';
-  return [
+  return compactText([
     'Ngu canh kho tri thuc local Phase 2A:',
     ...aliasLines,
     ...chunkLines
+  ].join('\n'), AI_GATEWAY_MAX_KNOWLEDGE_CHARS);
+}
+
+function buildKnowledgeChunkLocalAnswer(searchResult) {
+  const chunks = (searchResult?.chunks || []).slice(0, 3);
+  if (!chunks.length) return '';
+  const lines = chunks.map((row, index) => {
+    const title = row.source_title || row.title || `chunk ${index + 1}`;
+    return `- ${title}: ${compactText(row.content, 420)}`;
+  });
+  return [
+    'Theo kho tri thức local, tôi tìm thấy các đoạn liên quan sau:',
+    ...lines,
+    'Khi dùng nội dung này để viết diễn giải, phần nào chưa được tài liệu xác minh rõ cần đánh dấu để admin kiểm chứng.'
   ].join('\n');
+}
+
+function publicKnowledgeResult(row, query = '') {
+  return {
+    sourceId: row.source_id,
+    chunkId: row.id,
+    title: row.title || row.source_title || '',
+    snippet: getSnippet(row.content, normalizeKnowledgeText(query), 300),
+    score: row.score,
+    tags: row.tags || safeJsonParse(row.tags_json || row.source_tags_json, []),
+    entityRefs: row.entityRefs || safeJsonParse(row.entity_refs_json || row.source_entity_refs_json, []),
+    sourceScope: row.source_scope || '',
+    systemScope: row.source_system_scope || '',
+    visibility: row.visibility || row.source_visibility || 'public',
+    reason: row.reason || '',
+    matchedTerms: row.matchedTerms || []
+  };
+}
+
+function publicKnowledgeSource(row) {
+  return {
+    id: row.id,
+    slug: row.slug,
+    title: row.title,
+    sourceType: row.source_type,
+    scope: row.scope,
+    clanScope: row.clan_scope,
+    systemScope: row.system_scope,
+    domain: row.domain,
+    summary: row.summary,
+    tags: safeJsonParse(row.tags_json, []),
+    entityRefs: safeJsonParse(row.entity_refs_json, []),
+    visibility: row.visibility,
+    status: row.status,
+    updatedAt: row.updated_at
+  };
+}
+
+async function listKnowledgeSources({ authScope = 'admin', limit = 80 } = {}) {
+  await ensurePhase2AliasKnowledgeSeeded();
+  const database = await getDatabase();
+  return database
+    .prepare('SELECT * FROM knowledge_sources ORDER BY updated_at DESC LIMIT ?')
+    .all(limit)
+    .filter((row) => canReadKnowledgeVisibility(row.visibility, authScope))
+    .map(publicKnowledgeSource);
+}
+
+async function createKnowledgeSource(payload = {}, authUser = null) {
+  const title = String(payload.title || '').trim();
+  const content = String(payload.content || '').trim();
+  if (!title || !content) {
+    const err = new Error('Knowledge source title and content are required.');
+    err.status = 400;
+    throw err;
+  }
+
+  const database = await getDatabase();
+  const visibility = normalizeVisibility(payload.visibility || payload.scope || 'admin', 'admin');
+  const tags = normalizeStringArray(payload.tags);
+  const entityRefs = normalizeStringArray(payload.entityRefs || payload.entity_refs);
+  const sourceType = normalizeGatewayText(payload.type || payload.sourceType || 'manual_upload') || 'manual_upload';
+  const scope = String(payload.scope || 'dashboard_knowledge').trim();
+  const systemScope = String(payload.systemScope || payload.system_scope || 'ho_cao_giatochocao').trim();
+  const clanScope = String(payload.clanScope || payload.clan_scope || 'cao_toc_phu_my').trim();
+  const domain = String(payload.domain || 'giatochocao.site').trim();
+  const slug = String(payload.slug || `${sourceType}-${sha256Base64Url(`${title}:${Date.now()}:${randomToken(6)}`).slice(0, 18)}`).trim();
+  const sourceId = buildSourceId(slug);
+  const summary = String(payload.summary || compactText(content, 320)).trim();
+  const metadata = {
+    imported_by: authUser?.username || authUser?.email || authUser?.id || 'admin',
+    imported_at: new Date().toISOString(),
+    source: 'dashboard'
+  };
+
+  const sourceInsert = database.prepare(`
+    INSERT INTO knowledge_sources (id, slug, title, source_type, scope, clan_scope, system_scope, domain, content, source_hash, metadata_json, summary, tags_json, entity_refs_json, visibility, status, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'indexed', datetime('now'))
+    ON CONFLICT(slug) DO UPDATE SET
+      title = excluded.title,
+      source_type = excluded.source_type,
+      scope = excluded.scope,
+      clan_scope = excluded.clan_scope,
+      system_scope = excluded.system_scope,
+      domain = excluded.domain,
+      content = excluded.content,
+      source_hash = excluded.source_hash,
+      metadata_json = excluded.metadata_json,
+      summary = excluded.summary,
+      tags_json = excluded.tags_json,
+      entity_refs_json = excluded.entity_refs_json,
+      visibility = excluded.visibility,
+      status = excluded.status,
+      updated_at = excluded.updated_at
+  `);
+  const chunkDelete = database.prepare('DELETE FROM knowledge_chunks WHERE source_id = ?');
+  const chunkInsert = database.prepare(`
+    INSERT INTO knowledge_chunks (id, source_id, chunk_index, title, content, content_norm, metadata_json, summary, tags_json, entity_refs_json, visibility, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(source_id, chunk_index) DO UPDATE SET
+      title = excluded.title,
+      content = excluded.content,
+      content_norm = excluded.content_norm,
+      metadata_json = excluded.metadata_json,
+      summary = excluded.summary,
+      tags_json = excluded.tags_json,
+      entity_refs_json = excluded.entity_refs_json,
+      visibility = excluded.visibility,
+      updated_at = excluded.updated_at
+  `);
+
+  database.exec('BEGIN');
+  try {
+    sourceInsert.run(
+      sourceId,
+      slug,
+      title,
+      sourceType,
+      scope,
+      clanScope,
+      systemScope,
+      domain,
+      content,
+      sha256Hex(content),
+      JSON.stringify(metadata),
+      summary,
+      JSON.stringify(tags),
+      JSON.stringify(entityRefs),
+      visibility
+    );
+    chunkDelete.run(sourceId);
+    chunkKnowledgeText(content).forEach((chunk, index) => {
+      chunkInsert.run(
+        buildChunkId(sourceId, index),
+        sourceId,
+        index,
+        title,
+        chunk,
+        normalizeKnowledgeText([title, summary, tags.join(' '), entityRefs.join(' '), chunk].join('\n')),
+        JSON.stringify({ source: 'dashboard', chunk_index: index }),
+        compactText(chunk, 240),
+        JSON.stringify(tags),
+        JSON.stringify(entityRefs),
+        visibility
+      );
+    });
+    database.exec('COMMIT');
+  } catch (err) {
+    database.exec('ROLLBACK');
+    throw err;
+  }
+
+  const row = database.prepare('SELECT * FROM knowledge_sources WHERE id = ?').get(sourceId);
+  return publicKnowledgeSource(row);
+}
+
+async function deleteKnowledgeSource(sourceId) {
+  const database = await getDatabase();
+  database.exec('BEGIN');
+  try {
+    database.prepare('DELETE FROM knowledge_chunks WHERE source_id = ?').run(sourceId);
+    database.prepare('DELETE FROM knowledge_sources WHERE id = ?').run(sourceId);
+    database.exec('COMMIT');
+  } catch (err) {
+    database.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 app.get('/api/health', (_req, res) => {
@@ -973,14 +1304,73 @@ app.get('/api/knowledge/search', async (req, res) => {
     return;
   }
   try {
-    const result = await searchKnowledgeWithAliases(query);
+    const limit = Math.max(1, Math.min(20, Number(req.query.limit || 8) || 8));
+    const { authScope } = await getRequestAuthContext(req);
+    const result = await searchKnowledgeWithAliases(query, { limit, authScope });
     res.json({
-      ...result,
+      query: result.query,
+      variants: result.variants,
+      aliases: result.aliases.slice(0, limit).map((row) => ({
+        canonicalName: row.canonical_name,
+        alias: row.alias,
+        requiredTitle: row.required_title,
+        generation: row.generation,
+        score: row.score,
+        exampleOnly: Boolean(row.example_only),
+        needsVerification: Boolean(row.needs_verification)
+      })),
+      chunks: result.chunks.map((row) => publicKnowledgeResult(row, query)),
       localAnswer: buildAliasLookupAnswer(result)
     });
   } catch (err) {
     console.error('Failed to search knowledge:', err);
     res.status(500).json({ error: 'Failed to search knowledge.' });
+  }
+});
+
+app.get('/api/knowledge/sources', async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(200, Number(req.query.limit || 80) || 80));
+    const { authScope } = await getRequestAuthContext(req);
+    res.json({ sources: await listKnowledgeSources({ authScope, limit }) });
+  } catch (err) {
+    console.error('Failed to list knowledge sources:', err);
+    res.status(500).json({ error: 'Failed to list knowledge sources.' });
+  }
+});
+
+app.post('/api/knowledge/sources', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const source = await createKnowledgeSource(req.body || {}, admin.authUser);
+    res.json({ ok: true, source });
+  } catch (err) {
+    console.error('Failed to create knowledge source:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to create knowledge source.' });
+  }
+});
+
+app.delete('/api/knowledge/sources/:id', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const sourceId = String(req.params.id || '').trim();
+    const database = await getDatabase();
+    const row = database.prepare('SELECT id, slug FROM knowledge_sources WHERE id = ?').get(sourceId);
+    if (!row) {
+      res.status(404).json({ error: 'Knowledge source not found.' });
+      return;
+    }
+    if (row.slug === PHASE2_ALIAS_SEED_SLUG) {
+      res.status(400).json({ error: 'Phase 2A seed source cannot be deleted from the dashboard.' });
+      return;
+    }
+    await deleteKnowledgeSource(sourceId);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Failed to delete knowledge source:', err);
+    res.status(500).json({ error: 'Failed to delete knowledge source.' });
   }
 });
 
@@ -1292,6 +1682,8 @@ const MAX_GEMINI_INPUT_CHARS = Number(process.env.GEMINI_MAX_INPUT_CHARS || 1200
 const AI_GATEWAY_CACHE_TTL_MS = Number(process.env.AI_GATEWAY_CACHE_TTL_MS || 5 * 60 * 1000);
 const AI_GATEWAY_CACHE_MAX = Number(process.env.AI_GATEWAY_CACHE_MAX || 80);
 const AI_GATEWAY_RETRY_429 = Number(process.env.AI_GATEWAY_RETRY_429 || 1);
+const AI_GATEWAY_KNOWLEDGE_TOP_K = Number(process.env.AI_GATEWAY_KNOWLEDGE_TOP_K || 6);
+const AI_GATEWAY_MAX_KNOWLEDGE_CHARS = Number(process.env.AI_GATEWAY_MAX_KNOWLEDGE_CHARS || 3200);
 const aiGatewayCache = new Map();
 const DASHBOARD_AI_CONTEXT_TYPES = new Set([
   'chat',
@@ -1791,7 +2183,7 @@ async function buildDashboardAIContext(req, message, queryText) {
   const knowledgeDocs = await readState('dashboard-knowledge') || [];
   const dashboardEvents = await readState('dashboard-events') || [];
   const dashboardAi = await readState('dashboard-ai') || {};
-  const providedDocs = Array.isArray(req.body?.documents) ? req.body.documents : [];
+  const providedDocs = [];
   const intent = normalizeGatewayText(req.body?.intent || req.body?.type || 'chat') || 'chat';
 
   const scoredMembers = findRelevantMembers(query, members, 10);
@@ -1976,10 +2368,21 @@ async function handleAIGatewayRequest(req, res) {
   const userQuery = String(req.body?.prompt || message).trim();
   let requestContext = normalizeAIGatewayContext(req.body || {}, routeName);
   const requestType = requestContext.type;
+  let gatewayKnowledgeResult = null;
+  try {
+    const authContext = await getRequestAuthContext(req);
+    requestContext = { ...requestContext, authScope: authContext.authScope || 'anonymous' };
+  } catch (err) {
+    console.warn('Failed to read AI gateway auth context:', err?.message || err);
+    requestContext = { ...requestContext, authScope: 'anonymous' };
+  }
 
   try {
     const requiredAliasAnswer = buildRequiredAliasAnswer(userQuery || message);
-    const initialKnowledge = await searchKnowledgeWithAliases(userQuery || message);
+    const initialKnowledge = await searchKnowledgeWithAliases(userQuery || message, {
+      limit: AI_GATEWAY_KNOWLEDGE_TOP_K,
+      authScope: requestContext.authScope || 'anonymous'
+    });
     const initialKnowledgeAnswer = requiredAliasAnswer || buildAliasLookupAnswer(initialKnowledge);
     if (initialKnowledgeAnswer) {
       const knowledgeResponse = {
@@ -1989,6 +2392,8 @@ async function handleAIGatewayRequest(req, res) {
         botType: requestContext.botType,
         intent: requestContext.intent,
         text: initialKnowledgeAnswer,
+        knowledgeMatchesCount: initialKnowledge.chunks.length,
+        knowledgeSourceIds: [...new Set(initialKnowledge.chunks.map((row) => row.source_id))],
         knowledge: {
           aliases: initialKnowledge.aliases.slice(0, 4).map((row) => ({
             canonicalName: row.canonical_name,
@@ -2087,7 +2492,11 @@ async function handleAIGatewayRequest(req, res) {
   }
 
   try {
-    const localKnowledge = await searchKnowledgeWithAliases(userQuery || message);
+    const localKnowledge = await searchKnowledgeWithAliases(userQuery || message, {
+      limit: AI_GATEWAY_KNOWLEDGE_TOP_K,
+      authScope: requestContext.authScope || 'anonymous'
+    });
+    gatewayKnowledgeResult = localKnowledge;
     const localKnowledgeAnswer = buildAliasLookupAnswer(localKnowledge);
     if (localKnowledgeAnswer) {
       const knowledgeResponse = {
@@ -2097,6 +2506,8 @@ async function handleAIGatewayRequest(req, res) {
         botType: requestContext.botType,
         intent: requestContext.intent,
         text: localKnowledgeAnswer,
+        knowledgeMatchesCount: localKnowledge.chunks.length,
+        knowledgeSourceIds: [...new Set(localKnowledge.chunks.map((row) => row.source_id))],
         knowledge: {
           aliases: localKnowledge.aliases.slice(0, 4).map((row) => ({
             canonicalName: row.canonical_name,
@@ -2139,7 +2550,8 @@ async function handleAIGatewayRequest(req, res) {
         ...requestContext,
         localKnowledgeMatches: {
           aliasCount: localKnowledge.aliases.length,
-          chunkCount: localKnowledge.chunks.length
+          chunkCount: localKnowledge.chunks.length,
+          sourceIds: [...new Set(localKnowledge.chunks.map((row) => row.source_id))]
         }
       };
     }
@@ -2173,13 +2585,16 @@ async function handleAIGatewayRequest(req, res) {
 
   const requestedEngine = String(requestContext?.engine || '').trim().toLowerCase();
   if (requestedEngine === 'local') {
+    const localKnowledgeAnswer = buildKnowledgeChunkLocalAnswer(gatewayKnowledgeResult);
     const localResponse = {
       model: 'local',
       provider: 'local',
       engine: 'local',
       botType: requestContext.botType,
       intent: requestContext.intent,
-      text: buildLocalAIResponse({ ...req, body: requestContext }, message)
+      text: localKnowledgeAnswer || buildLocalAIResponse({ ...req, body: requestContext }, message),
+      knowledgeMatchesCount: requestContext.localKnowledgeMatches?.chunkCount || 0,
+      knowledgeSourceIds: requestContext.localKnowledgeMatches?.sourceIds || []
     };
     setAIGatewayCachedResponse(cacheKey, localResponse);
     logAIGatewayRequest({
@@ -2236,7 +2651,9 @@ async function handleAIGatewayRequest(req, res) {
     const responsePayload = {
       ...gatewayResponse,
       botType: requestContext.botType,
-      intent: requestContext.intent
+      intent: requestContext.intent,
+      knowledgeMatchesCount: requestContext.localKnowledgeMatches?.chunkCount || 0,
+      knowledgeSourceIds: requestContext.localKnowledgeMatches?.sourceIds || []
     };
     setAIGatewayCachedResponse(cacheKey, responsePayload);
     logAIGatewayRequest({

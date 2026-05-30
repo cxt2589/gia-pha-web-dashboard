@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Bot,
@@ -15,6 +15,8 @@ import {
   Send,
   Settings,
   Sparkles,
+  Search,
+  Trash2,
   UploadCloud,
   Wand2,
   Zap
@@ -64,6 +66,39 @@ type WebviewSuggestion = {
 const KNOWLEDGE_CATEGORY: KnowledgeBaseDocument["category"] = "Gia phả học";
 const DRAFT_CATEGORY: WebArticle["category"] = "Tin tức họ tộc";
 const DRAFT_STATUS: WebArticle["status"] = "Bản nháp";
+
+type KnowledgeStatus = {
+  ok?: boolean;
+  sources: number;
+  chunks: number;
+  aliases: number;
+  indexedSources?: number;
+};
+
+type KnowledgeSourceSummary = {
+  id: string;
+  title: string;
+  sourceType?: string;
+  visibility?: string;
+  status?: string;
+  updatedAt?: string;
+  tags?: string[];
+  entityRefs?: string[];
+  summary?: string;
+};
+
+type KnowledgeSearchResult = {
+  sourceId: string;
+  chunkId: string;
+  title: string;
+  snippet: string;
+  score: number;
+  tags?: string[];
+  entityRefs?: string[];
+  visibility?: string;
+  reason?: string;
+  matchedTerms?: string[];
+};
 
 const DEFAULT_ZALO_RULES: ZaloAutoReply[] = [
   {
@@ -199,6 +234,13 @@ export default function AIGovernor({
       status: "pending"
     }
   ]);
+  const [knowledgeStatus, setKnowledgeStatus] = useState<KnowledgeStatus | null>(null);
+  const [backendSources, setBackendSources] = useState<KnowledgeSourceSummary[]>([]);
+  const [knowledgeSearchQuery, setKnowledgeSearchQuery] = useState("Cao Tổ");
+  const [knowledgeSearchResults, setKnowledgeSearchResults] = useState<KnowledgeSearchResult[]>([]);
+  const [isKnowledgeLoading, setIsKnowledgeLoading] = useState(false);
+  const [isKnowledgeSearching, setIsKnowledgeSearching] = useState(false);
+  const [knowledgeApiNote, setKnowledgeApiNote] = useState("");
 
   const auditItems = useMemo<AuditItem[]>(() => {
     const items: AuditItem[] = [];
@@ -345,6 +387,64 @@ export default function AIGovernor({
     return String(data.text || "").trim();
   };
 
+  const loadKnowledgeBackend = async () => {
+    setIsKnowledgeLoading(true);
+    try {
+      const [statusResponse, sourcesResponse] = await Promise.all([
+        fetch("/api/knowledge/status"),
+        fetch("/api/knowledge/sources?limit=80")
+      ]);
+      if (statusResponse.ok) {
+        const data = await statusResponse.json();
+        setKnowledgeStatus(data);
+      }
+      if (sourcesResponse.ok) {
+        const data = await sourcesResponse.json();
+        setBackendSources(Array.isArray(data.sources) ? data.sources : []);
+      }
+      if (!statusResponse.ok || !sourcesResponse.ok) {
+        setKnowledgeApiNote("Chưa đọc được đầy đủ trạng thái kho tri thức backend.");
+      }
+    } catch (err: any) {
+      setKnowledgeApiNote(`Không đọc được kho tri thức backend: ${err?.message || "lỗi không xác định"}`);
+    } finally {
+      setIsKnowledgeLoading(false);
+    }
+  };
+
+  const handleKnowledgeSearch = async () => {
+    const query = knowledgeSearchQuery.trim();
+    if (!query) return;
+    setIsKnowledgeSearching(true);
+    try {
+      const response = await fetch(`/api/knowledge/search?q=${encodeURIComponent(query)}&limit=8`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không tìm được kho tri thức.");
+      setKnowledgeSearchResults(Array.isArray(data.chunks) ? data.chunks : []);
+      setKnowledgeApiNote(data.localAnswer ? `Alias: ${data.localAnswer}` : "");
+    } catch (err: any) {
+      setKnowledgeSearchResults([]);
+      setKnowledgeApiNote(`Lỗi tìm kiếm kho tri thức: ${err?.message || "không xác định"}`);
+    } finally {
+      setIsKnowledgeSearching(false);
+    }
+  };
+
+  const deleteBackendSource = async (sourceId: string) => {
+    const response = await fetch(`/api/knowledge/sources/${encodeURIComponent(sourceId)}`, { method: "DELETE" });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setKnowledgeApiNote(data.error || "Không xóa được nguồn tri thức.");
+      return;
+    }
+    setKnowledgeApiNote("Đã xóa nguồn tri thức khỏi backend.");
+    await loadKnowledgeBackend();
+  };
+
+  useEffect(() => {
+    void loadKnowledgeBackend();
+  }, []);
+
   const handleScanWholeSystem = async () => {
     setIsScanningSystem(true);
     setSystemScanReport("");
@@ -407,20 +507,40 @@ export default function AIGovernor({
     if (!files.length) return;
 
     const importedDocs: KnowledgeBaseDocument[] = [];
+    let backendImported = 0;
     for (const file of files) {
       const text = await file.text();
+      const title = file.name.replace(/\.[^.]+$/, "");
       importedDocs.push({
         id: `ai_doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        title: file.name.replace(/\.[^.]+$/, ""),
+        title,
         category: KNOWLEDGE_CATEGORY,
         content: text,
         contributor: "AI Tổng Quản",
         lastUpdated: new Date().toLocaleDateString("vi-VN")
       });
+      try {
+        const response = await fetch("/api/knowledge/sources", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title,
+            content: text,
+            type: "dashboard_upload",
+            scope: "dashboard_knowledge",
+            visibility: "admin",
+            tags: ["dashboard_upload", "ai_governor"]
+          })
+        });
+        if (response.ok) backendImported += 1;
+      } catch {
+        // Local dashboard cache remains as a fallback if backend import is unavailable.
+      }
     }
 
     onKnowledgeDocsChange([...importedDocs, ...knowledgeDocs]);
-    setUploadNote(`Đã nạp ${importedDocs.length} tệp dữ liệu vào kho tri thức AI. Các module Trợ lý, Bài viết và Zalo sẽ nhận cùng kho này.`);
+    await loadKnowledgeBackend();
+    setUploadNote(`Da nap ${backendImported}/${importedDocs.length} tep vao kho tri thuc backend. Ban localStorage van duoc giu de tuong thich dashboard cu.`);
     event.target.value = "";
   };
 
@@ -744,6 +864,94 @@ export default function AIGovernor({
             <div className="mb-4 flex items-center justify-between gap-3">
               <h3 className="font-serif text-lg font-bold text-red-950">Tài liệu AI đang dùng</h3>
               <span className="rounded-full bg-stone-100 px-3 py-1 text-xs font-bold text-stone-500">{knowledgeDocs.length} tài liệu</span>
+            </div>
+            <div className="mb-4 rounded-lg border border-stone-200 bg-[#fbfaf6] p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <h4 className="flex items-center gap-2 font-bold text-stone-850">
+                    <Database className="h-4 w-4 text-amber-700" />
+                    Kho tri thức local backend
+                  </h4>
+                  <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-bold text-stone-600">
+                    <span className="rounded bg-white px-2 py-1">Sources: {knowledgeStatus?.sources ?? "-"}</span>
+                    <span className="rounded bg-white px-2 py-1">Chunks: {knowledgeStatus?.chunks ?? "-"}</span>
+                    <span className="rounded bg-white px-2 py-1">Aliases: {knowledgeStatus?.aliases ?? "-"}</span>
+                    <span className="rounded bg-white px-2 py-1">Indexed: {knowledgeStatus?.indexedSources ?? "-"}</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadKnowledgeBackend()}
+                  disabled={isKnowledgeLoading}
+                  className="inline-flex items-center justify-center gap-2 rounded border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-60"
+                >
+                  <RefreshCw className={`h-4 w-4 ${isKnowledgeLoading ? "animate-spin" : ""}`} />
+                  Đồng bộ
+                </button>
+              </div>
+
+              <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                <input
+                  value={knowledgeSearchQuery}
+                  onChange={(event) => setKnowledgeSearchQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void handleKnowledgeSearch();
+                  }}
+                  className="min-w-0 flex-1 rounded border border-stone-200 bg-white px-3 py-2 text-sm outline-none focus:border-amber-500"
+                  placeholder="Thử tìm: Cao Tổ, Thủy Tổ, Hán Nôm, Thuần..."
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleKnowledgeSearch()}
+                  disabled={isKnowledgeSearching}
+                  className="inline-flex items-center justify-center gap-2 rounded bg-red-900 px-3 py-2 text-xs font-bold text-white hover:bg-red-950 disabled:opacity-60"
+                >
+                  {isKnowledgeSearching ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                  Tìm
+                </button>
+              </div>
+              {knowledgeApiNote && <p className="mt-2 whitespace-pre-wrap rounded bg-white p-2 text-[11px] leading-relaxed text-stone-600">{truncateText(knowledgeApiNote, 420)}</p>}
+              {knowledgeSearchResults.length > 0 && (
+                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                  {knowledgeSearchResults.map((result) => (
+                    <article key={result.chunkId} className="rounded border border-stone-200 bg-white p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <h5 className="font-bold text-stone-850">{result.title}</h5>
+                        <span className="rounded bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">{Math.round(result.score)}</span>
+                      </div>
+                      <p className="mt-1 text-xs leading-relaxed text-stone-600">{result.snippet}</p>
+                      <p className="mt-2 text-[10px] font-semibold text-stone-400">{result.reason || "matched"} · {result.visibility || "public"}</p>
+                    </article>
+                  ))}
+                </div>
+              )}
+
+              <div className="mt-4 max-h-[220px] space-y-2 overflow-y-auto pr-1">
+                {backendSources.slice(0, 12).map((source) => (
+                  <article key={source.id} className="flex items-start justify-between gap-3 rounded border border-stone-200 bg-white p-3">
+                    <div className="min-w-0">
+                      <h5 className="truncate font-bold text-stone-850">{source.title}</h5>
+                      <p className="mt-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+                        {source.sourceType || "source"} · {source.visibility || "admin"} · {source.status || "indexed"}
+                      </p>
+                      {source.summary && <p className="mt-1 text-xs text-stone-500">{truncateText(source.summary, 150)}</p>}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void deleteBackendSource(source.id)}
+                      className="shrink-0 rounded border border-stone-200 p-1.5 text-stone-500 hover:border-red-200 hover:text-red-800"
+                      title="Xóa source backend"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </article>
+                ))}
+                {!backendSources.length && (
+                  <p className="rounded border border-dashed border-stone-200 bg-white p-3 text-xs text-stone-500">
+                    Chưa đọc được danh sách source backend hoặc kho tri thức chưa có tài liệu upload thêm.
+                  </p>
+                )}
+              </div>
             </div>
             {templateText && (
               <pre className="mb-4 max-h-[260px] overflow-y-auto whitespace-pre-wrap rounded-lg border border-amber-200 bg-amber-50/40 p-4 text-xs leading-relaxed text-stone-800">
