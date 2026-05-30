@@ -1,10 +1,10 @@
 # Phase 2E AI Quality Report
 
-Generated at: 2026-05-30T21:35:10.890Z
+Generated at: 2026-05-30T22:03:39.536Z
 
 ## Summary
 
-- Base URL: http://127.0.0.1:5196
+- Base URL: http://127.0.0.1:5197
 - Commit target: a945e95 or newer
 - Total cases: 14
 - Passed: 14
@@ -116,7 +116,7 @@ Top search sources:
 
 Question: ngày giỗ Cao Văn Mới là ngày nào?
 
-Answer: Theo candidate trích xuất từ Cao Tộc Phả file 04, tôi tìm thấy: - Cao Văn Mới: ngày giỗ/ngày tạ thế âm lịch: Ngày mùng 10 tháng Bảy; ngày mất/tạ thế: Ngày mùng 10 tháng Bảy, năm Âm lịch; ngày/năm sinh: Giáp Dần – 1874; quê quán: thôn Giáp Ba, xã Quỹ Đê, huyện Trực Ninh, tỉnh Nam Định; mộ chí: [Trang 34] Mộ chí của ông bà: [Trang 34] Phần mộ của ông và các bà đều đã được quy tụ về Lăng Cao Tổ họ Cao ở cánh đồng Hạ Quan xã Trực Hưng, huyện Trực Ninh chu đáo.; chưa khớp chắc với cây phả. Nguồn: Cao Tộc Phả - Ngày sinh
+Answer: Theo candidate trích xuất từ Cao Tộc Phả file 04, tôi tìm thấy: - Cao Văn Mới: ngày giỗ/ngày tạ thế âm lịch: Ngày mùng 10 tháng Bảy; ngày mất/tạ thế: Ngày mùng 10 tháng Bảy, năm Âm lịch; ngày/năm sinh: Giáp Dần – 1874; quê quán: thôn Giáp Ba, xã Quỹ Đê, huyện Trực Ninh, tỉnh Nam Định; mộ chí: [Trang 34] Mộ chí của ông bà: [Trang 34] Phần mộ của ông và các bà đều đã được quy tụ về Lăng Cao Tổ họ Cao ở cánh đồng Hạ Quan xã Trực Hưng, huyện Trực Ninh chu đáo.; chưa khớp chắc với cây phả. Trạng thái: candidate trích xu
 
 Top search sources:
 - Cao Tộc Phả - Lịch sử, nguồn gốc, mốc thời gian, địa danh (source_9fI2EDwePIm8SPZEPnjyQeoU, score 132)
@@ -128,7 +128,7 @@ Top search sources:
 
 Question: mộ chí Cao Văn Mới ở đâu?
 
-Answer: Theo candidate trích xuất từ Cao Tộc Phả file 04, tôi tìm thấy: - Cao Văn Mới: ngày giỗ/ngày tạ thế âm lịch: Ngày mùng 10 tháng Bảy; ngày mất/tạ thế: Ngày mùng 10 tháng Bảy, năm Âm lịch; ngày/năm sinh: Giáp Dần – 1874; quê quán: thôn Giáp Ba, xã Quỹ Đê, huyện Trực Ninh, tỉnh Nam Định; mộ chí: [Trang 34] Mộ chí của ông bà: [Trang 34] Phần mộ của ông và các bà đều đã được quy tụ về Lăng Cao Tổ họ Cao ở cánh đồng Hạ Quan xã Trực Hưng, huyện Trực Ninh chu đáo.; chưa khớp chắc với cây phả. Nguồn: Cao Tộc Phả - Ngày sinh
+Answer: Theo candidate trích xuất từ Cao Tộc Phả file 04, tôi tìm thấy: - Cao Văn Mới: ngày giỗ/ngày tạ thế âm lịch: Ngày mùng 10 tháng Bảy; ngày mất/tạ thế: Ngày mùng 10 tháng Bảy, năm Âm lịch; ngày/năm sinh: Giáp Dần – 1874; quê quán: thôn Giáp Ba, xã Quỹ Đê, huyện Trực Ninh, tỉnh Nam Định; mộ chí: [Trang 34] Mộ chí của ông bà: [Trang 34] Phần mộ của ông và các bà đều đã được quy tụ về Lăng Cao Tổ họ Cao ở cánh đồng Hạ Quan xã Trực Hưng, huyện Trực Ninh chu đáo.; chưa khớp chắc với cây phả. Trạng thái: candidate trích xu
 
 Top search sources:
 - Cao Tộc Phả - Phả hệ và danh sách nhân vật theo đời (source_WYYX50YpozEH5CdTace2dGi1, score 96)
@@ -140,7 +140,7 @@ Top search sources:
 
 Question: quê quán Cao Văn Mới ở đâu?
 
-Answer: Theo candidate trích xuất từ Cao Tộc Phả file 04, tôi tìm thấy: - Cao Văn Mới: ngày giỗ/ngày tạ thế âm lịch: Ngày mùng 10 tháng Bảy; ngày mất/tạ thế: Ngày mùng 10 tháng Bảy, năm Âm lịch; ngày/năm sinh: Giáp Dần – 1874; quê quán: thôn Giáp Ba, xã Quỹ Đê, huyện Trực Ninh, tỉnh Nam Định; mộ chí: [Trang 34] Mộ chí của ông bà: [Trang 34] Phần mộ của ông và các bà đều đã được quy tụ về Lăng Cao Tổ họ Cao ở cánh đồng Hạ Quan xã Trực Hưng, huyện Trực Ninh chu đáo.; chưa khớp chắc với cây phả. Nguồn: Cao Tộc Phả - Ngày sinh
+Answer: Theo candidate trích xuất từ Cao Tộc Phả file 04, tôi tìm thấy: - Cao Văn Mới: ngày giỗ/ngày tạ thế âm lịch: Ngày mùng 10 tháng Bảy; ngày mất/tạ thế: Ngày mùng 10 tháng Bảy, năm Âm lịch; ngày/năm sinh: Giáp Dần – 1874; quê quán: thôn Giáp Ba, xã Quỹ Đê, huyện Trực Ninh, tỉnh Nam Định; mộ chí: [Trang 34] Mộ chí của ông bà: [Trang 34] Phần mộ của ông và các bà đều đã được quy tụ về Lăng Cao Tổ họ Cao ở cánh đồng Hạ Quan xã Trực Hưng, huyện Trực Ninh chu đáo.; chưa khớp chắc với cây phả. Trạng thái: candidate trích xu
 
 Top search sources:
 - Cao Tộc Phả - Phả hệ và danh sách nhân vật theo đời (source_WYYX50YpozEH5CdTace2dGi1, score 114)

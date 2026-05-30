@@ -151,6 +151,31 @@ type AIEvalResult = {
   knowledgeSourceIds: string[];
 };
 
+type ExtractedAnniversaryField = {
+  type: string;
+  label: string;
+  value: string;
+  reviewedValue?: string;
+  effectiveValue?: string;
+};
+
+type ExtractedAnniversaryCandidate = {
+  id: string;
+  sourceId: string;
+  chunkId: string;
+  personName: string;
+  generation?: string;
+  branch?: string;
+  sourceQuote?: string;
+  headingPath?: string;
+  matchedMemberId?: string;
+  matchedMemberName?: string;
+  matchConfidence?: string;
+  status: "pending" | "approved" | "rejected" | "applied";
+  fields: ExtractedAnniversaryField[];
+  updatedAt?: string;
+};
+
 const DEFAULT_ZALO_RULES: ZaloAutoReply[] = [
   {
     id: "r1",
@@ -300,6 +325,16 @@ export default function AIGovernor({
   const [aiEvalResults, setAiEvalResults] = useState<AIEvalResult[]>([]);
   const [isAiEvalRunning, setIsAiEvalRunning] = useState(false);
   const [aiEvalNote, setAiEvalNote] = useState("");
+  const [extractedCandidates, setExtractedCandidates] = useState<ExtractedAnniversaryCandidate[]>([]);
+  const [isExtractedLoading, setIsExtractedLoading] = useState(false);
+  const [extractedNote, setExtractedNote] = useState("");
+  const [extractedStatusFilter, setExtractedStatusFilter] = useState("pending");
+  const [extractedTypeFilter, setExtractedTypeFilter] = useState("");
+  const [extractedNameFilter, setExtractedNameFilter] = useState("");
+  const [editingCandidateId, setEditingCandidateId] = useState("");
+  const [editingFieldType, setEditingFieldType] = useState("");
+  const [editingValue, setEditingValue] = useState("");
+  const [editingMemberId, setEditingMemberId] = useState("");
 
   const auditItems = useMemo<AuditItem[]>(() => {
     const items: AuditItem[] = [];
@@ -357,6 +392,15 @@ export default function AIGovernor({
 
     return items;
   }, [articles, events, members]);
+
+  const memberOptions = useMemo(() => (
+    members
+      .map((member) => ({
+        id: member.id,
+        label: `${member.name} - đời ${member.generation}${member.branch ? ` - ${member.branch}` : ""}`
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label, "vi"))
+  ), [members]);
 
   const systemCoverage = useMemo(() => {
     const treasuryTotal = transactions.reduce((sum, tx) => sum + (tx.type === "Thu" ? tx.amount : -tx.amount), 0);
@@ -471,6 +515,101 @@ export default function AIGovernor({
     }
   };
 
+  const loadExtractedCandidates = async () => {
+    setIsExtractedLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("limit", "160");
+      if (extractedNameFilter.trim()) params.set("q", extractedNameFilter.trim());
+      if (extractedStatusFilter) params.set("status", extractedStatusFilter);
+      if (extractedTypeFilter) params.set("type", extractedTypeFilter);
+      const response = await fetch(`/api/knowledge/extracted-anniversaries?${params.toString()}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không đọc được dữ liệu trích xuất.");
+      setExtractedCandidates(Array.isArray(data.candidates) ? data.candidates : []);
+      setExtractedNote("");
+    } catch (err: any) {
+      setExtractedNote(`Không đọc được dữ liệu trích xuất: ${err?.message || "lỗi không xác định"}`);
+    } finally {
+      setIsExtractedLoading(false);
+    }
+  };
+
+  const patchExtractedCandidate = async (candidateId: string, payload: Record<string, unknown>, successNote: string) => {
+    const response = await fetch(`/api/knowledge/extracted-anniversaries/${encodeURIComponent(candidateId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setExtractedNote(data.error || "Không cập nhật được candidate.");
+      return;
+    }
+    setExtractedNote(successNote);
+    await loadExtractedCandidates();
+  };
+
+  const handleApproveCandidate = (candidate: ExtractedAnniversaryCandidate) => (
+    patchExtractedCandidate(candidate.id, { status: "approved" }, "Đã duyệt candidate.")
+  );
+
+  const handleRejectCandidate = (candidate: ExtractedAnniversaryCandidate) => (
+    patchExtractedCandidate(candidate.id, { status: "rejected" }, "Đã từ chối candidate.")
+  );
+
+  const handleAssignCandidate = (candidate: ExtractedAnniversaryCandidate, memberId: string) => {
+    const member = members.find((item) => item.id === memberId);
+    if (!member) return;
+    void patchExtractedCandidate(candidate.id, {
+      matchedMemberId: member.id,
+      matchedMemberName: member.name,
+      matchConfidence: "manual"
+    }, "Đã gán candidate với nhân vật được chọn.");
+  };
+
+  const startEditCandidateField = (candidate: ExtractedAnniversaryCandidate, field: ExtractedAnniversaryField) => {
+    setEditingCandidateId(candidate.id);
+    setEditingFieldType(field.type);
+    setEditingValue(field.reviewedValue || field.value || "");
+    setEditingMemberId(candidate.matchedMemberId || "");
+  };
+
+  const saveCandidateField = async () => {
+    if (!editingCandidateId || !editingFieldType) return;
+    await patchExtractedCandidate(editingCandidateId, {
+      reviewedFields: { [editingFieldType]: editingValue },
+      matchedMemberId: editingMemberId || undefined,
+      matchConfidence: editingMemberId ? "manual" : undefined
+    }, "Đã lưu giá trị đã chỉnh.");
+    setEditingCandidateId("");
+    setEditingFieldType("");
+    setEditingValue("");
+  };
+
+  const handleApplyCandidate = async (candidate: ExtractedAnniversaryCandidate) => {
+    const memberId = editingCandidateId === candidate.id ? editingMemberId : candidate.matchedMemberId;
+    if (!memberId) {
+      setExtractedNote("Cần gán candidate với một nhân vật trước khi áp dụng.");
+      return;
+    }
+    const response = await fetch(`/api/knowledge/extracted-anniversaries/${encodeURIComponent(candidate.id)}/apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memberId })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const conflicts = Array.isArray(data.conflicts) && data.conflicts.length
+        ? ` Trường đã có dữ liệu: ${data.conflicts.map((item: any) => item.lineageField).join(", ")}.`
+        : "";
+      setExtractedNote(`${data.error || "Không áp dụng được candidate."}${conflicts}`);
+      return;
+    }
+    setExtractedNote(`Đã áp dụng ${data.changes?.length ?? 0} trường vào cây phả và ghi audit log.`);
+    await loadExtractedCandidates();
+  };
+
   const handleKnowledgeSearch = async () => {
     const query = knowledgeSearchQuery.trim();
     if (!query) return;
@@ -560,6 +699,7 @@ export default function AIGovernor({
 
   useEffect(() => {
     void loadKnowledgeBackend();
+    void loadExtractedCandidates();
     void loadAIRequestLogs();
     void loadAIEvalCases();
   }, []);
@@ -1116,6 +1256,181 @@ export default function AIGovernor({
                 {!backendSources.length && (
                   <p className="rounded border border-dashed border-stone-200 bg-white p-3 text-xs text-stone-500">
                     Chưa đọc được danh sách source backend hoặc kho tri thức chưa có tài liệu upload thêm.
+                  </p>
+                )}
+              </div>
+            </div>
+            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50/40 p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <h4 className="flex items-center gap-2 font-bold text-stone-850">
+                    <FileSearch className="h-4 w-4 text-amber-700" />
+                    Dữ liệu trích xuất cần duyệt
+                  </h4>
+                  <p className="mt-1 text-xs leading-relaxed text-stone-500">
+                    Candidate từ file 04 chỉ được áp dụng vào cây phả khi admin duyệt. Hệ thống không tự ghi đè trường đã có dữ liệu.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadExtractedCandidates()}
+                  disabled={isExtractedLoading}
+                  className="inline-flex items-center justify-center gap-2 rounded border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-60"
+                >
+                  <RefreshCw className={`h-4 w-4 ${isExtractedLoading ? "animate-spin" : ""}`} />
+                  Tải candidate
+                </button>
+              </div>
+              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-4">
+                <input
+                  value={extractedNameFilter}
+                  onChange={(event) => setExtractedNameFilter(event.target.value)}
+                  className="rounded border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:border-amber-500"
+                  placeholder="Tên nhân vật"
+                />
+                <select
+                  value={extractedStatusFilter}
+                  onChange={(event) => setExtractedStatusFilter(event.target.value)}
+                  className="rounded border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:border-amber-500"
+                >
+                  <option value="">Tất cả trạng thái</option>
+                  <option value="pending">Chưa duyệt</option>
+                  <option value="approved">Đã duyệt</option>
+                  <option value="rejected">Đã từ chối</option>
+                  <option value="applied">Đã áp dụng</option>
+                </select>
+                <select
+                  value={extractedTypeFilter}
+                  onChange={(event) => setExtractedTypeFilter(event.target.value)}
+                  className="rounded border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:border-amber-500"
+                >
+                  <option value="">Tất cả loại dữ liệu</option>
+                  <option value="birth">Ngày sinh</option>
+                  <option value="death">Ngày mất</option>
+                  <option value="lunar_anniversary">Ngày giỗ âm lịch</option>
+                  <option value="hometown">Quê quán</option>
+                  <option value="grave">Mộ chí</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => void loadExtractedCandidates()}
+                  disabled={isExtractedLoading}
+                  className="inline-flex items-center justify-center gap-2 rounded bg-red-900 px-3 py-2 text-xs font-bold text-white hover:bg-red-950 disabled:opacity-60"
+                >
+                  <Search className="h-4 w-4" />
+                  Lọc
+                </button>
+              </div>
+              {extractedNote && <p className="mt-2 rounded bg-white p-2 text-[11px] leading-relaxed text-stone-700">{extractedNote}</p>}
+              <div className="mt-3 max-h-[520px] space-y-3 overflow-y-auto pr-1">
+                {extractedCandidates.map((candidate) => (
+                  <article key={candidate.id} className="rounded border border-stone-200 bg-white p-3">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h5 className="font-bold text-stone-850">{candidate.personName}</h5>
+                          <span className={`rounded px-2 py-0.5 text-[10px] font-bold ${
+                            candidate.status === "applied" ? "bg-emerald-50 text-emerald-700" :
+                            candidate.status === "approved" ? "bg-blue-50 text-blue-700" :
+                            candidate.status === "rejected" ? "bg-red-50 text-red-700" :
+                            "bg-amber-50 text-amber-700"
+                          }`}>
+                            {candidate.status}
+                          </span>
+                          <span className="rounded bg-stone-100 px-2 py-0.5 text-[10px] font-bold text-stone-500">{candidate.matchConfidence || "none"}</span>
+                        </div>
+                        <p className="mt-1 text-[11px] text-stone-500">
+                          {candidate.headingPath || "-"} · {candidate.sourceId} · {candidate.chunkId || "-"}
+                        </p>
+                        <p className="mt-1 text-xs leading-relaxed text-stone-600">{truncateText(candidate.sourceQuote || "", 260)}</p>
+                      </div>
+                      <div className="flex shrink-0 flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleApproveCandidate(candidate)}
+                          disabled={candidate.status === "applied"}
+                          className="rounded bg-emerald-700 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-800 disabled:opacity-50"
+                        >
+                          Duyệt
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleRejectCandidate(candidate)}
+                          disabled={candidate.status === "applied"}
+                          className="rounded border border-red-200 px-2.5 py-1.5 text-[11px] font-bold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                        >
+                          Từ chối
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleApplyCandidate(candidate)}
+                          disabled={candidate.status !== "approved" && candidate.status !== "applied"}
+                          className="rounded bg-red-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-red-950 disabled:opacity-50"
+                        >
+                          Áp dụng
+                        </button>
+                      </div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                      {candidate.fields.map((field) => (
+                        <div key={`${candidate.id}-${field.type}`} className="rounded border border-stone-100 bg-[#fbfaf6] p-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-[10px] font-bold uppercase tracking-wide text-amber-700">{field.type}</p>
+                              <p className="mt-1 text-xs leading-relaxed text-stone-700">{field.reviewedValue || field.value}</p>
+                              {field.reviewedValue && <p className="mt-1 text-[10px] text-stone-400">Gốc: {truncateText(field.value, 120)}</p>}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => startEditCandidateField(candidate, field)}
+                              className="shrink-0 rounded border border-stone-200 p-1 text-stone-500 hover:bg-white"
+                              title="Sửa giá trị trước khi duyệt"
+                            >
+                              <PenLine className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-[1fr_auto]">
+                      <select
+                        value={editingCandidateId === candidate.id ? editingMemberId : candidate.matchedMemberId || ""}
+                        onChange={(event) => {
+                          setEditingCandidateId(candidate.id);
+                          setEditingMemberId(event.target.value);
+                          handleAssignCandidate(candidate, event.target.value);
+                        }}
+                        className="min-w-0 rounded border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:border-amber-500"
+                      >
+                        <option value="">Chọn nhân vật để gán</option>
+                        {memberOptions.map((member) => (
+                          <option key={member.id} value={member.id}>{member.label}</option>
+                        ))}
+                      </select>
+                      <p className="rounded bg-stone-50 px-3 py-2 text-[11px] text-stone-500">
+                        Gợi ý: {candidate.matchedMemberName || "chưa có"}
+                      </p>
+                    </div>
+                    {editingCandidateId === candidate.id && editingFieldType && (
+                      <div className="mt-3 rounded border border-amber-200 bg-amber-50 p-3">
+                        <label className="text-[11px] font-bold text-stone-700">Sửa giá trị `{editingFieldType}` trước khi duyệt</label>
+                        <textarea
+                          value={editingValue}
+                          onChange={(event) => setEditingValue(event.target.value)}
+                          rows={3}
+                          className="mt-2 w-full rounded border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:border-amber-500"
+                        />
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <button type="button" onClick={() => void saveCandidateField()} className="rounded bg-red-900 px-3 py-1.5 text-[11px] font-bold text-white">Lưu chỉnh sửa</button>
+                          <button type="button" onClick={() => { setEditingCandidateId(""); setEditingFieldType(""); setEditingValue(""); }} className="rounded border border-stone-200 px-3 py-1.5 text-[11px] font-bold text-stone-600">Hủy</button>
+                        </div>
+                      </div>
+                    )}
+                  </article>
+                ))}
+                {!extractedCandidates.length && (
+                  <p className="rounded border border-dashed border-stone-200 bg-white p-3 text-xs text-stone-500">
+                    Chưa có candidate phù hợp bộ lọc, hoặc tài khoản hiện tại chưa có quyền admin.
                   </p>
                 )}
               </div>
