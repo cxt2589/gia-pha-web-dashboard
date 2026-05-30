@@ -33,6 +33,7 @@ const ZALO_PROFILE_PROXY_SECRET = (process.env.ZALO_PROFILE_PROXY_SECRET || '').
 const AUTH_SESSION_COOKIE = 'caogia_auth_session';
 const OAUTH_STATE_COOKIE = 'caogia_oauth_state';
 const isSecureCookie = APP_URL.startsWith('https://');
+const PUBLIC_STATE_KEYS = new Set(['app-settings', 'dashboard-theme', 'dashboard-articles', 'dashboard-events']);
 
 const app = express();
 app.use(express.json({ limit: '25mb' }));
@@ -320,6 +321,33 @@ async function getAuthSession(req) {
   }
 }
 
+function isAdminAuthUser(authUser) {
+  const roles = Array.isArray(authUser?.roles) ? authUser.roles : [];
+  return authUser?.role === 'admin' || roles.includes('admin');
+}
+
+function getAuthScope(session, authUser) {
+  if (isAdminAuthUser(authUser)) return 'admin';
+  if (!session) return 'anonymous';
+  const isVerifiedKyc = Boolean(
+    authUser?.isKYCed &&
+    authUser?.kycStatus === 'verified' &&
+    authUser?.isApproved !== false &&
+    authUser?.approvalStatus !== 'rejected'
+  );
+  return isVerifiedKyc ? 'kyc_verified' : 'authenticated_unverified';
+}
+
+async function requireAdmin(req, res) {
+  const session = await getAuthSession(req);
+  const authUser = await findAuthUserForSession(session);
+  if (!isAdminAuthUser(authUser)) {
+    res.status(403).json({ error: 'Admin access required.' });
+    return null;
+  }
+  return { session, authUser };
+}
+
 function getCallbackUrl(provider) {
   return `${APP_URL}/api/auth/${provider}/callback`;
 }
@@ -416,8 +444,9 @@ app.get('/api/auth/me', async (req, res) => {
   }
 });
 
-app.get('/api/auth/users', async (_req, res) => {
+app.get('/api/auth/users', async (req, res) => {
   try {
+    if (!await requireAdmin(req, res)) return;
     res.json({ users: await readAuthUsers() });
   } catch (err) {
     console.error('Failed to read auth users:', err);
@@ -426,6 +455,14 @@ app.get('/api/auth/users', async (_req, res) => {
 });
 
 app.put('/api/auth/users', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+  } catch (err) {
+    console.error('Failed to verify admin for auth users:', err);
+    res.status(500).json({ error: 'Failed to verify admin access.' });
+    return;
+  }
+
   const users = Array.isArray(req.body?.users) ? req.body.users : null;
   if (!users) {
     res.status(400).json({ error: 'Invalid users payload.' });
@@ -449,6 +486,7 @@ app.get('/api/state/:key', async (req, res) => {
   }
 
   try {
+    if (!PUBLIC_STATE_KEYS.has(key) && !await requireAdmin(req, res)) return;
     const value = await readState(key);
     if (value === null || value === undefined) {
       res.status(404).json({ error: 'State not found.' });
@@ -469,6 +507,7 @@ app.put('/api/state/:key', async (req, res) => {
   }
 
   try {
+    if (!await requireAdmin(req, res)) return;
     const value = Object.prototype.hasOwnProperty.call(req.body || {}, 'value') ? req.body.value : req.body;
     await writeState(key, value);
     res.json({ ok: true });
@@ -777,6 +816,22 @@ const AI_GATEWAY_CACHE_TTL_MS = Number(process.env.AI_GATEWAY_CACHE_TTL_MS || 5 
 const AI_GATEWAY_CACHE_MAX = Number(process.env.AI_GATEWAY_CACHE_MAX || 80);
 const AI_GATEWAY_RETRY_429 = Number(process.env.AI_GATEWAY_RETRY_429 || 1);
 const aiGatewayCache = new Map();
+const DASHBOARD_AI_CONTEXT_TYPES = new Set([
+  'chat',
+  'ceremony',
+  'prayer',
+  'han_nom',
+  'han-nom',
+  'audit',
+  'article',
+  'appeal',
+  'zalo_campaign',
+  'chatbox_policy',
+  'system_audit',
+  'article_template',
+  'zalo_rule_template',
+  'webview_suggestion_article'
+]);
 
 function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
@@ -796,16 +851,16 @@ function normalizeAIGatewayContext(body = {}, routeName = 'ai-chat') {
   if (type === 'webview_chat') {
     botType = explicitBotType || 'webview';
     intent = explicitIntent || 'chat';
-  } else if (['zalo', 'zalo_campaign', 'campaign'].includes(type)) {
+  } else if (['zalo', 'zalo_campaign', 'campaign', 'zalo_rule_template'].includes(type)) {
     botType = explicitBotType || 'zalo';
-    intent = explicitIntent || 'campaign';
-  } else if (['audit', 'chatbox_policy', 'policy'].includes(type)) {
+    intent = explicitIntent || (type === 'zalo_rule_template' ? 'zalo_rule_template' : 'campaign');
+  } else if (['audit', 'system_audit', 'chatbox_policy', 'policy'].includes(type)) {
     botType = explicitBotType || 'governor';
     intent = explicitIntent || type;
   } else if (['ceremony', 'prayer', 'han_nom', 'han-nom', 'appeal'].includes(type)) {
     intent = explicitIntent || 'ceremony';
-  } else if (type === 'article') {
-    intent = explicitIntent || 'article';
+  } else if (['article', 'article_template', 'webview_suggestion_article'].includes(type)) {
+    intent = explicitIntent || type;
   }
 
   return {
@@ -819,9 +874,14 @@ function normalizeAIGatewayContext(body = {}, routeName = 'ai-chat') {
 
 function pickDashboardEngine(aiConfig = {}, intent = 'chat') {
   if (intent === 'ceremony') return aiConfig.engineCeremony || aiConfig.engineChat || 'gemini';
-  if (intent === 'article') return aiConfig.engineArticles || aiConfig.engineChat || 'gemini';
-  if (intent === 'campaign' || intent === 'zalo') return aiConfig.engineZalo || aiConfig.engineChat || 'gemini';
+  if (['article', 'article_template', 'webview_suggestion_article'].includes(intent)) return aiConfig.engineArticles || aiConfig.engineChat || 'gemini';
+  if (['campaign', 'zalo', 'zalo_campaign', 'zalo_rule_template'].includes(intent)) return aiConfig.engineZalo || aiConfig.engineChat || 'gemini';
   return aiConfig.engineChat || 'gemini';
+}
+
+function shouldHydrateDashboardAIContext(context = {}) {
+  return context.botType !== 'webview' &&
+    (DASHBOARD_AI_CONTEXT_TYPES.has(context.type) || DASHBOARD_AI_CONTEXT_TYPES.has(context.intent));
 }
 
 function pruneAIGatewayCache(now = Date.now()) {
@@ -851,6 +911,7 @@ function buildAIGatewayCacheKey(context = {}) {
     type: context.type,
     botType: context.botType,
     intent: context.intent,
+    authScope: context.authScope || 'none',
     engine: context.engine,
     modelName: context.modelName,
     temperature: context.temperature,
@@ -1188,6 +1249,7 @@ function formatMemberContext(member, canShowPrivate) {
 async function buildWebviewAIContext(req, message) {
   const session = await getAuthSession(req);
   const authUser = await findAuthUserForSession(session);
+  const authScope = getAuthScope(session, authUser);
   const canShowPrivate = Boolean(
     authUser?.isKYCed &&
     authUser?.kycStatus === 'verified' &&
@@ -1197,6 +1259,7 @@ async function buildWebviewAIContext(req, message) {
 
   if (!canShowPrivate && isSensitiveGenealogyQuestion(message)) {
     return {
+      authScope,
       blockedText: [
         'Thông tin chi tiết từng người trong gia phả chỉ hiển thị cho tài khoản đã đăng nhập và được KYC.',
         'Quý vị vẫn có thể hỏi các thông tin công khai như phả ký chung, tộc ước, sự kiện hoặc ngày giỗ đã được công bố.'
@@ -1239,7 +1302,8 @@ async function buildWebviewAIContext(req, message) {
     documents: relevantDocs,
     modelName: dashboardAi.modelName,
     temperature: dashboardAi.temperature,
-    engine: pickDashboardEngine(dashboardAi, 'chat')
+    engine: pickDashboardEngine(dashboardAi, 'chat'),
+    authScope
   };
 }
 
@@ -1312,7 +1376,13 @@ async function handleGeminiRequest(req, res) {
         return;
       }
       message = webviewContext.message || message;
-      requestContext = { ...requestContext, ...webviewContext };
+      requestContext = {
+        ...requestContext,
+        ...webviewContext,
+        engine: requestContext.engine || webviewContext.engine,
+        modelName: requestContext.modelName || webviewContext.modelName,
+        temperature: requestContext.temperature ?? webviewContext.temperature
+      };
     } catch (err) {
       console.warn('Failed to build webview AI context:', err?.message || err);
     }
@@ -1429,7 +1499,80 @@ async function handleAIGatewayRequest(req, res) {
   const userQuery = String(req.body?.prompt || message).trim();
   let requestContext = normalizeAIGatewayContext(req.body || {}, routeName);
   const requestType = requestContext.type;
-  const cacheKey = buildAIGatewayCacheKey(requestContext);
+
+  if (requestType === 'webview_chat') {
+    try {
+      const webviewContext = await buildWebviewAIContext(req, message);
+      requestContext = { ...requestContext, authScope: webviewContext.authScope || 'anonymous' };
+      if (webviewContext.blockedText) {
+        const policyCacheKey = buildAIGatewayCacheKey({
+          ...requestContext,
+          message,
+          prompt: userQuery
+        });
+        const cachedPolicyResponse = getAIGatewayCachedResponse(policyCacheKey);
+        if (cachedPolicyResponse) {
+          logAIGatewayRequest({
+            requestId,
+            route: routeName,
+            botType: requestContext.botType,
+            intent: requestContext.intent,
+            type: requestContext.type,
+            engine: 'policy',
+            model: cachedPolicyResponse.model,
+            status: 200,
+            cached: true,
+            durationMs: Date.now() - startedAt
+          });
+          res.json(cachedPolicyResponse);
+          return;
+        }
+        const policyResponse = {
+          model: 'policy',
+          provider: 'policy',
+          engine: 'policy',
+          botType: requestContext.botType,
+          intent: requestContext.intent,
+          text: webviewContext.blockedText
+        };
+        setAIGatewayCachedResponse(policyCacheKey, policyResponse);
+        res.json(policyResponse);
+        return;
+      }
+      message = webviewContext.message || message;
+      requestContext = {
+        ...requestContext,
+        ...webviewContext,
+        engine: requestContext.engine || webviewContext.engine,
+        modelName: requestContext.modelName || webviewContext.modelName,
+        temperature: requestContext.temperature ?? webviewContext.temperature
+      };
+    } catch (err) {
+      console.warn('Failed to build webview AI context:', err?.message || err);
+    }
+  } else if (shouldHydrateDashboardAIContext(requestContext)) {
+    try {
+      const dashboardContext = await buildDashboardAIContext(req, message, userQuery);
+      message = dashboardContext.message || message;
+      requestContext = {
+        ...requestContext,
+        ...dashboardContext,
+        engine: requestContext.engine || dashboardContext.engine,
+        modelName: requestContext.modelName || dashboardContext.modelName,
+        temperature: requestContext.temperature ?? dashboardContext.temperature,
+        documents: mergeKnowledgeDocuments(requestContext.documents, dashboardContext.documents)
+      };
+    } catch (err) {
+      console.warn('Failed to build dashboard AI context:', err?.message || err);
+    }
+  }
+
+  requestContext = { ...requestContext, authScope: requestContext.authScope || 'none' };
+  const cacheKey = buildAIGatewayCacheKey({
+    ...requestContext,
+    message,
+    prompt: userQuery
+  });
   const cachedResponse = getAIGatewayCachedResponse(cacheKey);
   if (cachedResponse) {
     logAIGatewayRequest({
@@ -1446,44 +1589,6 @@ async function handleAIGatewayRequest(req, res) {
     });
     res.json(cachedResponse);
     return;
-  }
-
-  if (requestType === 'webview_chat') {
-    try {
-      const webviewContext = await buildWebviewAIContext(req, message);
-      if (webviewContext.blockedText) {
-        const policyResponse = {
-          model: 'policy',
-          provider: 'policy',
-          engine: 'policy',
-          botType: requestContext.botType,
-          intent: requestContext.intent,
-          text: webviewContext.blockedText
-        };
-        setAIGatewayCachedResponse(cacheKey, policyResponse);
-        res.json(policyResponse);
-        return;
-      }
-      message = webviewContext.message || message;
-      requestContext = { ...requestContext, ...webviewContext };
-    } catch (err) {
-      console.warn('Failed to build webview AI context:', err?.message || err);
-    }
-  } else if (['chat', 'ceremony', 'prayer', 'han_nom', 'han-nom', 'audit', 'article', 'appeal', 'zalo_campaign', 'chatbox_policy'].includes(requestType || 'chat')) {
-    try {
-      const dashboardContext = await buildDashboardAIContext(req, message, userQuery);
-      message = dashboardContext.message || message;
-      requestContext = {
-        ...requestContext,
-        ...dashboardContext,
-        engine: requestContext.engine || dashboardContext.engine,
-        modelName: requestContext.modelName || dashboardContext.modelName,
-        temperature: requestContext.temperature ?? dashboardContext.temperature,
-        documents: mergeKnowledgeDocuments(requestContext.documents, dashboardContext.documents)
-      };
-    } catch (err) {
-      console.warn('Failed to build dashboard AI context:', err?.message || err);
-    }
   }
 
   const requestedEngine = String(requestContext?.engine || '').trim().toLowerCase();
@@ -1510,6 +1615,34 @@ async function handleAIGatewayRequest(req, res) {
       durationMs: Date.now() - startedAt
     });
     res.json(localResponse);
+    return;
+  }
+
+  if (requestedEngine === 'chatgpt' || requestedEngine === 'openai') {
+    const status = process.env.OPENAI_API_KEY ? 501 : 503;
+    const providerResponse = {
+      error: 'ChatGPT provider is not available in this deployment.',
+      details: process.env.OPENAI_API_KEY
+        ? 'OPENAI_API_KEY is configured, but the OpenAI provider adapter is not implemented yet. Choose Gemini or Local in AI settings.'
+        : 'OPENAI_API_KEY is not configured. Choose Gemini or Local in AI settings, or configure an OpenAI provider adapter before using ChatGPT.',
+      provider: 'chatgpt',
+      engine: 'chatgpt',
+      botType: requestContext.botType,
+      intent: requestContext.intent
+    };
+    logAIGatewayRequest({
+      requestId,
+      route: routeName,
+      botType: requestContext.botType,
+      intent: requestContext.intent,
+      type: requestContext.type,
+      engine: 'chatgpt',
+      model: requestContext.modelName,
+      status,
+      cached: false,
+      durationMs: Date.now() - startedAt
+    });
+    res.status(status).json(providerResponse);
     return;
   }
 
