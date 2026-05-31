@@ -692,11 +692,11 @@ const DEFAULT_AI_BOT_CONFIGS = [
     retryDelayMs: 900,
     publicAccess: 1,
     requiresKycForPrivateData: 1,
-    systemPromptShort: 'Tra loi ngan gon, uu tien du lieu local, khong lo thong tin rieng neu chua KYC.'
+    systemPromptShort: 'Trả lời ngắn gọn, ưu tiên dữ liệu local, không lộ thông tin riêng nếu chưa KYC.'
   },
   {
     botType: 'dashboard_helper',
-    label: 'Tro ly dashboard',
+    label: 'Trợ lý dashboard',
     enabled: 1,
     engine: 'local-knowledge',
     maxKnowledgeChunks: 8,
@@ -708,11 +708,11 @@ const DEFAULT_AI_BOT_CONFIGS = [
     retryDelayMs: 900,
     publicAccess: 0,
     requiresKycForPrivateData: 0,
-    systemPromptShort: 'Ho tro admin tra cuu va thao tac dashboard, uu tien du lieu da xac minh.'
+    systemPromptShort: 'Hỗ trợ admin tra cứu và thao tác dashboard, ưu tiên dữ liệu đã xác minh.'
   },
   {
     botType: 'ai_governor',
-    label: 'AI Tong Quan',
+    label: 'AI Tổng Quản',
     enabled: 1,
     engine: 'local-knowledge',
     maxKnowledgeChunks: 10,
@@ -724,11 +724,11 @@ const DEFAULT_AI_BOT_CONFIGS = [
     retryDelayMs: 900,
     publicAccess: 0,
     requiresKycForPrivateData: 0,
-    systemPromptShort: 'Phan tich he thong, de xuat sua, neu ro nguon va muc can xac minh.'
+    systemPromptShort: 'Phân tích hệ thống, đề xuất sửa, nêu rõ nguồn và mức cần xác minh.'
   },
   {
     botType: 'article_writer',
-    label: 'AI viet bai',
+    label: 'AI viết bài',
     enabled: 1,
     engine: 'gemini',
     maxKnowledgeChunks: 8,
@@ -740,11 +740,11 @@ const DEFAULT_AI_BOT_CONFIGS = [
     retryDelayMs: 900,
     publicAccess: 0,
     requiresKycForPrivateData: 0,
-    systemPromptShort: 'Viet ban nhap dai hon tu nguon da duyet, khong bia su kien hay nhan vat.'
+    systemPromptShort: 'Viết bản nháp dài hơn từ nguồn đã duyệt, không bịa sự kiện hay nhân vật.'
   },
   {
     botType: 'prayer_writer',
-    label: 'AI soan so/trac thu',
+    label: 'AI soạn sớ/trác thư',
     enabled: 1,
     engine: 'gemini',
     maxKnowledgeChunks: 10,
@@ -756,13 +756,13 @@ const DEFAULT_AI_BOT_CONFIGS = [
     retryDelayMs: 900,
     publicAccess: 0,
     requiresKycForPrivateData: 0,
-    systemPromptShort: 'Soan so/trac thu can trong, khong tu bia Han Nom, chuc tuoc, ngay gio hoac nien dai.'
+    systemPromptShort: 'Soạn sớ/trác thư cẩn trọng, không tự bịa Hán Nôm, chức tước, ngày giỗ hoặc niên đại.'
   },
   {
     botType: 'zalo_bot',
     label: 'Zalo bot',
     enabled: 0,
-    pausedReason: 'Tam dung cho OA xac thuc',
+    pausedReason: 'Tạm dừng chờ OA xác thực',
     engine: 'local-knowledge',
     maxKnowledgeChunks: 5,
     maxKnowledgeChars: 5000,
@@ -773,7 +773,7 @@ const DEFAULT_AI_BOT_CONFIGS = [
     retryDelayMs: 900,
     publicAccess: 0,
     requiresKycForPrivateData: 1,
-    systemPromptShort: 'Tam dung trong Phase 2R, chi hien trang thai cho OA.'
+    systemPromptShort: 'Tạm dừng trong Phase 2R, chỉ hiện trạng thái chờ OA.'
   }
 ];
 
@@ -803,6 +803,22 @@ function seedDefaultAIBotConfigs(database) {
       config.requiresKycForPrivateData,
       config.systemPromptShort
     );
+  }
+
+  const updateText = database.prepare(`
+    UPDATE ai_bot_configs
+    SET label = ?, paused_reason = ?, system_prompt_short = ?
+    WHERE bot_type = ?
+      AND (
+        updated_by = 'system'
+        OR label IN ('Tro ly dashboard', 'AI Tong Quan', 'AI viet bai', 'AI soan so/trac thu')
+        OR paused_reason = 'Tam dung cho OA xac thuc'
+        OR system_prompt_short LIKE '%khong%'
+        OR system_prompt_short LIKE '%Tam dung%'
+      )
+  `);
+  for (const config of DEFAULT_AI_BOT_CONFIGS) {
+    updateText.run(config.label, config.pausedReason || '', config.systemPromptShort, config.botType);
   }
 }
 
@@ -2239,7 +2255,7 @@ function buildExtractedAnniversaryAnswer(query, candidates) {
     const status = normalizeExtractedCandidateStatus(row.status);
     const lunarStructured = parseGenealogyDateText(row.death_anniversary_lunar, 'lunar');
     const lunarMissingYearNote = lunarStructured.precision === 'day_month' && !lunarStructured.year
-      ? ' (nam mat chua duoc xac minh)'
+      ? ' (năm mất chưa được xác minh)'
       : '';
     const statusText = status === 'applied'
       ? 'dữ liệu đã áp dụng'
@@ -3233,6 +3249,80 @@ app.get('/api/ai/bot-configs', async (req, res) => {
   }
 });
 
+app.get('/api/ai/operation-graph', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const [configs, summary, knowledge] = await Promise.all([
+      listAIBotConfigs(),
+      summarizeAIRequestLogs(),
+      getKnowledgeStatus()
+    ]);
+    const configByBot = new Map(configs.map((config) => [config.botType, config]));
+    const botCount = (botType) => summary.topBotTypes?.find((item) => item.name === botType)?.count || 0;
+    const botNode = (id, label, row, description) => {
+      const config = configByBot.get(id);
+      return {
+        id,
+        label,
+        type: 'bot',
+        status: id === 'zalo_bot' ? 'paused' : (config?.enabled ? 'active' : 'disabled'),
+        column: 1,
+        row,
+        description,
+        metrics: {
+          engine: config?.engine || '',
+          chunks: config?.maxKnowledgeChunks || 0,
+          tokens: config?.maxOutputTokens || 0,
+          requests: botCount(id)
+        }
+      };
+    };
+    res.json({
+      ok: true,
+      nodes: [
+        botNode('webview_chat', 'Chatbot Webview', 1, 'Trả lời người dùng webview và áp KYC trước khi mở dữ liệu chi tiết.'),
+        botNode('dashboard_helper', 'Trợ lý Dashboard', 2, 'Hỗ trợ admin tra cứu và thao tác quản trị.'),
+        botNode('ai_governor', 'AI Tổng Quản', 3, 'Điều phối phân tích hệ thống, kiểm chứng dữ liệu và đề xuất sửa.'),
+        botNode('article_writer', 'AI Viết Bài', 4, 'Tạo bản nháp bài viết từ dữ liệu đã duyệt.'),
+        botNode('prayer_writer', 'Trác Thư / Sớ', 5, 'Soạn nội dung nghi lễ có kiểm soát nguồn.'),
+        botNode('zalo_bot', 'Zalo Bot', 6, 'Tạm dừng chờ OA xác thực, không gửi thật.'),
+        { id: 'ai_gateway', label: '/api/ai/chat', type: 'gateway', status: 'active', column: 2, row: 3, description: 'Cửa vào chung cho các bot AI.', metrics: { requests: summary.requestCount, cache: summary.cacheHitCount, errors: summary.errorCount } },
+        { id: 'bot_config', label: 'Cấu hình Bot', type: 'config', status: 'active', column: 3, row: 2, description: 'Bảng ai_bot_configs điều khiển engine, chunks, tokens, cache và retry.', metrics: { bots: configs.length, enabled: configs.filter((config) => config.enabled).length } },
+        { id: 'intent_router', label: 'Điều phối Intent', type: 'router', status: 'active', column: 3, row: 4, description: 'Phân loại câu hỏi theo mục đích xử lý.', metrics: { intents: summary.topIntents?.length || 0 } },
+        { id: 'auth_guard', label: 'KYC / Quyền xem', type: 'guard', status: 'active', column: 4, row: 1, description: 'Chặn dữ liệu cá nhân chi tiết nếu chưa đủ quyền.', metrics: { rule: 'public/KYC/admin' } },
+        { id: 'local_db', label: 'Cây phả & Database', type: 'data', status: 'active', column: 4, row: 3, description: 'Nguồn local-first cho nhân vật, đời, chi/ngành và dữ liệu applied.' },
+        { id: 'anniversary_calendar', label: 'Lịch giỗ xác minh', type: 'data', status: 'active', column: 4, row: 4, description: 'Tra ngày giỗ verified/applied trước khi diễn đạt.' },
+        { id: 'knowledge_search', label: 'Kho tri thức', type: 'data', status: 'active', column: 4, row: 5, description: 'Tìm top chunks từ tài liệu Cao Tộc và alias.', metrics: { sources: knowledge.sources, chunks: knowledge.chunks, aliases: knowledge.aliases } },
+        { id: 'gemini', label: 'Gemini', type: 'model', status: 'active', column: 5, row: 4, description: 'Chỉ dùng khi local/knowledge chưa đủ hoặc cần sinh nội dung dài.' },
+        { id: 'response_guard', label: 'Response Guard', type: 'guard', status: 'active', column: 6, row: 3, description: 'Chặn bịa dữ liệu, phân biệt pending/applied và giới hạn output.' },
+        { id: 'ai_logs', label: 'Logs / Token', type: 'logs', status: 'active', column: 6, row: 5, description: 'Theo dõi request, cache, lỗi, token và nguồn theo từng bot.', metrics: { tokens: summary.estimatedTokens, avg: `${summary.avgDurationMs}ms` } }
+      ],
+      edges: [
+        { from: 'webview_chat', to: 'ai_gateway', label: 'botType' },
+        { from: 'dashboard_helper', to: 'ai_gateway', label: 'botType' },
+        { from: 'ai_governor', to: 'ai_gateway', label: 'botType' },
+        { from: 'article_writer', to: 'ai_gateway', label: 'botType' },
+        { from: 'prayer_writer', to: 'ai_gateway', label: 'botType' },
+        { from: 'zalo_bot', to: 'ai_gateway', label: 'paused' },
+        { from: 'ai_gateway', to: 'bot_config', label: 'đọc cấu hình' },
+        { from: 'ai_gateway', to: 'intent_router', label: 'intent' },
+        { from: 'intent_router', to: 'auth_guard', label: 'quyền' },
+        { from: 'intent_router', to: 'local_db', label: 'local-first' },
+        { from: 'intent_router', to: 'anniversary_calendar', label: 'ngày giỗ' },
+        { from: 'intent_router', to: 'knowledge_search', label: 'search' },
+        { from: 'knowledge_search', to: 'gemini', label: 'khi cần' },
+        { from: 'local_db', to: 'response_guard' },
+        { from: 'anniversary_calendar', to: 'response_guard' },
+        { from: 'gemini', to: 'response_guard' },
+        { from: 'response_guard', to: 'ai_logs', label: 'ghi log' }
+      ]
+    });
+  } catch (err) {
+    console.error('Failed to build AI operation graph:', err);
+    res.status(500).json({ error: 'Failed to build AI operation graph.' });
+  }
+});
+
 app.patch('/api/ai/bot-configs/:botType', async (req, res) => {
   try {
     const admin = await requireAdmin(req, res);
@@ -4080,7 +4170,7 @@ async function buildAnniversaryItems({ year, authScope = 'anonymous' } = {}) {
       certainty: anniversary.certainty,
       deathYear,
       deathDate: member.solarDeathDate || formatGenealogyDateStructured(member.deathDateStructured) || '',
-      note: deathYear || member.solarDeathDate ? '' : 'Nam mat chua ro',
+      note: deathYear || member.solarDeathDate ? '' : 'Năm mất chưa rõ',
       rawLunarDate: anniversary.date.rawText || member.deathAnniversaryLunar || member.lunarAnniversary || ''
     });
   }
@@ -4106,12 +4196,12 @@ async function buildUpcomingAnniversaryItems({ days = 60, authScope = 'anonymous
 }
 
 function formatAnniversaryItemLine(item) {
-  const lunarText = `${item.lunarDay}/${item.lunarMonth} am lich${item.isLeapMonth ? ' (thang nhuan)' : ''}`;
-  const solarText = item.solarDisplayDate || item.solarDate || 'chua tinh duoc';
-  const rawText = item.rawLunarDate && item.rawLunarDate !== lunarText ? `; ghi chu goc: ${item.rawLunarDate}` : '';
+  const lunarText = `${item.lunarDay}/${item.lunarMonth} âm lịch${item.isLeapMonth ? ' (tháng nhuận)' : ''}`;
+  const solarText = item.solarDisplayDate || item.solarDate || 'chưa tính được';
+  const rawText = item.rawLunarDate && item.rawLunarDate !== lunarText ? `; ghi chú gốc: ${item.rawLunarDate}` : '';
   const note = item.note ? `; ${item.note}` : '';
   const title = item.title ? ` - ${item.title}` : '';
-  return `- ${item.memberName}${title}: ${lunarText}${rawText}; nam ${item.lunarYear} roi vao ngay ${solarText} duong lich${note}.`;
+  return `- ${item.memberName}${title}: ${lunarText}${rawText}; năm ${item.lunarYear} rơi vào ngày ${solarText} dương lịch${note}.`;
 }
 
 async function buildAnniversaryLocalAnswer(query, authScope = 'anonymous') {
@@ -4125,9 +4215,9 @@ async function buildAnniversaryLocalAnswer(query, authScope = 'anonymous') {
 
   if (/\b(sap toi|gan toi|upcoming)\b/.test(normalized)) {
     const upcoming = await buildUpcomingAnniversaryItems({ days: 60, authScope });
-    if (!upcoming.length) return 'Chua tim thay ngay gio da xac minh trong 60 ngay toi.';
+    if (!upcoming.length) return 'Chưa tìm thấy ngày giỗ đã xác minh trong 60 ngày tới.';
     return [
-      'Lich gio sap toi theo du lieu da xac minh/applied:',
+      'Lịch giỗ sắp tới theo dữ liệu đã xác minh/applied:',
       upcoming.slice(0, 8).map(formatAnniversaryItemLine).join('\n')
     ].join('\n');
   }
@@ -4138,9 +4228,9 @@ async function buildAnniversaryLocalAnswer(query, authScope = 'anonymous') {
       const date = isoDateToStartOfDay(item.solarDate);
       return date && date.getMonth() + 1 === currentMonth;
     });
-    if (!items.length) return 'Chua tim thay ngay gio da xac minh trong thang nay.';
+    if (!items.length) return 'Chưa tìm thấy ngày giỗ đã xác minh trong tháng này.';
     return [
-      `Lich gio trong thang ${currentMonth}/${year} theo du lieu da xac minh/applied:`,
+      `Lịch giỗ trong tháng ${currentMonth}/${year} theo dữ liệu đã xác minh/applied:`,
       items.slice(0, 12).map(formatAnniversaryItemLine).join('\n')
     ].join('\n');
   }
@@ -4162,9 +4252,9 @@ async function buildAnniversaryLocalAnswer(query, authScope = 'anonymous') {
 
   if (matched.length) {
     return [
-      `Theo du lieu ngay gio da xac minh/applied trong cay pha, nam ${year}:`,
+      `Theo dữ liệu ngày giỗ đã xác minh/applied trong cây phả, năm ${year}:`,
       matched.slice(0, 5).map(formatAnniversaryItemLine).join('\n'),
-      'Neu nam mat con thieu, he thong chi quy doi ngay gio am lich sang ngay duong cua nam duoc hoi, khong tu tao nam mat.'
+      'Nếu năm mất còn thiếu, hệ thống chỉ quy đổi ngày giỗ âm lịch sang ngày dương của năm được hỏi, không tự tạo năm mất.'
     ].join('\n');
   }
 
@@ -4275,19 +4365,19 @@ function publicAnniversaryDraft(row) {
 }
 
 function composeAnniversaryNoticeDraft(anniversary, { channel = 'dashboard', location = '', note = '' } = {}) {
-  const lunarDateText = `${anniversary.lunarDay}/${anniversary.lunarMonth} am lich${anniversary.isLeapMonth ? ' (thang nhuan)' : ''}`;
+  const lunarDateText = `${anniversary.lunarDay}/${anniversary.lunarMonth} âm lịch${anniversary.isLeapMonth ? ' (tháng nhuận)' : ''}`;
   const titleSuffix = anniversary.title ? ` - ${anniversary.title}` : '';
   const lines = [
-    `Kinh thong bao: nam ${anniversary.lunarYear}, ngay gio cua ${anniversary.memberName}${titleSuffix} la ${lunarDateText}, roi vao ngay ${anniversary.solarDisplayDate || anniversary.solarDate} duong lich.`,
-    'Du lieu ngay gio nay da duoc xac minh/applied trong he thong gia pha.',
-    anniversary.branch ? `Chi/nganh: ${anniversary.branch}.` : '',
-    anniversary.generation ? `Doi: ${anniversary.generation}.` : '',
-    location ? `Dia diem du kien: ${location}.` : '',
-    anniversary.note ? `Ghi chu du lieu: ${anniversary.note}.` : '',
-    note ? `Ghi chu them: ${note}.` : '',
+    `Kính thông báo: năm ${anniversary.lunarYear}, ngày giỗ của ${anniversary.memberName}${titleSuffix} là ${lunarDateText}, rơi vào ngày ${anniversary.solarDisplayDate || anniversary.solarDate} dương lịch.`,
+    'Dữ liệu ngày giỗ này đã được xác minh/applied trong hệ thống gia phả.',
+    anniversary.branch ? `Chi/ngành: ${anniversary.branch}.` : '',
+    anniversary.generation ? `Đời: ${anniversary.generation}.` : '',
+    location ? `Địa điểm dự kiến: ${location}.` : '',
+    anniversary.note ? `Ghi chú dữ liệu: ${anniversary.note}.` : '',
+    note ? `Ghi chú thêm: ${note}.` : '',
     channel === 'zalo'
-      ? 'Ban nhac nay moi la ban nhap cho kenh Zalo, chua gui tu dong.'
-      : 'Ban nhac nay moi la ban nhap, chua gui tu dong.'
+      ? 'Bản nhắc này mới là bản nháp cho kênh Zalo, chưa gửi tự động.'
+      : 'Bản nhắc này mới là bản nháp, chưa gửi tự động.'
   ].filter(Boolean);
   return lines.join('\n');
 }
@@ -4325,7 +4415,7 @@ async function createAnniversaryDraftFromAnniversary({ memberId, year, channel, 
   const safeNote = String(note || '').trim();
   const lunarDateText = `${anniversary.lunarDay}/${anniversary.lunarMonth} am lich${anniversary.isLeapMonth ? ' (thang nhuan)' : ''}`;
   const id = `anniv_draft_${randomToken(12)}`;
-  const title = `Nhac ngay gio ${anniversary.memberName} - ${anniversary.solarDisplayDate || anniversary.solarDate}`;
+  const title = `Nhắc ngày giỗ ${anniversary.memberName} - ${anniversary.solarDisplayDate || anniversary.solarDate}`;
   const messageDraft = composeAnniversaryNoticeDraft(anniversary, {
     channel: normalizedChannel,
     location: safeLocation,
@@ -5155,7 +5245,7 @@ async function buildZaloBotAIReply(event, intent, authScope) {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `AI gateway failed with HTTP ${response.status}`);
-  return String(data.text || '').trim() || 'Toi chua co du du lieu de tra loi chinh xac.';
+  return String(data.text || '').trim() || 'Tôi chưa có đủ dữ liệu để trả lời chính xác.';
 }
 
 async function logRejectedZaloWebhook(payload = {}, reason = 'rejected') {
@@ -5583,15 +5673,15 @@ function formatStructuredMemberDateLine(label, structuredDate) {
   const formatted = formatGenealogyDateStructured(structuredDate);
   if (!formatted) return '';
   if (structuredDate.precision === 'day_month' && structuredDate.calendar === 'lunar') {
-    return `${label}: ${formatted}; nam mat: chua ro`;
+    return `${label}: ${formatted}; năm mất: chưa rõ`;
   }
   return `${label}: ${formatted}`;
 }
 
 function formatMemberContext(member, canShowPrivate) {
-  const structuredAnniversary = formatStructuredMemberDateLine('Ngay gio/ky nhat am lich', member.deathAnniversaryLunarStructured);
-  const structuredDeath = formatStructuredMemberDateLine('Ngay/nam mat', member.deathDateStructured);
-  const structuredBirth = formatStructuredMemberDateLine('Ngay/nam sinh', member.birthDateStructured);
+  const structuredAnniversary = formatStructuredMemberDateLine('Ngày giỗ/kỵ nhật âm lịch', member.deathAnniversaryLunarStructured);
+  const structuredDeath = formatStructuredMemberDateLine('Ngày/năm mất', member.deathDateStructured);
+  const structuredBirth = formatStructuredMemberDateLine('Ngày/năm sinh', member.birthDateStructured);
   const structuredLines = [structuredAnniversary, structuredDeath, structuredBirth].filter(Boolean);
   const publicLines = [
     `Tên: ${member.name}`,
@@ -5834,7 +5924,7 @@ async function callGeminiProvider({ apiKey, requestContext, message, requestId }
         model,
         ...(Object.keys(config).length ? { config } : {}),
         contents: [
-          'Ban la tro ly gia pha ho Cao. Tra loi ngan gon, can trong, chi dua tren du lieu nguoi dung cung cap hoac kien thuc pho thong ve cach quan ly gia pha. Khong bia thong tin pha he cu the.',
+          'Bạn là trợ lý gia phả họ Cao. Trả lời ngắn gọn, cẩn trọng, chỉ dựa trên dữ liệu người dùng cung cấp hoặc kiến thức phổ thông về cách quản lý gia phả. Không bịa thông tin phả hệ cụ thể.',
           attemptMessage
         ].join('\n\nCau hoi: ')
       });
@@ -5844,7 +5934,7 @@ async function callGeminiProvider({ apiKey, requestContext, message, requestId }
         model,
         provider: 'gemini',
         engine: requestContext.engine || 'gemini',
-        text: text || 'Toi chua co du du lieu de tra loi chinh xac.'
+        text: text || 'Tôi chưa có đủ dữ liệu để trả lời chính xác.'
       };
     } catch (err) {
       const parsed = parseGeminiApiError(err);
@@ -5890,7 +5980,7 @@ async function handleAIGatewayRequest(req, res) {
       engine: 'policy',
       botType: requestContext.botType,
       intent: requestContext.intent,
-      text: botConfig.pausedReason ? `Bot nay dang tam dung: ${botConfig.pausedReason}.` : 'Bot nay dang tam dung.'
+      text: botConfig.pausedReason ? `Bot này đang tạm dừng: ${botConfig.pausedReason}.` : 'Bot này đang tạm dừng.'
     };
     logAIGatewayRequest({
       requestId,

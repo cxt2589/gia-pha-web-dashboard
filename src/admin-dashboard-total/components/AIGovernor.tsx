@@ -8,6 +8,7 @@ import {
   Database,
   FileSearch,
   FileText,
+  GitBranch,
   Globe2,
   MessageSquare,
   PenLine,
@@ -155,6 +156,25 @@ type AIBotConfig = {
   systemPromptShort: string;
   updatedAt: string;
   updatedBy: string;
+};
+
+type AIOperationGraphNodeStatus = "active" | "paused" | "disabled" | "error";
+
+type AIOperationGraphNode = {
+  id: string;
+  label: string;
+  type: "bot" | "gateway" | "config" | "router" | "data" | "model" | "guard" | "logs";
+  status: AIOperationGraphNodeStatus;
+  description: string;
+  column: number;
+  row: number;
+  metrics?: Record<string, string | number>;
+};
+
+type AIOperationGraphEdge = {
+  from: string;
+  to: string;
+  label?: string;
 };
 
 type ZaloBotStatus = {
@@ -402,7 +422,7 @@ export default function AIGovernor({
   onSetAIInitialPrompt
 }: AIGovernorProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [activeMode, setActiveMode] = useState<"overview" | "knowledge" | "content" | "channels">("overview");
+  const [activeMode, setActiveMode] = useState<"overview" | "operations" | "knowledge" | "content" | "channels">("overview");
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGeneratingTemplate, setIsGeneratingTemplate] = useState(false);
   const [isScanningSystem, setIsScanningSystem] = useState(false);
@@ -481,6 +501,7 @@ export default function AIGovernor({
   const [aiBotConfigs, setAiBotConfigs] = useState<AIBotConfig[]>([]);
   const [isAiBotConfigsLoading, setIsAiBotConfigsLoading] = useState(false);
   const [aiBotConfigNote, setAiBotConfigNote] = useState("");
+  const [selectedOperationNodeId, setSelectedOperationNodeId] = useState("ai_gateway");
   const [zaloBotStatus, setZaloBotStatus] = useState<ZaloBotStatus | null>(null);
   const [zaloWebhookStatus, setZaloWebhookStatus] = useState<ZaloWebhookStatus | null>(null);
   const [zaloBotEvents, setZaloBotEvents] = useState<ZaloBotEvent[]>([]);
@@ -968,12 +989,12 @@ export default function AIGovernor({
         setZaloBotReplies(Array.isArray(data.replies) ? data.replies : []);
       }
       if (!statusResponse.ok || !webhookResponse.ok || !eventsResponse.ok || !repliesResponse.ok) {
-        setZaloBotNote("Chua doc duoc Zalo Bot. Tai khoan hien tai co the chua co quyen admin.");
+        setZaloBotNote("Chưa đọc được Zalo Bot. Tài khoản hiện tại có thể chưa có quyền admin.");
       } else {
         setZaloBotNote("");
       }
     } catch (err: any) {
-      setZaloBotNote(`Khong doc duoc Zalo Bot: ${err?.message || "loi khong xac dinh"}`);
+      setZaloBotNote(`Không đọc được Zalo Bot: ${err?.message || "lỗi không xác định"}`);
     } finally {
       setIsZaloBotLoading(false);
     }
@@ -984,11 +1005,11 @@ export default function AIGovernor({
     try {
       const response = await fetch("/api/ai/bot-configs");
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || "Khong doc duoc cau hinh bot AI.");
+      if (!response.ok) throw new Error(data.error || "Không đọc được cấu hình bot AI.");
       setAiBotConfigs(Array.isArray(data.configs) ? data.configs : []);
       setAiBotConfigNote("");
     } catch (err: any) {
-      setAiBotConfigNote(`Khong doc duoc cau hinh bot AI: ${err?.message || "loi khong xac dinh"}`);
+      setAiBotConfigNote(`Không đọc được cấu hình bot AI: ${err?.message || "lỗi không xác định"}`);
     } finally {
       setIsAiBotConfigsLoading(false);
     }
@@ -1004,11 +1025,11 @@ export default function AIGovernor({
         body: JSON.stringify(patch)
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || "Khong cap nhat duoc bot AI.");
+      if (!response.ok) throw new Error(data.error || "Không cập nhật được bot AI.");
       setAiBotConfigs((prev) => prev.map((item) => item.botType === botType ? data.config : item));
       setAiBotConfigNote(`Da cap nhat ${data.config?.label || botType}.`);
     } catch (err: any) {
-      setAiBotConfigNote(`Loi cap nhat bot AI: ${err?.message || "khong xac dinh"}`);
+      setAiBotConfigNote(`Lỗi cập nhật bot AI: ${err?.message || "không xác định"}`);
     } finally {
       setIsAiBotConfigsLoading(false);
     }
@@ -1022,11 +1043,11 @@ export default function AIGovernor({
         method: "PATCH"
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || "Khong danh dau duoc event.");
+      if (!response.ok) throw new Error(data.error || "Không đánh dấu được event.");
       setZaloBotNote("Da danh dau event webhook la da xem.");
       await loadZaloBotPanel();
     } catch (err: any) {
-      setZaloBotNote(`Loi danh dau event: ${err?.message || "khong xac dinh"}`);
+      setZaloBotNote(`Lỗi đánh dấu event: ${err?.message || "không xác định"}`);
     } finally {
       setIsZaloBotLoading(false);
     }
@@ -1040,11 +1061,11 @@ export default function AIGovernor({
         method: "POST"
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || "Khong replay duoc event.");
+      if (!response.ok) throw new Error(data.error || "Không replay được event.");
       setZaloBotNote(data.reply?.replyText ? `Replay mock: ${data.reply.replyText.slice(0, 180)}` : "Da replay mock event.");
       await loadZaloBotPanel();
     } catch (err: any) {
-      setZaloBotNote(`Loi replay event: ${err?.message || "khong xac dinh"}`);
+      setZaloBotNote(`Lỗi replay event: ${err?.message || "không xác định"}`);
     } finally {
       setIsZaloBotLoading(false);
     }
@@ -1065,11 +1086,11 @@ export default function AIGovernor({
         })
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || "Khong gui duoc mock message.");
+      if (!response.ok) throw new Error(data.error || "Không gửi được mock message.");
       setZaloBotNote(data.reply?.replyText ? `Mock reply: ${data.reply.replyText.slice(0, 180)}` : `Mock event ${data.event?.status || "received"}.`);
       await loadZaloBotPanel();
     } catch (err: any) {
-      setZaloBotNote(`Loi mock Zalo Bot: ${err?.message || "khong xac dinh"}`);
+      setZaloBotNote(`Lỗi mock Zalo Bot: ${err?.message || "không xác định"}`);
     } finally {
       setIsZaloBotLoading(false);
     }
@@ -1321,6 +1342,207 @@ export default function AIGovernor({
     }
   };
 
+  const aiOperationGraph = useMemo<{ nodes: AIOperationGraphNode[]; edges: AIOperationGraphEdge[] }>(() => {
+    const configByBot = new Map<string, AIBotConfig>(aiBotConfigs.map((config) => [config.botType, config]));
+    const botMetric = (botType: string) => aiLogSummary?.topBotTypes?.find((item) => item.name === botType)?.count || 0;
+    const botStatus = (botType: string): AIOperationGraphNodeStatus => {
+      const config = configByBot.get(botType);
+      if (!config) return "error";
+      if (botType === "zalo_bot") return "paused";
+      return config.enabled ? "active" : "disabled";
+    };
+    const botNode = (
+      id: string,
+      label: string,
+      row: number,
+      description: string
+    ): AIOperationGraphNode => {
+      const config = configByBot.get(id);
+      return {
+        id,
+        label,
+        type: "bot",
+        status: botStatus(id),
+        column: 1,
+        row,
+        description,
+        metrics: {
+          engine: config?.engine || "chưa nạp",
+          chunks: config?.maxKnowledgeChunks ?? "-",
+          tokens: config?.maxOutputTokens ?? "-",
+          requests: botMetric(id)
+        }
+      };
+    };
+
+    return {
+      nodes: [
+        botNode("webview_chat", "Chatbot Webview", 1, "Trả lời người dùng trên web, áp KYC trước khi mở dữ liệu chi tiết."),
+        botNode("dashboard_helper", "Trợ lý Dashboard", 2, "Hỗ trợ admin tra cứu, kiểm tra dữ liệu và thao tác quản trị."),
+        botNode("ai_governor", "AI Tổng Quản", 3, "Điều phối phân tích hệ thống, kiểm chứng dữ liệu và đề xuất chỉnh sửa."),
+        botNode("article_writer", "AI Viết Bài", 4, "Tạo bản nháp bài viết từ dữ liệu đã duyệt và kho tri thức."),
+        botNode("prayer_writer", "Trác Thư / Sớ", 5, "Soạn nội dung nghi lễ có kiểm soát nguồn, không bịa Hán Nôm hay ngày giỗ."),
+        botNode("zalo_bot", "Zalo Bot", 6, "Tạm dừng chờ OA xác thực; chỉ giữ nền log/mock, không gửi thật."),
+        {
+          id: "ai_gateway",
+          label: "/api/ai/chat",
+          type: "gateway",
+          status: "active",
+          column: 2,
+          row: 3,
+          description: "Cửa vào duy nhất cho các bot AI, ghi log, cache và điều phối theo botType/intent.",
+          metrics: {
+            requests: aiLogSummary?.requestCount || 0,
+            cache: aiLogSummary?.cacheHitCount || 0,
+            errors: aiLogSummary?.errorCount || 0
+          }
+        },
+        {
+          id: "bot_config",
+          label: "Cấu hình Bot",
+          type: "config",
+          status: aiBotConfigs.length ? "active" : "error",
+          column: 3,
+          row: 2,
+          description: "Bảng ai_bot_configs quyết định engine, chunks, tokens, cache và retry riêng cho từng bot.",
+          metrics: { bots: aiBotConfigs.length, enabled: aiBotConfigs.filter((item) => item.enabled).length }
+        },
+        {
+          id: "intent_router",
+          label: "Điều phối Intent",
+          type: "router",
+          status: "active",
+          column: 3,
+          row: 4,
+          description: "Phân loại câu hỏi thành tra người, ngày giỗ, tri thức, viết bài, soạn sớ hoặc fallback.",
+          metrics: { intents: aiLogSummary?.topIntents?.length || 0 }
+        },
+        {
+          id: "auth_guard",
+          label: "KYC / Quyền xem",
+          type: "guard",
+          status: "active",
+          column: 4,
+          row: 1,
+          description: "Chặn dữ liệu cá nhân chi tiết nếu người dùng chưa đăng nhập hoặc chưa KYC.",
+          metrics: { rule: "public/KYC/admin" }
+        },
+        {
+          id: "local_db",
+          label: "Cây phả & Database",
+          type: "data",
+          status: "active",
+          column: 4,
+          row: 3,
+          description: "Nguồn local-first cho nhân vật, đời, chi/ngành, dữ liệu đã applied và hồ sơ.",
+          metrics: { members: formatNumber(members.length) }
+        },
+        {
+          id: "anniversary_calendar",
+          label: "Lịch giỗ xác minh",
+          type: "data",
+          status: "active",
+          column: 4,
+          row: 4,
+          description: "Tra ngày giỗ verified/applied trước khi gửi sang AI diễn đạt.",
+          metrics: { events: formatNumber(events.length) }
+        },
+        {
+          id: "knowledge_search",
+          label: "Kho tri thức",
+          type: "data",
+          status: knowledgeStatus ? "active" : "error",
+          column: 4,
+          row: 5,
+          description: "Tìm top chunks từ tài liệu Cao Tộc, alias/danh xưng và dữ liệu đã import.",
+          metrics: {
+            sources: knowledgeStatus?.sources || 0,
+            chunks: knowledgeStatus?.chunks || 0,
+            aliases: knowledgeStatus?.aliases || 0
+          }
+        },
+        {
+          id: "gemini",
+          label: "Gemini",
+          type: "model",
+          status: aiConfig.modelName ? "active" : "disabled",
+          column: 5,
+          row: 4,
+          description: "Chỉ dùng khi local/knowledge chưa đủ hoặc cần sinh nội dung dài.",
+          metrics: { model: aiConfig.modelName || "gemini-2.5-flash" }
+        },
+        {
+          id: "response_guard",
+          label: "Response Guard",
+          type: "guard",
+          status: "active",
+          column: 6,
+          row: 3,
+          description: "Chặn bịa dữ liệu, phân biệt pending/applied và giới hạn câu trả lời theo bot.",
+          metrics: { policy: "không bịa dữ liệu" }
+        },
+        {
+          id: "ai_logs",
+          label: "Logs / Token",
+          type: "logs",
+          status: "active",
+          column: 6,
+          row: 5,
+          description: "Theo dõi request, cache, lỗi, token ước tính và nguồn tri thức theo từng bot.",
+          metrics: { tokens: aiLogSummary?.estimatedTokens || 0, avg: `${aiLogSummary?.avgDurationMs || 0}ms` }
+        }
+      ],
+      edges: [
+        { from: "webview_chat", to: "ai_gateway", label: "botType" },
+        { from: "dashboard_helper", to: "ai_gateway", label: "botType" },
+        { from: "ai_governor", to: "ai_gateway", label: "botType" },
+        { from: "article_writer", to: "ai_gateway", label: "botType" },
+        { from: "prayer_writer", to: "ai_gateway", label: "botType" },
+        { from: "zalo_bot", to: "ai_gateway", label: "paused" },
+        { from: "ai_gateway", to: "bot_config", label: "đọc cấu hình" },
+        { from: "ai_gateway", to: "intent_router", label: "intent" },
+        { from: "intent_router", to: "auth_guard", label: "quyền" },
+        { from: "intent_router", to: "local_db", label: "local-first" },
+        { from: "intent_router", to: "anniversary_calendar", label: "ngày giỗ" },
+        { from: "intent_router", to: "knowledge_search", label: "search" },
+        { from: "knowledge_search", to: "gemini", label: "khi cần" },
+        { from: "local_db", to: "response_guard" },
+        { from: "anniversary_calendar", to: "response_guard" },
+        { from: "gemini", to: "response_guard" },
+        { from: "response_guard", to: "ai_logs", label: "ghi log" }
+      ]
+    };
+  }, [aiBotConfigs, aiConfig.modelName, aiLogSummary, events.length, knowledgeStatus, members.length]);
+
+  const selectedOperationNode =
+    aiOperationGraph.nodes.find((node) => node.id === selectedOperationNodeId) || aiOperationGraph.nodes[0];
+  const operationColumns = [1, 2, 3, 4, 5, 6].map((column) => ({
+    column,
+    nodes: aiOperationGraph.nodes.filter((node) => node.column === column).sort((a, b) => a.row - b.row)
+  }));
+  const statusLabel: Record<AIOperationGraphNodeStatus, string> = {
+    active: "Đang chạy",
+    paused: "Tạm dừng",
+    disabled: "Đã tắt",
+    error: "Cần kiểm tra"
+  };
+  const statusClass: Record<AIOperationGraphNodeStatus, string> = {
+    active: "border-emerald-200 bg-emerald-50/70 text-emerald-800",
+    paused: "border-amber-200 bg-amber-50/80 text-amber-900",
+    disabled: "border-stone-200 bg-stone-100 text-stone-500",
+    error: "border-red-200 bg-red-50 text-red-800"
+  };
+  const nodeTypeLabel: Record<AIOperationGraphNode["type"], string> = {
+    bot: "Bot",
+    gateway: "Gateway",
+    config: "Cấu hình",
+    router: "Router",
+    data: "Dữ liệu",
+    model: "Model",
+    guard: "Guard",
+    logs: "Log"
+  };
+
   return (
     <div className="space-y-5 text-stone-850">
       <section className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
@@ -1350,6 +1572,7 @@ export default function AIGovernor({
       <div className="flex flex-wrap gap-2 rounded-xl border border-stone-200 bg-stone-100 p-1 text-xs font-bold">
         {[
           ["overview", "Tổng quan AI", BrainCircuit],
+          ["operations", "Sơ đồ vận hành", GitBranch],
           ["knowledge", "Kho tri thức", UploadCloud],
           ["content", "Rà soát & viết bài", FileSearch],
           ["channels", "Kênh trả lời", MessageSquare]
@@ -1421,10 +1644,10 @@ export default function AIGovernor({
                 <div>
                   <h3 className="flex items-center gap-2 font-serif text-lg font-bold text-red-950">
                     <Settings className="h-5 w-5 text-amber-700" />
-                    Quan tri Bot AI
+                    Quản trị Bot AI
                   </h3>
                   <p className="mt-1 text-xs leading-relaxed text-stone-500">
-                    Cau hinh rieng cho webview_chat, dashboard_helper, ai_governor, article_writer, prayer_writer va zalo_bot.
+                    Cấu hình riêng cho webview_chat, dashboard_helper, ai_governor, article_writer, prayer_writer và zalo_bot.
                   </p>
                 </div>
                 <button
@@ -1434,7 +1657,7 @@ export default function AIGovernor({
                   className="inline-flex items-center gap-2 rounded border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-60"
                 >
                   <RefreshCw className={`h-4 w-4 ${isAiBotConfigsLoading ? "animate-spin" : ""}`} />
-                  Tai cau hinh bot
+                  Tải cấu hình bot
                 </button>
               </div>
               {aiBotConfigNote && <p className="mt-2 rounded bg-amber-50 p-2 text-[11px] text-amber-900">{aiBotConfigNote}</p>}
@@ -1508,7 +1731,7 @@ export default function AIGovernor({
                     <p className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-stone-500">{config.systemPromptShort}</p>
                   </div>
                 ))}
-                {!aiBotConfigs.length && <p className="text-xs text-stone-500">Chua co cau hinh bot AI hoac tai khoan hien tai chua co quyen admin.</p>}
+                {!aiBotConfigs.length && <p className="text-xs text-stone-500">Chưa có cấu hình bot AI hoặc tài khoản hiện tại chưa có quyền admin.</p>}
               </div>
             </div>
 
@@ -1564,26 +1787,24 @@ export default function AIGovernor({
           <section className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
             <h3 className="mb-4 flex items-center gap-2 font-serif text-lg font-bold text-red-950">
               <BrainCircuit className="h-5 w-5 text-amber-700" />
-              So do van hanh AI
+              Sơ đồ vận hành AI
             </h3>
-            <div className="grid grid-cols-1 gap-2 text-xs md:grid-cols-5">
-              {[
-                ["1. Surface", "webview / dashboard / article / prayer"],
-                ["2. Gateway", "/api/ai/chat + botType + intent"],
-                ["3. Config", "ai_bot_configs: engine, cache, token"],
-                ["4. Local data", "database, aliases, knowledge, anniversaries"],
-                ["5. Response", "local neu du, Gemini khi can"]
-              ].map(([title, detail]) => (
-                <button
-                  key={title}
-                  type="button"
-                  onClick={() => void loadAIBotConfigs()}
-                  className="min-h-[92px] rounded-lg border border-stone-200 bg-[#fbfaf6] p-3 text-left hover:border-amber-300 hover:bg-amber-50/40"
-                >
-                  <span className="block font-bold text-red-950">{title}</span>
-                  <span className="mt-2 block leading-relaxed text-stone-500">{detail}</span>
-                </button>
-              ))}
+            <div className="grid grid-cols-1 gap-3 text-xs md:grid-cols-3">
+              <div className="rounded-lg border border-stone-200 bg-[#fbfaf6] p-3">
+                <span className="block font-bold text-red-950">Workflow tương tác</span>
+                <span className="mt-2 block leading-relaxed text-stone-500">Bot → Gateway → Cấu hình → Intent → Dữ liệu local/kho tri thức/Gemini → Guard → Log.</span>
+              </div>
+              <div className="rounded-lg border border-stone-200 bg-[#fbfaf6] p-3">
+                <span className="block font-bold text-red-950">Theo từng bot</span>
+                <span className="mt-2 block leading-relaxed text-stone-500">Click node để xem engine, chunks, tokens, cache, request và lỗi gần đây.</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveMode("operations")}
+                className="rounded-lg border border-red-200 bg-red-50 p-3 text-left font-bold text-red-950 hover:border-red-300 hover:bg-red-100"
+              >
+                Mở sơ đồ vận hành đầy đủ
+              </button>
             </div>
             <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
               {(aiLogSummary?.topBotTypes || []).slice(0, 6).map((item) => (
@@ -1617,6 +1838,164 @@ export default function AIGovernor({
                   <p className="mt-2 rounded bg-white px-2.5 py-1.5 text-[10px] font-semibold text-emerald-700">{item.status}</p>
                 </article>
               ))}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {activeMode === "operations" && (
+        <div className="space-y-5">
+          <section className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <h3 className="flex items-center gap-2 font-serif text-xl font-bold text-red-950">
+                  <GitBranch className="h-5 w-5 text-amber-700" />
+                  Sơ đồ vận hành AI
+                </h3>
+                <p className="mt-1 max-w-3xl text-sm leading-relaxed text-stone-500">
+                  Workflow trái sang phải cho toàn bộ hệ thống AI. Bấm vào từng node để xem cấu hình, trạng thái, chỉ số và đường truyền dữ liệu liên quan.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2 text-[11px] font-bold">
+                {Object.entries(statusLabel).map(([status, label]) => (
+                  <span key={status} className={`rounded-full border px-2.5 py-1 ${statusClass[status as AIOperationGraphNodeStatus]}`}>
+                    {label}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
+              <div className="overflow-x-auto rounded-xl border border-stone-200 bg-[#fbfaf6] p-4">
+                <div className="grid min-w-[1080px] grid-cols-[1.35fr_1fr_1fr_1.2fr_0.9fr_1fr] gap-3">
+                  {operationColumns.map((column, columnIndex) => (
+                    <div key={column.column} className="relative space-y-3">
+                      {columnIndex > 0 && (
+                        <div className="absolute -left-3 top-1/2 hidden h-px w-3 bg-amber-300 xl:block" />
+                      )}
+                      {column.nodes.map((node) => {
+                        const isSelected = selectedOperationNode.id === node.id;
+                        return (
+                          <button
+                            key={node.id}
+                            type="button"
+                            onClick={() => setSelectedOperationNodeId(node.id)}
+                            className={`w-full rounded-xl border p-3 text-left text-xs shadow-sm transition hover:-translate-y-0.5 hover:border-amber-300 hover:shadow-md ${
+                              isSelected ? "border-red-300 bg-white ring-2 ring-red-100" : "border-stone-200 bg-white"
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <span className="block text-[10px] font-black uppercase tracking-wide text-amber-700">
+                                  {nodeTypeLabel[node.type]}
+                                </span>
+                                <strong className="mt-1 block text-sm text-red-950">{node.label}</strong>
+                              </div>
+                              <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-bold ${statusClass[node.status]}`}>
+                                {statusLabel[node.status]}
+                              </span>
+                            </div>
+                            <p className="mt-2 line-clamp-3 leading-relaxed text-stone-500">{node.description}</p>
+                            {node.metrics && (
+                              <div className="mt-3 flex flex-wrap gap-1.5">
+                                {Object.entries(node.metrics).slice(0, 3).map(([key, value]) => (
+                                  <span key={key} className="rounded bg-stone-100 px-2 py-1 text-[10px] font-semibold text-stone-600">
+                                    {key}: {String(value)}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <aside className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <span className="text-[10px] font-black uppercase tracking-wide text-amber-700">
+                      {nodeTypeLabel[selectedOperationNode.type]}
+                    </span>
+                    <h4 className="mt-1 font-serif text-lg font-bold text-red-950">{selectedOperationNode.label}</h4>
+                  </div>
+                  <span className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${statusClass[selectedOperationNode.status]}`}>
+                    {statusLabel[selectedOperationNode.status]}
+                  </span>
+                </div>
+                <p className="mt-3 text-sm leading-relaxed text-stone-600">{selectedOperationNode.description}</p>
+
+                {selectedOperationNode.metrics && (
+                  <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
+                    {Object.entries(selectedOperationNode.metrics).map(([key, value]) => (
+                      <p key={key} className="rounded-lg bg-stone-50 p-2">
+                        <span className="block text-[10px] font-bold uppercase text-stone-400">{key}</span>
+                        <strong className="mt-1 block text-red-950">{String(value)}</strong>
+                      </p>
+                    ))}
+                  </div>
+                )}
+
+                <div className="mt-4 border-t border-stone-100 pt-4">
+                  <p className="text-[10px] font-black uppercase tracking-wide text-stone-400">Đường nối liên quan</p>
+                  <div className="mt-2 space-y-2 text-xs">
+                    {aiOperationGraph.edges
+                      .filter((edge) => edge.from === selectedOperationNode.id || edge.to === selectedOperationNode.id)
+                      .map((edge) => {
+                        const fromNode = aiOperationGraph.nodes.find((node) => node.id === edge.from);
+                        const toNode = aiOperationGraph.nodes.find((node) => node.id === edge.to);
+                        return (
+                          <button
+                            key={`${edge.from}-${edge.to}-${edge.label || ""}`}
+                            type="button"
+                            onClick={() => setSelectedOperationNodeId(edge.to === selectedOperationNode.id ? edge.from : edge.to)}
+                            className="w-full rounded-lg border border-stone-200 bg-[#fbfaf6] px-3 py-2 text-left hover:border-amber-300 hover:bg-amber-50"
+                          >
+                            <span className="font-bold text-red-950">{fromNode?.label || edge.from}</span>
+                            <span className="px-2 text-amber-700">→</span>
+                            <span className="font-bold text-red-950">{toNode?.label || edge.to}</span>
+                            {edge.label && <span className="ml-2 text-stone-500">({edge.label})</span>}
+                          </button>
+                        );
+                      })}
+                    {!aiOperationGraph.edges.some((edge) => edge.from === selectedOperationNode.id || edge.to === selectedOperationNode.id) && (
+                      <p className="rounded bg-stone-50 p-2 text-stone-500">Node này chưa có đường nối được ghi nhận.</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {selectedOperationNode.type === "bot" && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveMode("overview")}
+                      className="rounded bg-red-900 px-3 py-2 text-xs font-bold text-white hover:bg-red-950"
+                    >
+                      Mở cấu hình bot
+                    </button>
+                  )}
+                  {selectedOperationNode.id === "knowledge_search" && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveMode("knowledge")}
+                      className="rounded bg-red-900 px-3 py-2 text-xs font-bold text-white hover:bg-red-950"
+                    >
+                      Mở kho tri thức
+                    </button>
+                  )}
+                  {selectedOperationNode.id === "ai_logs" && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveMode("knowledge")}
+                      className="rounded bg-red-900 px-3 py-2 text-xs font-bold text-white hover:bg-red-950"
+                    >
+                      Mở nhật ký AI
+                    </button>
+                  )}
+                </div>
+              </aside>
             </div>
           </section>
         </div>
@@ -2394,7 +2773,7 @@ export default function AIGovernor({
                   Zalo Bot an toan
                 </h3>
                 <p className="mt-1 text-xs leading-relaxed text-stone-500">
-                  Chi phan hoi khi co tuong tac hop le. Khong broadcast, khong gui lich tu dong, khong goi Zalo real khi send mode dang khoa.
+                  Chỉ phản hồi khi có tương tác hợp lệ. Không broadcast, không gửi lịch tự động, không gọi Zalo real khi send mode đang khóa.
                 </p>
               </div>
               <button
@@ -2404,7 +2783,7 @@ export default function AIGovernor({
                 className="inline-flex items-center gap-2 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-900 hover:bg-emerald-100 disabled:opacity-60"
               >
                 <RefreshCw className={`h-4 w-4 ${isZaloBotLoading ? "animate-spin" : ""}`} />
-                Tai lai Zalo Bot
+                Tải lại Zalo Bot
               </button>
             </div>
 
@@ -2429,15 +2808,15 @@ export default function AIGovernor({
             <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50/40 p-3">
               <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
                 <div>
-                  <p className="text-xs font-bold text-blue-950">Webhook that</p>
+                  <p className="text-xs font-bold text-blue-950">Webhook thật</p>
                   <p className="mt-1 text-[11px] leading-relaxed text-blue-900">
-                    Phase 2Q chi nhan event, xac thuc va ghi log. Chua reply Zalo that, chua broadcast, chua gui nhom that.
+                    Phase 2Q chỉ nhận event, xác thực và ghi log. Chưa reply Zalo thật, chưa broadcast, chưa gửi nhóm thật.
                   </p>
                 </div>
                 <span className={`rounded px-2 py-1 text-[11px] font-bold ${
                   zaloWebhookStatus?.webhookSafe ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900"
                 }`}>
-                  {zaloWebhookStatus?.webhookSafe ? "safe" : "chua an toan"}
+                  {zaloWebhookStatus?.webhookSafe ? "an toàn" : "chưa an toàn"}
                 </span>
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8">
@@ -2511,7 +2890,7 @@ export default function AIGovernor({
                   {zaloBotEvents.map((event) => (
                     <div key={event.id} className="rounded border border-stone-100 bg-stone-50 px-2 py-1.5 text-[11px] text-stone-700">
                       <p><strong>{event.status}</strong> · {event.channel} · {event.intent}</p>
-                      <p className="text-stone-500">{event.eventType} / {event.signatureStatus || "no-signature"} / {event.reviewedAt ? "da xem" : "chua xem"}</p>
+                      <p className="text-stone-500">{event.eventType} / {event.signatureStatus || "no-signature"} / {event.reviewedAt ? "đã xem" : "chưa xem"}</p>
                       <p className="truncate">{event.senderName || event.senderId}: {event.messageText || event.eventType}</p>
                       {event.error ? <p className="text-amber-700">{event.error}</p> : null}
                       <div className="mt-1 flex flex-wrap gap-1">
@@ -2534,7 +2913,7 @@ export default function AIGovernor({
                       </div>
                     </div>
                   ))}
-                  {!zaloBotEvents.length && <p className="text-xs text-stone-500">Chua co event.</p>}
+                  {!zaloBotEvents.length && <p className="text-xs text-stone-500">Chưa có event.</p>}
                 </div>
               </div>
 
@@ -2547,7 +2926,7 @@ export default function AIGovernor({
                       <p className="line-clamp-3">{reply.replyText || reply.error || "No reply text"}</p>
                     </div>
                   ))}
-                  {!zaloBotReplies.length && <p className="text-xs text-stone-500">Chua co reply.</p>}
+                  {!zaloBotReplies.length && <p className="text-xs text-stone-500">Chưa có reply.</p>}
                 </div>
               </div>
             </div>
