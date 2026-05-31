@@ -56,6 +56,8 @@ interface ReminderSendLog {
   status: string;
   error: string;
   blockedReason?: string;
+  requestId?: string;
+  responseId?: string;
   sentBy: string;
   sentAt: string;
   createdAt: string;
@@ -67,6 +69,7 @@ interface ReminderTransportStatus {
     mode: string;
     configured: boolean;
     canSendReal: boolean;
+    dryRun?: boolean;
   };
   webChat: {
     enabled: boolean;
@@ -74,6 +77,13 @@ interface ReminderTransportStatus {
     canSendReal?: boolean;
   };
   rateLimit: number;
+}
+
+interface ReminderTestRecipient {
+  id: string;
+  type: "admin_test" | "linked_user_test";
+  name: string;
+  source: string;
 }
 
 export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInitialPrompt, members = [] }: EventsProps) {
@@ -97,6 +107,8 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
   const [transportCheckResult, setTransportCheckResult] = useState("");
   const [sendReal, setSendReal] = useState(false);
   const [sendConfirmText, setSendConfirmText] = useState("");
+  const [sendFinalConfirm, setSendFinalConfirm] = useState(false);
+  const [testRecipients, setTestRecipients] = useState<ReminderTestRecipient[]>([]);
 
   // Form states
   const [newTitle, setNewTitle] = useState("");
@@ -213,14 +225,22 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
     if (Array.isArray(data.logs)) setSendLogs(data.logs);
   };
 
+  const loadReminderTestRecipients = async () => {
+    const response = await fetch("/api/reminder-test-recipients");
+    const data = await response.json().catch(() => ({}));
+    if (Array.isArray(data.recipients)) setTestRecipients(data.recipients);
+  };
+
   const openSendTest = async (draft: AnniversaryDraft) => {
     setSendDraftId(draft.id);
     setSendChannel(draft.channel === "web_chat" ? "web_chat" : draft.channel === "zalo" ? "zalo" : "dashboard");
     setSendReal(false);
     setSendConfirmText("");
+    setSendFinalConfirm(false);
     setSendResult("");
     await loadReminderSendLogs(draft.id);
     await loadReminderTransportStatus();
+    await loadReminderTestRecipients();
   };
 
   const sendDraftTest = async (draft: AnniversaryDraft) => {
@@ -232,10 +252,11 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           channel: sendChannel,
-          recipientType: sendReal ? "admin_test" : "admin_test",
+          recipientType: sendReal ? (testRecipients.find((item) => item.id === sendRecipient)?.type || "admin_test") : "admin_test",
           recipientManual: sendRecipient,
           sendReal,
-          confirmText: sendConfirmText
+          confirmText: sendConfirmText,
+          finalConfirm: sendFinalConfirm
         })
       });
       const data = await response.json().catch(() => ({}));
@@ -243,7 +264,7 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
         setSendResult(data.error || "Khong gui thu duoc ban nhac.");
         return;
       }
-      setSendResult(`Da ghi log gui thu bang ${data.log?.transport || "mock"}.`);
+      setSendResult(`Da ghi log gui thu bang ${data.log?.transport || "mock"}${data.log?.responseId ? `; responseId ${data.log.responseId}` : ""}.`);
       await loadReminderSendLogs(draft.id);
     } finally {
       setSendLoading(false);
@@ -633,6 +654,7 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
               <p>mode: <strong>{transportStatus?.zalo.mode || "mock"}</strong></p>
               <p>configured: <strong>{String(Boolean(transportStatus?.zalo.configured))}</strong></p>
               <p>canSendReal: <strong>{String(Boolean(transportStatus?.zalo.canSendReal))}</strong></p>
+              <p>dryRun: <strong>{String(Boolean(transportStatus?.zalo.dryRun))}</strong></p>
               <button
                 type="button"
                 onClick={() => checkReminderTransport("zalo")}
@@ -757,16 +779,30 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
                         </div>
                         <div className="flex-1 space-y-1">
                           <label className="block text-[10px] font-bold uppercase text-stone-500">Nguoi nhan test</label>
-                          <input
-                            value={sendRecipient}
-                            onChange={(event) => setSendRecipient(event.target.value)}
-                            placeholder="admin-test hoac recipient test"
-                            className="w-full rounded border border-green-200 bg-white px-2 py-1.5 text-[11px] text-stone-800"
-                          />
+                          {sendReal && testRecipients.length > 0 ? (
+                            <select
+                              value={sendRecipient}
+                              onChange={(event) => setSendRecipient(event.target.value)}
+                              className="w-full rounded border border-green-200 bg-white px-2 py-1.5 text-[11px] text-stone-800"
+                            >
+                              {testRecipients.map((recipient) => (
+                                <option key={`${recipient.type}:${recipient.id}`} value={recipient.id}>
+                                  {recipient.name} · {recipient.type} · {recipient.source}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              value={sendRecipient}
+                              onChange={(event) => setSendRecipient(event.target.value)}
+                              placeholder="admin-test hoac recipient test"
+                              className="w-full rounded border border-green-200 bg-white px-2 py-1.5 text-[11px] text-stone-800"
+                            />
+                          )}
                         </div>
                         <button
                           type="button"
-                          disabled={sendLoading || !sendRecipient.trim() || (sendReal && sendConfirmText !== "GUI TEST THAT")}
+                          disabled={sendLoading || !sendRecipient.trim() || (sendReal && (sendConfirmText !== "GUI TEST THAT" || !sendFinalConfirm))}
                           onClick={() => sendDraftTest(draft)}
                           className="rounded bg-green-800 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-green-950 disabled:cursor-not-allowed disabled:opacity-45"
                         >
@@ -779,17 +815,31 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
                             <input
                               type="checkbox"
                               checked={sendReal}
-                              onChange={(event) => setSendReal(event.target.checked)}
+                              onChange={(event) => {
+                                const next = event.target.checked;
+                                setSendReal(next);
+                                if (next && testRecipients.length > 0) setSendRecipient(testRecipients[0].id);
+                              }}
                             />
                             Gui that cho 1 nguoi nhan test
                           </label>
                           {sendReal && (
-                            <input
-                              value={sendConfirmText}
-                              onChange={(event) => setSendConfirmText(event.target.value)}
-                              placeholder="Nhap GUI TEST THAT de xac nhan"
-                              className="w-full rounded border border-amber-200 bg-white px-2 py-1.5 text-[11px] text-stone-800"
-                            />
+                            <div className="space-y-2">
+                              <input
+                                value={sendConfirmText}
+                                onChange={(event) => setSendConfirmText(event.target.value)}
+                                placeholder="Nhap GUI TEST THAT de xac nhan"
+                                className="w-full rounded border border-amber-200 bg-white px-2 py-1.5 text-[11px] text-stone-800"
+                              />
+                              <label className="flex items-center gap-2 text-[11px] font-semibold text-amber-950">
+                                <input
+                                  type="checkbox"
+                                  checked={sendFinalConfirm}
+                                  onChange={(event) => setSendFinalConfirm(event.target.checked)}
+                                />
+                                Toi xac nhan chi gui 1 tin test that
+                              </label>
+                            </div>
                           )}
                           <p className="text-[10px] text-amber-800">Khong gui nhom. Khong gui hang loat. Khong tu dong gui khi den ngay.</p>
                         </div>
@@ -812,6 +862,7 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
                             {sendLogs.map((log) => (
                               <div key={log.id} className="rounded border border-green-100 bg-white px-2 py-1 text-[10px] text-stone-600">
                                 <strong className="text-stone-850">{log.status}</strong> · {log.transport} · {log.recipientName || log.recipientId} · {log.sentAt || log.createdAt}
+                                {log.responseId ? <span className="text-green-700"> · responseId {log.responseId}</span> : null}
                                 {log.blockedReason ? <span className="text-amber-700"> · {log.blockedReason}</span> : null}
                                 {log.error ? <span className="text-red-700"> · {log.error}</span> : null}
                               </div>

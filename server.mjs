@@ -2595,6 +2595,17 @@ app.post('/api/reminder-transports/check', async (req, res) => {
   }
 });
 
+app.get('/api/reminder-test-recipients', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json({ ok: true, recipients: await listReminderTestRecipients(admin.authUser) });
+  } catch (err) {
+    console.error('Failed to list reminder test recipients:', err);
+    res.status(500).json({ error: 'Failed to list reminder test recipients.' });
+  }
+});
+
 app.patch('/api/anniversary-drafts/:id', async (req, res) => {
   try {
     if (!await requireAdmin(req, res)) return;
@@ -3921,6 +3932,7 @@ function readReminderTransportConfig() {
   const zaloToken = String(process.env.ZALO_OA_ACCESS_TOKEN || '').trim();
   const zaloOaId = String(process.env.ZALO_OA_ID || '').trim();
   const zaloApiUrl = String(process.env.ZALO_SEND_API_URL || '').trim();
+  const zaloDryRun = String(process.env.ZALO_REAL_SEND_DRY_RUN || 'false').trim().toLowerCase() === 'true';
   const webChatEnabled = String(process.env.WEB_CHAT_SEND_ENABLED || 'false').trim().toLowerCase() === 'true';
   const rateLimit = Math.max(1, Math.min(60, Number(process.env.REMINDER_REAL_SEND_RATE_LIMIT_PER_MINUTE || 3) || 3));
   const zaloConfigured = Boolean(zaloToken && zaloOaId && zaloApiUrl);
@@ -3930,7 +3942,8 @@ function readReminderTransportConfig() {
       enabled: zaloEnabled,
       mode: zaloMode === 'real' ? 'real' : 'mock',
       configured: zaloConfigured,
-      canSendReal: Boolean(zaloEnabled && zaloMode === 'real' && zaloConfigured)
+      canSendReal: Boolean(zaloEnabled && zaloMode === 'real' && zaloConfigured),
+      dryRun: zaloDryRun
     },
     webChat: {
       enabled: webChatEnabled,
@@ -3956,6 +3969,7 @@ function checkReminderTransportConfig(channel) {
       mode: config.zalo.mode,
       configured: config.zalo.configured,
       canSendReal: config.zalo.canSendReal,
+      dryRun: config.zalo.dryRun,
       missing: [
         config.zalo.enabled ? '' : 'ZALO_SEND_ENABLED=true',
         config.zalo.mode === 'real' ? '' : 'ZALO_SEND_MODE=real',
@@ -3990,12 +4004,107 @@ function checkReminderTransportConfig(channel) {
   };
 }
 
-function makeReminderSendError(message, { status = 400, auditStatus = 'blocked', transport = 'mock', blockedReason = '' } = {}) {
+function addReminderTestRecipient(map, recipient) {
+  const id = String(recipient?.id || '').trim();
+  if (!id || recipient?.type === 'group') return;
+  const type = normalizeReminderRecipientType(recipient.type || 'admin_test');
+  if (!['admin_test', 'linked_user_test'].includes(type)) return;
+  map.set(`${type}:${id}`, {
+    id,
+    type,
+    name: String(recipient.name || id).trim(),
+    source: String(recipient.source || 'user').trim()
+  });
+}
+
+function getZaloRecipientIdsFromUser(user = {}) {
+  const ids = [];
+  [
+    user.zaloRecipientId,
+    user.zaloUserId,
+    user.recipientId,
+    user.openId,
+    user.uid,
+    user.zaloId
+  ].forEach((value) => {
+    if (value) ids.push(String(value).trim());
+  });
+  [user.username, user.phone, user.id].forEach((value) => {
+    const text = String(value || '').trim();
+    if (text.startsWith('zalo_')) ids.push(text.slice('zalo_'.length));
+    if (text.startsWith('oauth_zalo_')) ids.push(text.slice('oauth_zalo_'.length));
+  });
+  return [...new Set(ids.filter(Boolean))];
+}
+
+async function listReminderTestRecipients(adminUser = {}) {
+  const recipients = new Map();
+  String(process.env.ZALO_TEST_RECIPIENT_IDS || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .forEach((item, index) => {
+      const [rawId, rawName] = item.split(':');
+      addReminderTestRecipient(recipients, {
+        id: rawId,
+        type: 'admin_test',
+        name: rawName || `Zalo test recipient ${index + 1}`,
+        source: 'env'
+      });
+    });
+
+  const users = await readAuthUsers();
+  for (const user of users) {
+    const isVerified = Boolean(user?.isKYCed && user?.kycStatus === 'verified' && user?.isApproved !== false && user?.approvalStatus !== 'rejected');
+    const isZalo = user?.loginType === 'zalo' || String(user?.username || '').startsWith('zalo_') || String(user?.id || '').startsWith('oauth_zalo_');
+    const isAdmin = isAdminAuthUser(user);
+    if (!isZalo || (!isVerified && !isAdmin)) continue;
+    for (const id of getZaloRecipientIdsFromUser(user)) {
+      addReminderTestRecipient(recipients, {
+        id,
+        type: isAdmin ? 'admin_test' : 'linked_user_test',
+        name: user.fullName || user.username || id,
+        source: isAdmin ? 'admin_user' : 'kyc_user'
+      });
+    }
+  }
+
+  if (adminUser?.loginType === 'zalo' || String(adminUser?.username || '').startsWith('zalo_')) {
+    for (const id of getZaloRecipientIdsFromUser(adminUser)) {
+      addReminderTestRecipient(recipients, {
+        id,
+        type: 'admin_test',
+        name: adminUser.fullName || adminUser.username || id,
+        source: 'current_admin'
+      });
+    }
+  }
+
+  return [...recipients.values()].sort((a, b) => a.name.localeCompare(b.name, 'vi'));
+}
+
+async function assertRealReminderRecipientAllowed(recipient, adminUser) {
+  const allowed = await listReminderTestRecipients(adminUser);
+  const found = allowed.find((item) => item.id === recipient?.id && item.type === recipient?.type);
+  if (!found) {
+    throw makeReminderSendError('Real Zalo test recipient is not in the allowed admin/KYC test list.', {
+      status: 400,
+      auditStatus: 'blocked',
+      transport: 'zalo_real',
+      blockedReason: 'recipient_not_allowed'
+    });
+  }
+  return found;
+}
+
+function makeReminderSendError(message, { status = 400, auditStatus = 'blocked', transport = 'mock', blockedReason = '', requestId = '', responseId = '' } = {}) {
   const err = new Error(message);
   err.status = status;
   err.auditStatus = auditStatus;
   err.transport = transport;
   err.blockedReason = blockedReason || message;
+  err.requestId = requestId;
+  err.responseId = responseId;
   return err;
 }
 
@@ -4017,7 +4126,105 @@ function assertReminderRealSendRateLimit(sentBy, channel) {
   reminderRealSendAttempts.set(key, recent);
 }
 
-async function sendReminderMessage({ channel, recipient, message, draftId, sendReal = false, confirmText = '', sentBy = '' }) {
+function buildZaloOaTextMessagePayload({ recipient, message }) {
+  return {
+    recipient: {
+      user_id: recipient.id
+    },
+    message: {
+      text: message
+    }
+  };
+}
+
+function extractZaloResponseId(data) {
+  return String(data?.data?.message_id || data?.data?.msg_id || data?.message_id || data?.msg_id || data?.request_id || '').trim();
+}
+
+async function sendZaloRealReminder({ recipient, message, draftId }) {
+  const config = readReminderTransportConfig();
+  const apiUrl = String(process.env.ZALO_SEND_API_URL || '').trim();
+  const token = String(process.env.ZALO_OA_ACCESS_TOKEN || '').trim();
+  const payload = buildZaloOaTextMessagePayload({ recipient, message });
+  const requestId = `zalo_req_${randomToken(10)}`;
+
+  if (config.zalo.dryRun) {
+    return {
+      draftId,
+      channel: 'zalo',
+      recipient,
+      message,
+      transport: 'zalo_real',
+      status: 'sent',
+      error: '',
+      requestId,
+      responseId: `dryrun_${randomToken(8)}`,
+      sentAt: new Date().toISOString(),
+      dryRun: true,
+      payloadPreview: {
+        recipient: payload.recipient,
+        messageLength: message.length
+      }
+    };
+  }
+
+  let response;
+  let data = {};
+  try {
+    response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        access_token: token
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10_000)
+    });
+    const text = await response.text();
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = { raw: text };
+    }
+  } catch (err) {
+    throw makeReminderSendError(`Zalo real send request failed: ${err.message || err}`, {
+      status: 502,
+      auditStatus: 'failed',
+      transport: 'zalo_real',
+      blockedReason: 'zalo_request_failed',
+      requestId
+    });
+  }
+
+  const errorCode = data?.error ?? data?.error_code ?? data?.code;
+  const okByBody = errorCode === undefined || errorCode === 0 || errorCode === '0';
+  if (!response.ok || !okByBody) {
+    const messageText = data?.message || data?.error_name || data?.error_description || `HTTP ${response.status}`;
+    throw makeReminderSendError(`Zalo real send failed: ${messageText}`, {
+      status: 502,
+      auditStatus: 'failed',
+      transport: 'zalo_real',
+      blockedReason: 'zalo_response_failed',
+      requestId,
+      responseId: extractZaloResponseId(data)
+    });
+  }
+
+  return {
+    draftId,
+    channel: 'zalo',
+    recipient,
+    message,
+    transport: 'zalo_real',
+    status: 'sent',
+    error: '',
+    requestId,
+    responseId: extractZaloResponseId(data),
+    sentAt: new Date().toISOString()
+  };
+}
+
+async function sendReminderMessage({ channel, recipient, message, draftId, sendReal = false, confirmText = '', finalConfirm = false, sentBy = '' }) {
   const normalizedChannel = normalizeAnniversaryDraftChannel(channel);
   const wantsReal = Boolean(sendReal);
   const config = readReminderTransportConfig();
@@ -4037,6 +4244,14 @@ async function sendReminderMessage({ channel, recipient, message, draftId, sendR
         auditStatus: 'blocked',
         transport: realTransport,
         blockedReason: 'missing_confirm_text'
+      });
+    }
+    if (finalConfirm !== true) {
+      throw makeReminderSendError('Real send requires finalConfirm=true.', {
+        status: 400,
+        auditStatus: 'blocked',
+        transport: realTransport,
+        blockedReason: 'missing_final_confirm'
       });
     }
     if (recipient?.type === 'group') {
@@ -4073,12 +4288,7 @@ async function sendReminderMessage({ channel, recipient, message, draftId, sendR
           blockedReason: 'zalo_not_configured'
         });
       }
-      throw makeReminderSendError('Zalo real send adapter endpoint is not implemented for production sending yet.', {
-        status: 501,
-        auditStatus: 'failed',
-        transport: realTransport,
-        blockedReason: 'zalo_adapter_not_implemented'
-      });
+      return sendZaloRealReminder({ recipient, message, draftId });
     }
     if (!config.webChat.enabled || !config.webChat.configured) {
       throw makeReminderSendError('Web chat real send adapter is not configured in this phase.', {
@@ -4137,6 +4347,10 @@ async function sendAnniversaryDraftTest(id, body = {}, adminUser = {}) {
     name: String(body.recipientName || recipientManual || recipientId).trim()
   };
   const sentBy = adminUser?.username || adminUser?.fullName || adminUser?.id || '';
+  if (Boolean(body.sendReal) && channel === 'zalo' && readReminderTransportConfig().zalo.canSendReal) {
+    const allowedRecipient = await assertRealReminderRecipientAllowed(recipient, adminUser);
+    recipient.name = allowedRecipient.name || recipient.name;
+  }
   const logId = `reminder_log_${randomToken(12)}`;
   let result;
   try {
@@ -4147,6 +4361,7 @@ async function sendAnniversaryDraftTest(id, body = {}, adminUser = {}) {
       draftId: draft.id,
       sendReal: Boolean(body.sendReal),
       confirmText: String(body.confirmText || ''),
+      finalConfirm: body.finalConfirm === true,
       sentBy
     });
   } catch (err) {
@@ -4162,6 +4377,8 @@ async function sendAnniversaryDraftTest(id, body = {}, adminUser = {}) {
       status: err.auditStatus || (err.status === 400 ? 'blocked' : 'failed'),
       error: err.message || 'Send failed.',
       blockedReason: err.blockedReason || '',
+      requestId: err.requestId || '',
+      responseId: err.responseId || '',
       sentBy,
       sentAt: new Date().toISOString()
     });
