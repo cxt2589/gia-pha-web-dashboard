@@ -32,7 +32,7 @@ const normalizeDisplayText = (value: string) => value
 export const stripGeneratedLineageTitlePrefix = (title?: string): string => {
   let cleanTitle = String(title || '').trim();
   const generatedPrefixPatterns = [
-    /^Cao\s+Tổ\s+đời\s+0(?:\s*-\s*|\s+)?/i,
+    /^Cao\s+Tổ(?:\s+đời\s+0)?(?:\s*-\s*|\s+)?/i,
     /^Thủy\s+tổ\s*(?:\([^)]*\))?(?:\s*-\s*|\s+)?/i,
     /^Đời\s+thứ\s+\d+(?:\s*-\s*|\s+)?/i,
     /^Đệ\s+[A-Za-zĂăÂâĐđÊêÔôƠơƯưỨứ\s]+\s+thế\s+tổ(?:\s*-\s*|\s+)?/i,
@@ -94,7 +94,7 @@ export const formatNodeTitle = (node: {
   }
 
   if (node.generation <= 0) {
-    return ['Cao Tổ đời 0', roleFormatted, suffixFormatted].filter(Boolean).join(' - ');
+    return ['Cao Tổ', roleFormatted, suffixFormatted].filter(Boolean).join(' - ');
   }
 
   if (node.generation === 1) {

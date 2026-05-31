@@ -162,7 +162,7 @@ export default function ZaloManager({
   };
 
   const defaultAutoRules: ZaloAutoReply[] = [
-    { id: "r1", keyword: "lichsu", replyType: "text", replyContent: "Theo dữ liệu phả hệ hiện có, Cao Tổ đời 0 là cụ Cao Đình Thuật (高 廷 術), tước hiệu Cao Cao Mãnh Đế Đại Tướng Quân; đời 1 là Thủy Tổ Cao Đình Lạng (高 廷 兩). Các thông tin chi tiết từng nhân vật cần đăng nhập và hoàn tất KYC để xem.", usageCount: 142, isActive: true },
+    { id: "r1", keyword: "lichsu", replyType: "text", replyContent: "Theo dữ liệu phả hệ hiện có, Cao Tổ là cụ Cao Đình Thuật (高 廷 術), tước hiệu Cao Cao Mãnh Đế Đại Tướng Quân; Thủy Tổ là Cao Đình Lạng (高 廷 兩). Các thông tin chi tiết từng nhân vật cần đăng nhập và hoàn tất KYC để xem.", usageCount: 142, isActive: true },
     { id: "r2", keyword: "giado", replyType: "card", replyContent: "Lịch giỗ theo dữ liệu đang có: cụ Cao Đình Lạng có ngày 10/3 âm lịch; cụ Cao Đình Thuật có ngày 15/3 Canh Ngọ. Ban trị sự cần đối chiếu lại tài liệu gốc trước khi phát thông báo chính thức.", usageCount: 94, isActive: true },
     { id: "r3", keyword: "donggop", replyType: "text", replyContent: "Kính thưa quý tộc nhân, mọi thông tin đóng góp, tu bổ, khuyến học cần được Ban trị sự xác nhận và cập nhật công khai trong sổ thu chi. Xin liên hệ người phụ trách hiện hành để nhận thông tin tài khoản và nội dung chuyển khoản đúng.", usageCount: 65, isActive: true },
     { id: "r4", keyword: "lienhe", replyType: "text", replyContent: "Ban trị sự hội đồng gia tộc họ Cao. Địa chỉ, số điện thoại và người phụ trách liên hệ cần được cấu hình bằng dữ liệu thật trước khi phát công khai.", usageCount: 22, isActive: true }

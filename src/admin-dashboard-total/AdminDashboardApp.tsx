@@ -329,7 +329,7 @@ export default function App() {
       id: "doc_1",
       title: "Quy chiếu phả hệ gốc đang dùng",
       category: "Gia phả học",
-      content: "Dữ liệu cây phả hiện tại xác định Cao Tổ đời 0 là cụ Cao Đình Thuật (高 廷 術), tước hiệu Cao Cao Mãnh Đế Đại Tướng Quân (高 高 猛 帝 大 將 軍), sinh năm 1716. Đời thứ 1 là Thủy Tổ Cao Đình Lạng (高 廷 兩). Các thông tin còn khuyết phải được admin đối chiếu lại từ file Excel, phả ký và tài liệu gốc trước khi công bố.",
+      content: "Dữ liệu cây phả hiện tại xác định Cao Tổ là cụ Cao Đình Thuật (高 廷 術), tước hiệu Cao Cao Mãnh Đế Đại Tướng Quân (高 高 猛 帝 大 將 軍), sinh năm 1716. Thủy Tổ là Cao Đình Lạng (高 廷 兩). Các thông tin còn khuyết phải được admin đối chiếu lại từ file Excel, phả ký và tài liệu gốc trước khi công bố.",
       contributor: "Dữ liệu webview",
       lastUpdated: "30/05/2026"
     },

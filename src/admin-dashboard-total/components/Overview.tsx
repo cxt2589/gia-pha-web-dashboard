@@ -236,7 +236,7 @@ export default function Overview({
   const handleQuickWritePrayer = () => {
     if (onSetAIInitialPrompt) {
       onSetAIInitialPrompt(
-        `Kính thưa Trợ lý Gia tộc, hãy soạn giúp tôi một bài văn khấn trang trọng dâng cúng Thủy Tổ Cao Đình Lạng (高 廷 兩), đời thứ 1 của dòng họ Cao. Nếu nhắc tới Cao Tổ đời 0, hãy ghi cụ Cao Đình Thuật (高 廷 術), tước hiệu Cao Cao Mãnh Đế Đại Tướng Quân. Chỉ dùng dữ liệu đã có, không đưa lại dữ liệu mẫu cũ chưa xác minh.`, 
+        `Kính thưa Trợ lý Gia tộc, hãy soạn giúp tôi một bài văn khấn trang trọng dâng cúng Thủy Tổ Cao Đình Lạng (高 廷 兩) của dòng họ Cao. Nếu nhắc tới Cao Tổ, hãy ghi cụ Cao Đình Thuật (高 廷 術), tước hiệu Cao Cao Mãnh Đế Đại Tướng Quân. Chỉ dùng dữ liệu đã có, không đưa lại dữ liệu mẫu cũ chưa xác minh.`,
         "ceremony"
       );
       onSetActiveTab("ai");
@@ -272,7 +272,7 @@ export default function Overview({
             Kính chào Ban Trị Sự Dòng Họ Cao!
           </h1>
           <p className="text-sm text-red-100 leading-relaxed max-w-xl">
-            Nơi kết nối huyết thống, giữ nguyên gia bản phả hệ từ Cao Tổ đời 0 Cao Đình Thuật và Thủy Tổ đời 1 Cao Đình Lạng. Hệ thống tra cứu phả đồ, sổ quỹ thủ chi, tế lễ gia tông và sớ văn nhờ sự hỗ trợ của Trợ lý AI.
+            Nơi kết nối huyết thống, giữ nguyên gia bản phả hệ từ Cao Tổ Cao Đình Thuật và Thủy Tổ Cao Đình Lạng. Hệ thống tra cứu phả đồ, sổ quỹ thủ chi, tế lễ gia tông và sớ văn nhờ sự hỗ trợ của Trợ lý AI.
           </p>
           <div className="pt-2 flex flex-wrap gap-2.5">
             <button 

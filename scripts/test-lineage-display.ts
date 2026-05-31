@@ -22,8 +22,15 @@ assert(isUnknownText('chưa rõ'), 'chưa rõ should be treated as unknown');
 assert(!isUnknownText('Nguyễn Thị Lan'), 'real name should not be treated as unknown');
 
 assert(
-  formatNodeTitle({ generation: 0, rankRole: 'Cao tổ' }).includes('Cao Tổ đời 0'),
-  'generation 0 title should include Cao Tổ đời 0'
+  formatNodeTitle({ generation: 0, rankRole: 'Cao tổ' }) === 'Cao Tổ - Cao tổ',
+  'generation 0 title should show Cao Tổ without đời 0'
+);
+assert(
+  formatNodeTitle({
+    generation: 0,
+    title: 'Cao Tổ đời 0 - Cao Tổ đời 0 - Cao Cao Mãnh Đế Đại Tướng Quân'
+  }) === 'Cao Tổ - Cao Cao Mãnh Đế Đại Tướng Quân',
+  'legacy Cao Tổ đời 0 prefixes should be stripped before display'
 );
 assert(
   formatNodeTitle({ generation: 8, rankRole: 'Ngoại tôn' }) === 'Ngoại tôn đời 8',

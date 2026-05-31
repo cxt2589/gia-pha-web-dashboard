@@ -67,6 +67,7 @@ type WebviewSuggestion = {
 const KNOWLEDGE_CATEGORY: KnowledgeBaseDocument["category"] = "Gia phả học";
 const DRAFT_CATEGORY: WebArticle["category"] = "Tin tức họ tộc";
 const DRAFT_STATUS: WebArticle["status"] = "Bản nháp";
+const AI_OPERATION_LOG_PAGE_SIZE = 4;
 
 type KnowledgeStatus = {
   ok?: boolean;
@@ -334,7 +335,7 @@ const DEFAULT_ZALO_RULES: ZaloAutoReply[] = [
     id: "r1",
     keyword: "lichsu",
     replyType: "text",
-    replyContent: "Theo dữ liệu phả hệ hiện có, Cao Tổ đời 0 là cụ Cao Đình Thuật (高 廷 術), tước hiệu Cao Cao Mãnh Đế Đại Tướng Quân; đời 1 là Thủy Tổ Cao Đình Lạng (高 廷 兩). Các thông tin chi tiết từng nhân vật cần đăng nhập và hoàn tất KYC để xem.",
+    replyContent: "Theo dữ liệu phả hệ hiện có, Cao Tổ là cụ Cao Đình Thuật (高 廷 術), tước hiệu Cao Cao Mãnh Đế Đại Tướng Quân; Thủy Tổ là Cao Đình Lạng (高 廷 兩). Các thông tin chi tiết từng nhân vật cần đăng nhập và hoàn tất KYC để xem.",
     usageCount: 142,
     isActive: true
   },
@@ -502,6 +503,7 @@ export default function AIGovernor({
   const [isAiBotConfigsLoading, setIsAiBotConfigsLoading] = useState(false);
   const [aiBotConfigNote, setAiBotConfigNote] = useState("");
   const [selectedOperationNodeId, setSelectedOperationNodeId] = useState("ai_gateway");
+  const [operationLogPage, setOperationLogPage] = useState(1);
   const [isOperationDetailOpen, setIsOperationDetailOpen] = useState(false);
   const [isOperationGraphExpanded, setIsOperationGraphExpanded] = useState(false);
   const [zaloBotStatus, setZaloBotStatus] = useState<ZaloBotStatus | null>(null);
@@ -514,6 +516,10 @@ export default function AIGovernor({
   const [zaloMockSenderId, setZaloMockSenderId] = useState("admin-test");
   const [zaloMockGroupId, setZaloMockGroupId] = useState("group-test");
   const [zaloMockMessage, setZaloMockMessage] = useState("Cao Tổ là ai?");
+
+  useEffect(() => {
+    setOperationLogPage(1);
+  }, [selectedOperationNodeId]);
 
   const auditItems = useMemo<AuditItem[]>(() => {
     const items: AuditItem[] = [];
@@ -1144,7 +1150,7 @@ export default function AIGovernor({
         [
           "Hãy quét toàn bộ dữ liệu dashboard để đề xuất chỉnh sửa nội dung webview và dashboard.",
           "Mục tiêu: loại bỏ dữ liệu mẫu, thay bằng dữ liệu đúng theo cây phả hiện tại.",
-          "Quy tắc dữ liệu đã biết: Cao Tổ đời 0 là Cao Đình Thuật (高 廷 術), tước hiệu Cao Cao Mãnh Đế Đại Tướng Quân; đời 1 là Thủy Tổ Cao Đình Lạng (高 廷 兩). Không dùng lại dữ liệu mẫu cũ nếu tài liệu gốc không xác nhận.",
+          "Quy tắc dữ liệu đã biết: Cao Tổ là Cao Đình Thuật (高 廷 術), tước hiệu Cao Cao Mãnh Đế Đại Tướng Quân; Thủy Tổ là Cao Đình Lạng (高 廷 兩). Không dùng lại dữ liệu mẫu cũ nếu tài liệu gốc không xác nhận.",
           "Hãy trả về danh sách ưu tiên gồm: vị trí, vấn đề, đề xuất sửa, dữ liệu cần admin xác minh, mức độ ảnh hưởng.",
           "",
           deterministicSummary
@@ -1523,16 +1529,22 @@ export default function AIGovernor({
     : null;
   const selectedOperationRecentLogs = useMemo(() => {
     if (selectedOperationNode.type === "bot") {
-      return aiLogs.filter((log) => log.botType === selectedOperationNode.id).slice(0, 6);
+      return aiLogs.filter((log) => log.botType === selectedOperationNode.id);
     }
     if (selectedOperationNode.id === "ai_gateway" || selectedOperationNode.id === "ai_logs") {
-      return aiLogs.slice(0, 6);
+      return aiLogs;
     }
     return [];
   }, [aiLogs, selectedOperationNode.id, selectedOperationNode.type]);
   const selectedOperationErrorLogs = selectedOperationRecentLogs.filter((log) => log.status >= 400 || log.errorMessage);
   const selectedOperationCanShowLogs =
     selectedOperationNode.type === "bot" || selectedOperationNode.id === "ai_gateway" || selectedOperationNode.id === "ai_logs";
+  const selectedOperationLogPageCount = Math.max(1, Math.ceil(selectedOperationRecentLogs.length / AI_OPERATION_LOG_PAGE_SIZE));
+  const selectedOperationCurrentLogPage = Math.min(operationLogPage, selectedOperationLogPageCount);
+  const selectedOperationPagedLogs = selectedOperationRecentLogs.slice(
+    (selectedOperationCurrentLogPage - 1) * AI_OPERATION_LOG_PAGE_SIZE,
+    selectedOperationCurrentLogPage * AI_OPERATION_LOG_PAGE_SIZE
+  );
   const statusLabel: Record<AIOperationGraphNodeStatus, string> = {
     active: "Đang chạy",
     paused: "Tạm dừng",
@@ -2041,6 +2053,34 @@ export default function AIGovernor({
                       </div>
                     )}
 
+                    <div className="mt-5 border-t border-stone-100 pt-4">
+                      <p className="text-[10px] font-black uppercase tracking-wide text-stone-400">Đường nối liên quan</p>
+                      <div className="mt-2 space-y-2 text-xs">
+                        {aiOperationGraph.edges
+                          .filter((edge) => edge.from === selectedOperationNode.id || edge.to === selectedOperationNode.id)
+                          .map((edge) => {
+                            const fromNode = aiOperationGraph.nodes.find((node) => node.id === edge.from);
+                            const toNode = aiOperationGraph.nodes.find((node) => node.id === edge.to);
+                            return (
+                              <button
+                                key={`${edge.from}-${edge.to}-${edge.label || ""}`}
+                                type="button"
+                                onClick={() => setSelectedOperationNodeId(edge.to === selectedOperationNode.id ? edge.from : edge.to)}
+                                className="w-full rounded-lg border border-stone-200 bg-[#fbfaf6] px-3 py-2 text-left hover:border-amber-300 hover:bg-amber-50"
+                              >
+                                <span className="font-bold text-red-950">{fromNode?.label || edge.from}</span>
+                                <span className="px-2 text-amber-700">→</span>
+                                <span className="font-bold text-red-950">{toNode?.label || edge.to}</span>
+                                {edge.label && <span className="ml-2 text-stone-500">({edge.label})</span>}
+                              </button>
+                            );
+                          })}
+                        {!aiOperationGraph.edges.some((edge) => edge.from === selectedOperationNode.id || edge.to === selectedOperationNode.id) && (
+                          <p className="rounded bg-stone-50 p-2 text-stone-500">Node này chưa có đường nối được ghi nhận.</p>
+                        )}
+                      </div>
+                    </div>
+
                     {selectedOperationCanShowLogs && (
                       <div className="mt-5 rounded-xl border border-stone-200 bg-white p-4">
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -2061,7 +2101,7 @@ export default function AIGovernor({
                           </span>
                         </div>
                         <div className="mt-3 space-y-2 text-xs">
-                          {selectedOperationRecentLogs.map((log) => (
+                          {selectedOperationPagedLogs.map((log) => (
                             <div key={log.id} className="rounded-lg border border-stone-100 bg-[#fbfaf6] px-3 py-2">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <span className="font-bold text-red-950">{log.intent || "unknown"}</span>
@@ -2086,34 +2126,34 @@ export default function AIGovernor({
                               Chưa có request gần đây cho node này. Hãy gửi thử một câu hỏi qua bot tương ứng rồi tải lại nhật ký AI.
                             </p>
                           )}
+                          {selectedOperationRecentLogs.length > AI_OPERATION_LOG_PAGE_SIZE && (
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-stone-100 pt-2">
+                              <span className="text-[10px] font-semibold text-stone-400">
+                                Trang {selectedOperationCurrentLogPage}/{selectedOperationLogPageCount} · {selectedOperationRecentLogs.length} request
+                              </span>
+                              <div className="flex gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => setOperationLogPage((page) => Math.max(1, page - 1))}
+                                  disabled={selectedOperationCurrentLogPage <= 1}
+                                  className="rounded border border-stone-200 px-2 py-1 text-[10px] font-bold text-stone-600 hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                  Trước
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setOperationLogPage((page) => Math.min(selectedOperationLogPageCount, page + 1))}
+                                  disabled={selectedOperationCurrentLogPage >= selectedOperationLogPageCount}
+                                  className="rounded border border-stone-200 px-2 py-1 text-[10px] font-bold text-stone-600 hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                  Sau
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}
-
-                    <div className="mt-5 border-t border-stone-100 pt-4">
-                      <p className="text-[10px] font-black uppercase tracking-wide text-stone-400">Đường nối liên quan</p>
-                      <div className="mt-2 space-y-2 text-xs">
-                        {aiOperationGraph.edges
-                          .filter((edge) => edge.from === selectedOperationNode.id || edge.to === selectedOperationNode.id)
-                          .map((edge) => {
-                            const fromNode = aiOperationGraph.nodes.find((node) => node.id === edge.from);
-                            const toNode = aiOperationGraph.nodes.find((node) => node.id === edge.to);
-                            return (
-                              <button
-                                key={`${edge.from}-${edge.to}-${edge.label || ""}`}
-                                type="button"
-                                onClick={() => setSelectedOperationNodeId(edge.to === selectedOperationNode.id ? edge.from : edge.to)}
-                                className="w-full rounded-lg border border-stone-200 bg-[#fbfaf6] px-3 py-2 text-left hover:border-amber-300 hover:bg-amber-50"
-                              >
-                                <span className="font-bold text-red-950">{fromNode?.label || edge.from}</span>
-                                <span className="px-2 text-amber-700">→</span>
-                                <span className="font-bold text-red-950">{toNode?.label || edge.to}</span>
-                                {edge.label && <span className="ml-2 text-stone-500">({edge.label})</span>}
-                              </button>
-                            );
-                          })}
-                      </div>
-                    </div>
                   </div>
                 </div>
               )}
@@ -2142,34 +2182,6 @@ export default function AIGovernor({
                     ))}
                   </div>
                 )}
-
-                <div className="mt-4 border-t border-stone-100 pt-4">
-                  <p className="text-[10px] font-black uppercase tracking-wide text-stone-400">Đường nối liên quan</p>
-                  <div className="mt-2 space-y-2 text-xs">
-                    {aiOperationGraph.edges
-                      .filter((edge) => edge.from === selectedOperationNode.id || edge.to === selectedOperationNode.id)
-                      .map((edge) => {
-                        const fromNode = aiOperationGraph.nodes.find((node) => node.id === edge.from);
-                        const toNode = aiOperationGraph.nodes.find((node) => node.id === edge.to);
-                        return (
-                          <button
-                            key={`${edge.from}-${edge.to}-${edge.label || ""}`}
-                            type="button"
-                            onClick={() => setSelectedOperationNodeId(edge.to === selectedOperationNode.id ? edge.from : edge.to)}
-                            className="w-full rounded-lg border border-stone-200 bg-[#fbfaf6] px-3 py-2 text-left hover:border-amber-300 hover:bg-amber-50"
-                          >
-                            <span className="font-bold text-red-950">{fromNode?.label || edge.from}</span>
-                            <span className="px-2 text-amber-700">→</span>
-                            <span className="font-bold text-red-950">{toNode?.label || edge.to}</span>
-                            {edge.label && <span className="ml-2 text-stone-500">({edge.label})</span>}
-                          </button>
-                        );
-                      })}
-                    {!aiOperationGraph.edges.some((edge) => edge.from === selectedOperationNode.id || edge.to === selectedOperationNode.id) && (
-                      <p className="rounded bg-stone-50 p-2 text-stone-500">Node này chưa có đường nối được ghi nhận.</p>
-                    )}
-                  </div>
-                </div>
 
                 <div className="mt-4 flex flex-wrap gap-2">
                   {selectedOperationNode.type === "bot" && (

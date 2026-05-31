@@ -29,7 +29,7 @@ export default function PhaKySection() {
           </h1>
           
           <p className="text-base text-ink-charcoal/80 leading-relaxed font-sans max-w-lg">
-            Nơi gìn giữ hồn cốt của dòng họ Cao Ninh Bình, quy chiếu theo cây phả hiện tại từ Cao Tổ đời 0 Cao Đình Thuật và Thủy Tổ đời 1 Cao Đình Lạng.
+            Nơi gìn giữ hồn cốt của dòng họ Cao Ninh Bình, quy chiếu theo cây phả hiện tại từ Cao Tổ Cao Đình Thuật và Thủy Tổ Cao Đình Lạng.
           </p>
           
           <div className="flex items-center space-x-4 pt-2">

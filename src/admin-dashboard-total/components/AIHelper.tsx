@@ -53,14 +53,14 @@ const DEFAULT_PRAYER_SHORTCUTS: PrayerShortcut[] = [
     title: "Lập sớ bái Thủy Tổ Cao Đình Lạng",
     note: "Dựa trên dữ liệu hiện có, tránh dùng dữ liệu mẫu cũ chưa xác minh",
     icon: "ceremony",
-    prompt: `Nhờ soạn bài văn khấn/văn tế trang trọng dâng hương Thủy Tổ Cao Đình Lạng (高 廷 兩), đời thứ 1 của dòng họ Cao. Nếu cần nhắc tới Cao Tổ đời 0 thì ghi cụ Cao Đình Thuật (高 廷 術), tước hiệu Cao Cao Mãnh Đế Đại Tướng Quân. Chỉ dùng dữ liệu đã có, không đưa lại dữ liệu mẫu cũ chưa xác minh.`
+    prompt: `Nhờ soạn bài văn khấn/văn tế trang trọng dâng hương Thủy Tổ Cao Đình Lạng (高 廷 兩) của dòng họ Cao. Nếu cần nhắc tới Cao Tổ thì ghi cụ Cao Đình Thuật (高 廷 術), tước hiệu Cao Cao Mãnh Đế Đại Tướng Quân. Chỉ dùng dữ liệu đã có, không đưa lại dữ liệu mẫu cũ chưa xác minh.`
   },
   {
     id: "history-current-tree",
     title: "Khảo sử theo cây phả hiện tại",
-    note: "Tóm tắt từ Cao Tổ đời 0, Thủy Tổ đời 1 và các chi/ngành đã nhập",
+    note: "Tóm tắt từ Cao Tổ, Thủy Tổ và các chi/ngành đã nhập",
     icon: "history",
-    prompt: `Hãy tóm tắt lịch sử phả hệ dòng họ Cao theo dữ liệu cây phả hiện tại: Cao Tổ đời 0 là Cao Đình Thuật, đời 1 là Thủy Tổ Cao Đình Lạng. Trình bày phần đã xác thực, phần còn khuyết và danh sách thông tin cần admin kiểm chứng.`
+    prompt: `Hãy tóm tắt lịch sử phả hệ dòng họ Cao theo dữ liệu cây phả hiện tại: Cao Tổ là Cao Đình Thuật, Thủy Tổ là Cao Đình Lạng. Trình bày phần đã xác thực, phần còn khuyết và danh sách thông tin cần admin kiểm chứng.`
   }
 ];
 

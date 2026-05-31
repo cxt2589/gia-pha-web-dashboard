@@ -16,7 +16,7 @@ export const ANCESTRAL_TREE: AncestorNode = {
   id: '3',
   name: 'Cao Đình Thuật (高 廷 術)',
   generation: 0,
-  title: 'Cao Tổ đời 0 - Cao Cao Mãnh Đế Đại Tướng Quân (高 高 猛 帝 大 將 軍)',
+  title: 'Cao Cao Mãnh Đế Đại Tướng Quân (高 高 猛 帝 大 將 軍)',
   birthYear: '1716',
   solarBirthDate: '01/01/1716',
   motherName: 'Không rõ',
@@ -24,7 +24,7 @@ export const ANCESTRAL_TREE: AncestorNode = {
   spouseList: ['Không rõ'],
   lunarAnniversary: '15/3 Canh Ngọ',
   isLiving: false,
-  description: 'Cao Tổ đời 0 theo dữ liệu cây phả hiện tại. Những trường còn khuyết cần đối chiếu lại từ phả ký và file Excel.',
+  description: 'Cao Tổ theo dữ liệu cây phả hiện tại. Những trường còn khuyết cần đối chiếu lại từ phả ký và file Excel.',
   children: [
     {
       id: '2',
@@ -39,7 +39,7 @@ export const ANCESTRAL_TREE: AncestorNode = {
       spouseList: ['Không rõ'],
       lunarAnniversary: '10/3',
       isLiving: false,
-      description: 'Thủy Tổ đời 1 theo dữ liệu cây phả hiện tại. Không gán thêm tước vị Quản phận môn cho các đời khác.',
+      description: 'Thủy Tổ theo dữ liệu cây phả hiện tại. Không gán thêm tước vị Quản phận môn cho các đời khác.',
       children: [
         {
           id: '4',
@@ -83,7 +83,7 @@ export const PHA_KY_SECTIONS = [
     title: 'Nguồn gốc & Khởi tổ',
     sub: 'Quy chiếu từ cây phả hiện tại',
     dropCap: 'N',
-    text: 'guồn gốc phả hệ đang được quy chiếu theo cây phả hiện tại. Cao Tổ đời 0 là cụ Cao Đình Thuật (高 廷 術), tước hiệu Cao Cao Mãnh Đế Đại Tướng Quân; đời thứ 1 là Thủy Tổ Cao Đình Lạng (高 廷 兩). Những dữ liệu còn khuyết cần được đối chiếu từ phả ký, file Excel và tư liệu gia đình.',
+    text: 'Nguồn gốc phả hệ đang được quy chiếu theo cây phả hiện tại. Cao Tổ là cụ Cao Đình Thuật (高 廷 術), tước hiệu Cao Cao Mãnh Đế Đại Tướng Quân; Thủy Tổ là Cao Đình Lạng (高 廷 兩). Những dữ liệu còn khuyết cần được đối chiếu từ phả ký, file Excel và tư liệu gia đình.',
     extraText: 'Các nội dung giới thiệu, văn sớ và bài viết trên webview phải căn cứ vào dữ liệu đã xác minh. Khi chưa đủ chứng cứ, hệ thống cần ghi rõ là thông tin cần Ban trị sự kiểm chứng, không dùng lại nội dung mẫu cũ.'
   },
   {
@@ -151,7 +151,7 @@ export const ANNIVERSARY_EVENTS: AnniversaryEvent[] = [
     solarDate: '25/09/2026',
     host: 'Ban Phả Ký',
     location: 'Từ đường họ Cao, Ninh Bình',
-    description: 'Tưởng niệm Cao Tổ đời 0 Cao Đình Thuật, tước hiệu Cao Cao Mãnh Đế Đại Tướng Quân theo dữ liệu cây phả hiện tại.',
+    description: 'Tưởng niệm Cao Tổ Cao Đình Thuật, tước hiệu Cao Cao Mãnh Đế Đại Tướng Quân theo dữ liệu cây phả hiện tại.',
     ritualGuide: [
       '15:00 - Sửa soạn dâng hương bái vọng',
       '16:30 - Quây quần chuyện trò dặn dò gia quy cội nguồn'
@@ -178,7 +178,7 @@ export const LINEAGE_NEWS_DATA: LineageNews[] = [
     id: 'news1',
     title: 'Chuẩn hóa phả hệ họ Cao Ninh Bình theo dữ liệu gốc',
     category: 'su_kien',
-    summary: 'Hệ thống đang chuẩn hóa quy tắc đời/phả hệ: Cao Tổ đời 0 là Cao Đình Thuật, đời 1 là Thủy Tổ Cao Đình Lạng.',
+    summary: 'Hệ thống đang chuẩn hóa quy tắc đời/phả hệ: Cao Tổ là Cao Đình Thuật, Thủy Tổ là Cao Đình Lạng.',
     content: 'Ban trị sự đang rà soát dữ liệu từ cây phả, file Excel chuẩn và tài liệu phả ký để thay thế các nội dung mẫu cũ. Các thông tin chưa xác minh như ngày tháng, chi/ngành, hành trạng, nơi an táng và quan hệ mẹ/vợ sẽ được đánh dấu để admin kiểm chứng trước khi công bố.',
     imageUrl: COMPONENT_IMAGES.templeRoof,
     date: '12/05/2025',
