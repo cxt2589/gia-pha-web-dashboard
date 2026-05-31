@@ -1521,6 +1521,18 @@ export default function AIGovernor({
   const selectedOperationBotConfig = selectedOperationNode.type === "bot"
     ? aiBotConfigs.find((config) => config.botType === selectedOperationNode.id) || null
     : null;
+  const selectedOperationRecentLogs = useMemo(() => {
+    if (selectedOperationNode.type === "bot") {
+      return aiLogs.filter((log) => log.botType === selectedOperationNode.id).slice(0, 6);
+    }
+    if (selectedOperationNode.id === "ai_gateway" || selectedOperationNode.id === "ai_logs") {
+      return aiLogs.slice(0, 6);
+    }
+    return [];
+  }, [aiLogs, selectedOperationNode.id, selectedOperationNode.type]);
+  const selectedOperationErrorLogs = selectedOperationRecentLogs.filter((log) => log.status >= 400 || log.errorMessage);
+  const selectedOperationCanShowLogs =
+    selectedOperationNode.type === "bot" || selectedOperationNode.id === "ai_gateway" || selectedOperationNode.id === "ai_logs";
   const statusLabel: Record<AIOperationGraphNodeStatus, string> = {
     active: "Đang chạy",
     paused: "Tạm dừng",
@@ -2026,6 +2038,55 @@ export default function AIGovernor({
                         {selectedOperationBotConfig.pausedReason && (
                           <p className="mt-3 rounded-lg bg-white px-3 py-2 text-xs text-amber-900">{selectedOperationBotConfig.pausedReason}</p>
                         )}
+                      </div>
+                    )}
+
+                    {selectedOperationCanShowLogs && (
+                      <div className="mt-5 rounded-xl border border-stone-200 bg-white p-4">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <p className="text-[10px] font-black uppercase tracking-wide text-stone-400">Request và lỗi gần đây</p>
+                            <p className="mt-1 text-xs text-stone-500">
+                              {selectedOperationNode.type === "bot"
+                                ? `Lịch sử gần nhất của bot ${selectedOperationNode.label}.`
+                                : "Lịch sử gần nhất đi qua AI Gateway."}
+                            </p>
+                          </div>
+                          <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-bold ${
+                            selectedOperationErrorLogs.length
+                              ? "border-red-200 bg-red-50 text-red-800"
+                              : "border-emerald-200 bg-emerald-50 text-emerald-800"
+                          }`}>
+                            {selectedOperationErrorLogs.length ? `${selectedOperationErrorLogs.length} lỗi` : "Không có lỗi gần đây"}
+                          </span>
+                        </div>
+                        <div className="mt-3 space-y-2 text-xs">
+                          {selectedOperationRecentLogs.map((log) => (
+                            <div key={log.id} className="rounded-lg border border-stone-100 bg-[#fbfaf6] px-3 py-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <span className="font-bold text-red-950">{log.intent || "unknown"}</span>
+                                <span className="font-mono text-[10px] text-stone-400">{log.createdAt || "-"}</span>
+                              </div>
+                              <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] font-semibold text-stone-500">
+                                <span className="rounded bg-white px-2 py-0.5">engine: {log.botConfigEngine || log.engine || "-"}</span>
+                                <span className="rounded bg-white px-2 py-0.5">status: {log.status || "-"}</span>
+                                <span className="rounded bg-white px-2 py-0.5">{log.cached ? "cache hit" : `${log.durationMs || 0}ms`}</span>
+                                <span className="rounded bg-white px-2 py-0.5">tokens: {formatNumber(log.estimatedTokens || 0)}</span>
+                                {log.knowledgeMatchesCount ? (
+                                  <span className="rounded bg-white px-2 py-0.5">chunks: {log.knowledgeMatchesCount}</span>
+                                ) : null}
+                              </div>
+                              {log.errorMessage && (
+                                <p className="mt-2 rounded bg-red-50 px-2 py-1 text-[11px] text-red-800">{log.errorMessage}</p>
+                              )}
+                            </div>
+                          ))}
+                          {!selectedOperationRecentLogs.length && (
+                            <p className="rounded-lg border border-dashed border-stone-200 bg-[#fbfaf6] px-3 py-3 text-stone-500">
+                              Chưa có request gần đây cho node này. Hãy gửi thử một câu hỏi qua bot tương ứng rồi tải lại nhật ký AI.
+                            </p>
+                          )}
+                        </div>
                       </div>
                     )}
 

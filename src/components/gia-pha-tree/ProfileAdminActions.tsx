@@ -459,7 +459,7 @@ export function ProfileAdminActions(props: ProfileAdminActionsProps) {
                   rankRole={newMemberRankRole}
                   customSuffix={newMemberCustomSuffix}
                   autoTitle={formatNodeTitle({
-                    generation: selectedNode?.generation || 1,
+                    generation: selectedNode?.generation ?? 1,
                     isLiving: newMemberIsLiving,
                     birthYear: newMemberBirthYear,
                     deathYear: newMemberDeathYear,

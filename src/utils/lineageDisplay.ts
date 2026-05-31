@@ -29,6 +29,31 @@ const normalizeDisplayText = (value: string) => value
   .replace(/\u0110/g, 'D')
   .toLowerCase();
 
+export const stripGeneratedLineageTitlePrefix = (title?: string): string => {
+  let cleanTitle = String(title || '').trim();
+  const generatedPrefixPatterns = [
+    /^Cao\s+Tổ\s+đời\s+0(?:\s*-\s*|\s+)?/i,
+    /^Thủy\s+tổ\s*(?:\([^)]*\))?(?:\s*-\s*|\s+)?/i,
+    /^Đời\s+thứ\s+\d+(?:\s*-\s*|\s+)?/i,
+    /^Đệ\s+[A-Za-zĂăÂâĐđÊêÔôƠơƯưỨứ\s]+\s+thế\s+tổ(?:\s*-\s*|\s+)?/i,
+    /^Hậu\s+duệ\s+đời\s+\d+(?:\s*-\s*|\s+)?/i,
+    /^Ngoại\s+tôn\s+đời\s+\d+(?:\s*-\s*|\s+)?/i
+  ];
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const pattern of generatedPrefixPatterns) {
+      const nextTitle = cleanTitle.replace(pattern, '').trim();
+      if (nextTitle !== cleanTitle) {
+        cleanTitle = nextTitle.replace(/^\s*-\s*/, '').trim();
+        changed = true;
+      }
+    }
+  }
+  return cleanTitle;
+};
+
 export const formatNodeTitle = (node: {
   generation: number;
   isLiving?: boolean;
@@ -41,12 +66,11 @@ export const formatNodeTitle = (node: {
   const isLiving = node.isLiving || (!node.deathYear && node.birthYear && parseInt(node.birthYear) > 1920);
 
   let role = node.rankRole || '';
-  let suffix = node.customSuffix || '';
+  let suffix = stripGeneratedLineageTitlePrefix(node.customSuffix || '');
 
   if (!node.rankRole && node.title) {
     let cleanTitle = node.title;
-    cleanTitle = cleanTitle.replace(/^Đệ\s+[A-Za-zĂăÂâĐđÊêÔôƠơƯưỨứ\s]+\s+thế\s+tổ(?:\s*-\s*|\s+)?/gi, '');
-    cleanTitle = cleanTitle.replace(/^Hậu\s+duệ\s+đời\s+\d+(?:\s*-\s*|\s+)?/gi, '');
+    cleanTitle = stripGeneratedLineageTitlePrefix(cleanTitle);
 
     const roles = ["trưởng chi", "trưởng tộc", "đệ nhị", "đệ tam", "gái cả", "gái thứ 1-2-3", "gái thứ 1", "gái thứ 2", "gái thứ 3", "đích tôn"];
     const foundRole = roles.find(r => cleanTitle.toLowerCase().includes(r));
@@ -75,7 +99,7 @@ export const formatNodeTitle = (node: {
 
   if (node.generation === 1) {
     const sourceText = normalizeDisplayText([node.title, roleFormatted, suffixFormatted].filter(Boolean).join(' '));
-    if (sourceText.includes('thuy to') || sourceText.includes('hau due doi 1')) {
+    if ((sourceText.includes('thuy to') || sourceText.includes('hau due doi 1')) && !roleFormatted && !suffixFormatted) {
       return 'Th\u1ee7y t\u1ed5 (\u59cb\u7956)';
     }
     return ['Th\u1ee7y t\u1ed5 (\u59cb\u7956)', roleFormatted, suffixFormatted].filter(Boolean).join(' - ');

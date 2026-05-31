@@ -943,7 +943,7 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
           // Check if this child already has their OWN row in the database
           const existingChildNode = normalizedNodes.find(n => 
             cleanNameForMatching(n.name) === cleanNameForMatching(childName) &&
-            (n.generation === undefined || Math.abs(n.generation - ((node.generation || 1) + 1)) <= 1)
+            (n.generation === undefined || Math.abs(n.generation - ((node.generation ?? 1) + 1)) <= 1)
           );
           const alreadyHasOwnRow = !!existingChildNode;
 
@@ -955,7 +955,7 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
               const virtualChildNode = {
                 id: virtualChildId,
                 name: childName,
-                generation: node.generation ? node.generation + 1 : undefined,
+                generation: node.generation !== undefined ? node.generation + 1 : undefined,
                 gender: childGender,
                 parentId: node.id,
                 motherName: inferredMotherName,
@@ -1195,7 +1195,7 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
       node.generation = currentGen;
     }
     
-    const nextGen = (node.generation || 1) + 1;
+    const nextGen = (node.generation ?? 1) + 1;
     if (node.children && node.children.length > 0) {
       node.children.forEach((child: any) => {
         const childStartGen = (child._explicitGeneration !== undefined && child._explicitGeneration >= 0)

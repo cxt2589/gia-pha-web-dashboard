@@ -18,6 +18,7 @@ import {
   isUnknownText,
   MAX_TREE_ZOOM,
   MIN_TREE_ZOOM,
+  stripGeneratedLineageTitlePrefix,
   TREE_ZOOM_STEP
 } from '../utils/lineageDisplay';
 import { findNodeById, getSpouseNames, parseSpouses, syncSpouseDetailsFromText } from '../utils/lineageTreeHelpers';
@@ -477,8 +478,7 @@ export default function GiaPhaTree() {
     if (!selectedNode.rankRole && selectedNode.title) {
       // Parse legacy
       let cleanTitle = selectedNode.title;
-      cleanTitle = cleanTitle.replace(/^Đệ\s+[A-Za-zĂăÂâĐđÊêÔôƠơƯưỨứ\s]+\s+thế\s+tổ(?:\s*-\s*|\s+)?/gi, '');
-      cleanTitle = cleanTitle.replace(/^Hậu\s+duệ\s+đời\s+\d+(?:\s*-\s*|\s+)?/gi, '');
+      cleanTitle = stripGeneratedLineageTitlePrefix(cleanTitle);
       
       const roles = ["trưởng chi", "trưởng tộc", "đệ nhị", "đệ tam", "gái cả", "gái thứ 1-2-3", "gái thứ 1", "gái thứ 2", "gái thứ 3", "đích tôn"];
       const foundRole = roles.find(r => cleanTitle.toLowerCase().includes(r));

@@ -1,7 +1,7 @@
 import { ANCESTRAL_TREE } from "../../data/lineageData";
 import type { AncestorNode } from "../../types";
 import { getPersistedTreeData, hydratePersistedTreeDataFromBackend, savePersistedTreeData } from "../../utils/configManager";
-import { formatNodeTitle } from "../../utils/lineageDisplay";
+import { formatNodeTitle, stripGeneratedLineageTitlePrefix } from "../../utils/lineageDisplay";
 import type { FamilyMember, OutstandingMember } from "../types";
 
 function normalizeVietnameseText(value: unknown) {
@@ -36,7 +36,7 @@ function toDashboardMember(node: any, parentId?: string): FamilyMember {
     id: node.id,
     name: node.name,
     generation: isCaoDinhThuat(node.name) ? 0 : Number(node.generation) || 1,
-    title: node.title,
+    title: stripGeneratedLineageTitlePrefix(node.title) || node.title,
     rankRole: node.rankRole,
     customSuffix: node.customSuffix,
     branch: getDashboardBranch(node),
@@ -69,7 +69,11 @@ function toDashboardMember(node: any, parentId?: string): FamilyMember {
       node.motherName ? `M\u1eabu th\u00e2n: ${node.motherName}` : "",
       node.phone1 ? `Li\u00ean h\u1ec7: ${node.phone1}${node.phone2 ? ` - ${node.phone2}` : ""}` : "",
     ].filter(Boolean).join(" | ") || undefined,
-    achievements: node.customSuffix ? [node.customSuffix] : node.title ? [node.title] : [],
+    achievements: node.customSuffix
+      ? [node.customSuffix]
+      : node.title
+        ? [stripGeneratedLineageTitlePrefix(node.title) || node.title]
+        : [],
   };
 }
 
@@ -195,7 +199,7 @@ export function updateDashboardMemberInSharedTree(member: FamilyMember): FamilyM
 
   applyMemberToExistingNode(node, {
     ...member,
-    generation: Number(node.generation) || member.generation,
+    generation: Number.isFinite(Number(node.generation)) ? Number(node.generation) : member.generation,
     parentId: node.parentId || member.parentId,
   });
 

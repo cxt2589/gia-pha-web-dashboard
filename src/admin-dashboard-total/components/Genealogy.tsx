@@ -591,7 +591,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   const openEditMember = (member: FamilyMember) => {
     setEditingMemberId(member.id);
     setNewName(member.name || "");
-    setNewGen(member.generation || 1);
+    setNewGen(member.generation ?? 1);
     setNewBranch(member.branch || "");
     setNewGender(member.gender);
     setNewIsDeceased(member.isDeceased);
@@ -636,7 +636,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     const newMember: FamilyMember = {
       id: editingMemberId || "custom-gen-" + Date.now(),
       name: newName,
-      generation: editingMemberId ? (originalMember?.generation || effectiveNewGeneration) : effectiveNewGeneration,
+      generation: editingMemberId ? (originalMember?.generation ?? effectiveNewGeneration) : effectiveNewGeneration,
       title: newRankRole || newCustomSuffix || undefined,
       rankRole: selectedParentForNewMember?.gender === "Nữ" ? "Ngoại tôn" : (newRankRole || undefined),
       customSuffix: newCustomSuffix || undefined,
@@ -942,7 +942,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     const newMembersToCommit: FamilyMember[] = parsedPreview.map((p, idx) => ({
       id: p.id || ("m_bulk_" + Date.now() + "_" + idx),
       name: p.name,
-      generation: p.generation || 8,
+      generation: p.generation ?? 8,
       branch: p.branch || "Chi Trưởng (Trường Yên)",
       gender: p.gender,
       isDeceased: p.isDeceased,
