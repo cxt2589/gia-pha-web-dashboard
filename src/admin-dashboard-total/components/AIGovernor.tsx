@@ -1518,6 +1518,9 @@ export default function AIGovernor({
 
   const selectedOperationNode =
     aiOperationGraph.nodes.find((node) => node.id === selectedOperationNodeId) || aiOperationGraph.nodes[0];
+  const selectedOperationBotConfig = selectedOperationNode.type === "bot"
+    ? aiBotConfigs.find((config) => config.botType === selectedOperationNode.id) || null
+    : null;
   const statusLabel: Record<AIOperationGraphNodeStatus, string> = {
     active: "Đang chạy",
     paused: "Tạm dừng",
@@ -1701,15 +1704,22 @@ export default function AIGovernor({
                         <p className="font-bold text-red-950">{config.label}</p>
                         <p className="mt-0.5 text-[11px] text-stone-500">{config.botType}</p>
                       </div>
-                      <label className="inline-flex items-center gap-1 font-bold text-stone-600">
-                        <input
-                          type="checkbox"
-                          checked={config.enabled}
-                          disabled={isAiBotConfigsLoading || config.botType === "zalo_bot"}
-                          onChange={(event) => void patchAIBotConfig(config.botType, { enabled: event.target.checked })}
+                      <button
+                        type="button"
+                        disabled={isAiBotConfigsLoading || config.botType === "zalo_bot"}
+                        onClick={() => void patchAIBotConfig(config.botType, { enabled: !config.enabled })}
+                        className={`inline-flex h-6 w-12 items-center rounded-full p-0.5 transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                          config.enabled ? "bg-emerald-500" : "bg-stone-300"
+                        }`}
+                        aria-pressed={config.enabled}
+                        title={config.enabled ? "Đang bật" : "Đang tắt"}
+                      >
+                        <span
+                          className={`h-5 w-5 rounded-full bg-white shadow transition ${
+                            config.enabled ? "translate-x-6" : "translate-x-0"
+                          }`}
                         />
-                        {config.enabled ? "on" : "off"}
-                      </label>
+                      </button>
                     </div>
                     <div className="mt-3 grid grid-cols-2 gap-2">
                       <label className="block">
@@ -1749,13 +1759,19 @@ export default function AIGovernor({
                           className="w-full rounded border border-stone-200 bg-white px-2 py-1.5"
                         />
                       </label>
-                      <label className="flex items-end gap-2 pb-1 font-bold text-stone-600">
+                      <label className="flex cursor-pointer items-end gap-2 pb-1 font-bold text-stone-600">
                         <input
                           type="checkbox"
                           checked={config.cacheEnabled}
                           disabled={isAiBotConfigsLoading}
                           onChange={(event) => void patchAIBotConfig(config.botType, { cacheEnabled: event.target.checked })}
+                          className="sr-only"
                         />
+                        <span className={`flex h-7 w-7 items-center justify-center rounded-lg border ${
+                          config.cacheEnabled ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-stone-200 bg-white text-transparent"
+                        }`}>
+                          <CheckCircle2 className="h-4 w-4" />
+                        </span>
                         Cache
                       </label>
                     </div>
@@ -2031,6 +2047,91 @@ export default function AIGovernor({
                             <strong className="mt-1 block break-words text-red-950">{String(value)}</strong>
                           </p>
                         ))}
+                      </div>
+                    )}
+
+                    {selectedOperationBotConfig && (
+                      <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50/40 p-4">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <p className="text-[10px] font-black uppercase tracking-wide text-amber-700">Cài đặt bot AI</p>
+                            <p className="mt-1 text-xs text-stone-500">Đồng bộ với cấu hình chung qua ai_bot_configs.</p>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={isAiBotConfigsLoading || selectedOperationBotConfig.botType === "zalo_bot"}
+                            onClick={() => void patchAIBotConfig(selectedOperationBotConfig.botType, { enabled: !selectedOperationBotConfig.enabled })}
+                            className={`inline-flex h-7 w-14 items-center rounded-full p-0.5 transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                              selectedOperationBotConfig.enabled ? "bg-emerald-500" : "bg-stone-300"
+                            }`}
+                            aria-pressed={selectedOperationBotConfig.enabled}
+                          >
+                            <span
+                              className={`h-6 w-6 rounded-full bg-white shadow transition ${
+                                selectedOperationBotConfig.enabled ? "translate-x-7" : "translate-x-0"
+                              }`}
+                            />
+                          </button>
+                        </div>
+
+                        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <label className="block text-xs">
+                            <span className="mb-1 block text-[10px] font-bold uppercase text-stone-400">Engine</span>
+                            <select
+                              value={selectedOperationBotConfig.engine}
+                              disabled={isAiBotConfigsLoading || selectedOperationBotConfig.botType === "zalo_bot"}
+                              onChange={(event) => void patchAIBotConfig(selectedOperationBotConfig.botType, { engine: event.target.value })}
+                              className="w-full rounded-lg border border-stone-200 bg-white px-3 py-2"
+                            >
+                              <option value="local">local</option>
+                              <option value="local-knowledge">local-knowledge</option>
+                              <option value="gemini">gemini</option>
+                            </select>
+                          </label>
+                          <label className="block text-xs">
+                            <span className="mb-1 block text-[10px] font-bold uppercase text-stone-400">Max chunks</span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={20}
+                              value={selectedOperationBotConfig.maxKnowledgeChunks}
+                              disabled={isAiBotConfigsLoading}
+                              onChange={(event) => void patchAIBotConfig(selectedOperationBotConfig.botType, { maxKnowledgeChunks: Number(event.target.value) })}
+                              className="w-full rounded-lg border border-stone-200 bg-white px-3 py-2"
+                            />
+                          </label>
+                          <label className="block text-xs">
+                            <span className="mb-1 block text-[10px] font-bold uppercase text-stone-400">Max tokens</span>
+                            <input
+                              type="number"
+                              min={200}
+                              max={4000}
+                              value={selectedOperationBotConfig.maxOutputTokens}
+                              disabled={isAiBotConfigsLoading}
+                              onChange={(event) => void patchAIBotConfig(selectedOperationBotConfig.botType, { maxOutputTokens: Number(event.target.value) })}
+                              className="w-full rounded-lg border border-stone-200 bg-white px-3 py-2"
+                            />
+                          </label>
+                          <label className="flex cursor-pointer items-end gap-2 pb-1 text-xs font-bold text-stone-600">
+                            <input
+                              type="checkbox"
+                              checked={selectedOperationBotConfig.cacheEnabled}
+                              disabled={isAiBotConfigsLoading}
+                              onChange={(event) => void patchAIBotConfig(selectedOperationBotConfig.botType, { cacheEnabled: event.target.checked })}
+                              className="sr-only"
+                            />
+                            <span className={`flex h-9 w-9 items-center justify-center rounded-xl border ${
+                              selectedOperationBotConfig.cacheEnabled ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-stone-200 bg-white text-transparent"
+                            }`}>
+                              <CheckCircle2 className="h-5 w-5" />
+                            </span>
+                            Cache
+                          </label>
+                        </div>
+
+                        {selectedOperationBotConfig.pausedReason && (
+                          <p className="mt-3 rounded-lg bg-white px-3 py-2 text-xs text-amber-900">{selectedOperationBotConfig.pausedReason}</p>
+                        )}
                       </div>
                     )}
 
