@@ -132,7 +132,11 @@ type AIRequestLogSummary = {
 
 type ZaloBotStatus = {
   ok?: boolean;
+  webhookEnabled?: boolean;
   webhookConfigured: boolean;
+  webhookSafe?: boolean;
+  webhookSecretConfigured?: boolean;
+  webhookVerifyTokenConfigured?: boolean;
   sendEnabled: boolean;
   sendMode: string;
   canReplyReal: boolean;
@@ -143,18 +147,34 @@ type ZaloBotStatus = {
   lastEventAt?: string;
 };
 
+type ZaloWebhookStatus = ZaloBotStatus & {
+  signatureVerifiedCount: number;
+  rejectedCount: number;
+  duplicateCount: number;
+  lastRealEventAt?: string;
+  lastRejectedReason?: string;
+};
+
 type ZaloBotEvent = {
   id: string;
   eventId: string;
+  source?: string;
   channel: string;
   eventType: string;
+  appId?: string;
+  oaId?: string;
   senderId: string;
   senderName: string;
+  recipientId?: string;
   groupId: string;
   messageText: string;
+  normalizedText?: string;
   intent: string;
   status: string;
   error?: string;
+  signatureStatus?: string;
+  reviewedAt?: string;
+  eventTimestamp?: string;
   createdAt: string;
 };
 
@@ -432,6 +452,7 @@ export default function AIGovernor({
   const [appliedExtractionFilter, setAppliedExtractionFilter] = useState("");
   const [appliedExtractionFieldFilter, setAppliedExtractionFieldFilter] = useState("");
   const [zaloBotStatus, setZaloBotStatus] = useState<ZaloBotStatus | null>(null);
+  const [zaloWebhookStatus, setZaloWebhookStatus] = useState<ZaloWebhookStatus | null>(null);
   const [zaloBotEvents, setZaloBotEvents] = useState<ZaloBotEvent[]>([]);
   const [zaloBotReplies, setZaloBotReplies] = useState<ZaloBotReply[]>([]);
   const [zaloBotNote, setZaloBotNote] = useState("");
@@ -900,12 +921,14 @@ export default function AIGovernor({
   const loadZaloBotPanel = async () => {
     setIsZaloBotLoading(true);
     try {
-      const [statusResponse, eventsResponse, repliesResponse] = await Promise.all([
+      const [statusResponse, webhookResponse, eventsResponse, repliesResponse] = await Promise.all([
         fetch("/api/zalo-bot/status"),
+        fetch("/api/zalo-bot/webhook-status"),
         fetch("/api/zalo-bot/events?limit=12"),
         fetch("/api/zalo-bot/replies?limit=12")
       ]);
       if (statusResponse.ok) setZaloBotStatus(await statusResponse.json());
+      if (webhookResponse.ok) setZaloWebhookStatus(await webhookResponse.json());
       if (eventsResponse.ok) {
         const data = await eventsResponse.json();
         setZaloBotEvents(Array.isArray(data.events) ? data.events : []);
@@ -914,13 +937,49 @@ export default function AIGovernor({
         const data = await repliesResponse.json();
         setZaloBotReplies(Array.isArray(data.replies) ? data.replies : []);
       }
-      if (!statusResponse.ok || !eventsResponse.ok || !repliesResponse.ok) {
+      if (!statusResponse.ok || !webhookResponse.ok || !eventsResponse.ok || !repliesResponse.ok) {
         setZaloBotNote("Chua doc duoc Zalo Bot. Tai khoan hien tai co the chua co quyen admin.");
       } else {
         setZaloBotNote("");
       }
     } catch (err: any) {
       setZaloBotNote(`Khong doc duoc Zalo Bot: ${err?.message || "loi khong xac dinh"}`);
+    } finally {
+      setIsZaloBotLoading(false);
+    }
+  };
+
+  const markZaloEventReviewed = async (eventId: string) => {
+    setIsZaloBotLoading(true);
+    setZaloBotNote("");
+    try {
+      const response = await fetch(`/api/zalo-bot/events/${encodeURIComponent(eventId)}/mark-reviewed`, {
+        method: "PATCH"
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Khong danh dau duoc event.");
+      setZaloBotNote("Da danh dau event webhook la da xem.");
+      await loadZaloBotPanel();
+    } catch (err: any) {
+      setZaloBotNote(`Loi danh dau event: ${err?.message || "khong xac dinh"}`);
+    } finally {
+      setIsZaloBotLoading(false);
+    }
+  };
+
+  const replayZaloEvent = async (eventId: string) => {
+    setIsZaloBotLoading(true);
+    setZaloBotNote("");
+    try {
+      const response = await fetch(`/api/zalo-bot/replay-event/${encodeURIComponent(eventId)}`, {
+        method: "POST"
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Khong replay duoc event.");
+      setZaloBotNote(data.reply?.replyText ? `Replay mock: ${data.reply.replyText.slice(0, 180)}` : "Da replay mock event.");
+      await loadZaloBotPanel();
+    } catch (err: any) {
+      setZaloBotNote(`Loi replay event: ${err?.message || "khong xac dinh"}`);
     } finally {
       setIsZaloBotLoading(false);
     }
@@ -2174,6 +2233,39 @@ export default function AIGovernor({
               ))}
             </div>
 
+            <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50/40 p-3">
+              <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <p className="text-xs font-bold text-blue-950">Webhook that</p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-blue-900">
+                    Phase 2Q chi nhan event, xac thuc va ghi log. Chua reply Zalo that, chua broadcast, chua gui nhom that.
+                  </p>
+                </div>
+                <span className={`rounded px-2 py-1 text-[11px] font-bold ${
+                  zaloWebhookStatus?.webhookSafe ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900"
+                }`}>
+                  {zaloWebhookStatus?.webhookSafe ? "safe" : "chua an toan"}
+                </span>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8">
+                {[
+                  ["Enabled", String(Boolean(zaloWebhookStatus?.webhookEnabled))],
+                  ["Configured", String(Boolean(zaloWebhookStatus?.webhookConfigured))],
+                  ["Verified", formatNumber(zaloWebhookStatus?.signatureVerifiedCount || 0)],
+                  ["Rejected", formatNumber(zaloWebhookStatus?.rejectedCount || 0)],
+                  ["Duplicate", formatNumber(zaloWebhookStatus?.duplicateCount || 0)],
+                  ["Last real", zaloWebhookStatus?.lastRealEventAt ? new Date(zaloWebhookStatus.lastRealEventAt).toLocaleString("vi-VN") : "-"],
+                  ["Last reject", zaloWebhookStatus?.lastRejectedReason || "-"],
+                  ["Real reply", String(Boolean(zaloWebhookStatus?.canReplyReal))]
+                ].map(([label, value]) => (
+                  <div key={label} className="rounded border border-blue-100 bg-white px-2 py-1.5">
+                    <p className="text-[10px] font-bold uppercase text-blue-500">{label}</p>
+                    <p className="mt-1 break-words text-[11px] font-bold text-blue-950">{value}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-12">
               <div className="xl:col-span-4 rounded-lg border border-stone-200 bg-[#fbfaf6] p-3">
                 <p className="text-xs font-bold text-stone-850">Test mock message</p>
@@ -2226,8 +2318,27 @@ export default function AIGovernor({
                   {zaloBotEvents.map((event) => (
                     <div key={event.id} className="rounded border border-stone-100 bg-stone-50 px-2 py-1.5 text-[11px] text-stone-700">
                       <p><strong>{event.status}</strong> · {event.channel} · {event.intent}</p>
+                      <p className="text-stone-500">{event.eventType} / {event.signatureStatus || "no-signature"} / {event.reviewedAt ? "da xem" : "chua xem"}</p>
                       <p className="truncate">{event.senderName || event.senderId}: {event.messageText || event.eventType}</p>
                       {event.error ? <p className="text-amber-700">{event.error}</p> : null}
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        <button
+                          type="button"
+                          onClick={() => void markZaloEventReviewed(event.id)}
+                          disabled={isZaloBotLoading || Boolean(event.reviewedAt)}
+                          className="rounded border border-stone-200 bg-white px-2 py-0.5 font-bold text-stone-600 hover:bg-stone-100 disabled:opacity-50"
+                        >
+                          Da xem
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void replayZaloEvent(event.id)}
+                          disabled={isZaloBotLoading || event.eventType !== "message" || !event.messageText}
+                          className="rounded border border-blue-200 bg-white px-2 py-0.5 font-bold text-blue-800 hover:bg-blue-50 disabled:opacity-50"
+                        >
+                          Replay mock
+                        </button>
+                      </div>
                     </div>
                   ))}
                   {!zaloBotEvents.length && <p className="text-xs text-stone-500">Chua co event.</p>}

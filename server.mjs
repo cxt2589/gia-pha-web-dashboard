@@ -549,16 +549,23 @@ async function getDatabase() {
     CREATE TABLE IF NOT EXISTS zalo_bot_events (
       id TEXT PRIMARY KEY,
       event_id TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT 'mock',
       channel TEXT NOT NULL DEFAULT 'mock',
       event_type TEXT NOT NULL DEFAULT 'message',
+      app_id TEXT NOT NULL DEFAULT '',
+      oa_id TEXT NOT NULL DEFAULT '',
       sender_id TEXT NOT NULL DEFAULT '',
       sender_name TEXT NOT NULL DEFAULT '',
+      recipient_id TEXT NOT NULL DEFAULT '',
       group_id TEXT NOT NULL DEFAULT '',
       message_text TEXT NOT NULL DEFAULT '',
       normalized_text TEXT NOT NULL DEFAULT '',
       intent TEXT NOT NULL DEFAULT 'fallback',
       status TEXT NOT NULL DEFAULT 'received',
       error TEXT NOT NULL DEFAULT '',
+      signature_status TEXT NOT NULL DEFAULT '',
+      reviewed_at TEXT NOT NULL DEFAULT '',
+      event_timestamp TEXT NOT NULL DEFAULT '',
       raw_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -595,6 +602,8 @@ async function getDatabase() {
     CREATE INDEX IF NOT EXISTS idx_reminder_send_logs_draft ON reminder_send_logs(draft_id);
     CREATE INDEX IF NOT EXISTS idx_reminder_send_logs_created ON reminder_send_logs(created_at);
     CREATE INDEX IF NOT EXISTS idx_zalo_bot_events_created ON zalo_bot_events(created_at);
+    CREATE INDEX IF NOT EXISTS idx_zalo_bot_events_event_id ON zalo_bot_events(event_id);
+    CREATE INDEX IF NOT EXISTS idx_zalo_bot_events_status ON zalo_bot_events(status);
     CREATE INDEX IF NOT EXISTS idx_zalo_bot_replies_created ON zalo_bot_replies(created_at);
   `);
   ensureTableColumn(db, 'knowledge_sources', 'summary', "ALTER TABLE knowledge_sources ADD COLUMN summary TEXT NOT NULL DEFAULT ''");
@@ -613,10 +622,19 @@ async function getDatabase() {
   ensureTableColumn(db, 'reminder_send_logs', 'blocked_reason', "ALTER TABLE reminder_send_logs ADD COLUMN blocked_reason TEXT NOT NULL DEFAULT ''");
   ensureTableColumn(db, 'reminder_send_logs', 'request_id', "ALTER TABLE reminder_send_logs ADD COLUMN request_id TEXT NOT NULL DEFAULT ''");
   ensureTableColumn(db, 'reminder_send_logs', 'response_id', "ALTER TABLE reminder_send_logs ADD COLUMN response_id TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'zalo_bot_events', 'source', "ALTER TABLE zalo_bot_events ADD COLUMN source TEXT NOT NULL DEFAULT 'mock'");
+  ensureTableColumn(db, 'zalo_bot_events', 'app_id', "ALTER TABLE zalo_bot_events ADD COLUMN app_id TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'zalo_bot_events', 'oa_id', "ALTER TABLE zalo_bot_events ADD COLUMN oa_id TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'zalo_bot_events', 'recipient_id', "ALTER TABLE zalo_bot_events ADD COLUMN recipient_id TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'zalo_bot_events', 'signature_status', "ALTER TABLE zalo_bot_events ADD COLUMN signature_status TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'zalo_bot_events', 'reviewed_at', "ALTER TABLE zalo_bot_events ADD COLUMN reviewed_at TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'zalo_bot_events', 'event_timestamp', "ALTER TABLE zalo_bot_events ADD COLUMN event_timestamp TEXT NOT NULL DEFAULT ''");
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_knowledge_sources_visibility ON knowledge_sources(visibility);
     CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_visibility ON knowledge_chunks(visibility);
     CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_ascii ON knowledge_chunks(content_ascii);
+    CREATE INDEX IF NOT EXISTS idx_zalo_bot_events_event_id ON zalo_bot_events(event_id);
+    CREATE INDEX IF NOT EXISTS idx_zalo_bot_events_status ON zalo_bot_events(status);
   `);
   return db;
 }
@@ -2642,14 +2660,35 @@ app.get('/api/reminder-test-recipients', async (req, res) => {
   }
 });
 
+app.get('/api/zalo/webhook', (req, res) => {
+  try {
+    const verifyToken = String(process.env.ZALO_WEBHOOK_VERIFY_TOKEN || '').trim();
+    const suppliedToken = String(req.query['hub.verify_token'] || req.query.verify_token || req.query.token || '').trim();
+    const challenge = String(req.query['hub.challenge'] || req.query.challenge || req.query.echostr || 'ok');
+    if (!verifyToken) {
+      res.status(503).json({ ok: false, error: 'zalo_webhook_verify_token_missing' });
+      return;
+    }
+    if (suppliedToken !== verifyToken) {
+      res.status(403).json({ ok: false, error: 'invalid_verify_token' });
+      return;
+    }
+    res.type('text/plain').send(challenge);
+  } catch (err) {
+    console.error('Failed to verify Zalo webhook:', err);
+    res.status(500).json({ ok: false, error: 'Failed to verify Zalo webhook.' });
+  }
+});
+
 app.post('/api/zalo/webhook', async (req, res) => {
   try {
     const verification = verifyZaloWebhookRequest(req);
     if (!verification.ok) {
-      res.status(401).json({ ok: false, error: verification.reason });
+      await logRejectedZaloWebhook(req.body || {}, verification.reason);
+      res.status(verification.status || 401).json({ ok: false, error: verification.reason });
       return;
     }
-    const result = await processZaloBotEvent(req.body || {}, { source: 'webhook' });
+    const result = await processZaloBotEvent(req.body || {}, { source: 'webhook', signatureStatus: verification.signatureStatus });
     res.json({ ok: true, productionReady: verification.productionReady, ...result });
   } catch (err) {
     console.error('Failed to process Zalo webhook:', err);
@@ -2664,6 +2703,16 @@ app.get('/api/zalo-bot/status', async (req, res) => {
   } catch (err) {
     console.error('Failed to read Zalo bot status:', err);
     res.status(500).json({ error: 'Failed to read Zalo bot status.' });
+  }
+});
+
+app.get('/api/zalo-bot/webhook-status', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json(await getZaloWebhookStatus());
+  } catch (err) {
+    console.error('Failed to read Zalo webhook status:', err);
+    res.status(500).json({ error: 'Failed to read Zalo webhook status.' });
   }
 });
 
@@ -2704,6 +2753,31 @@ app.post('/api/zalo-bot/mock-message', async (req, res) => {
   } catch (err) {
     console.error('Failed to process Zalo bot mock message:', err);
     res.status(err.status || 500).json({ error: err.message || 'Failed to process Zalo bot mock message.' });
+  }
+});
+
+app.post('/api/zalo-bot/replay-event/:id', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const result = await replayZaloBotEvent(req.params.id);
+    res.status(201).json({ ok: true, ...result });
+  } catch (err) {
+    console.error('Failed to replay Zalo bot event:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to replay Zalo bot event.' });
+  }
+});
+
+app.patch('/api/zalo-bot/events/:id/mark-reviewed', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const database = await getDatabase();
+    const reviewedAt = new Date().toISOString();
+    const update = database.prepare('UPDATE zalo_bot_events SET reviewed_at = ? WHERE id = ?').run(reviewedAt, req.params.id);
+    if (!update.changes) throw Object.assign(new Error('Zalo bot event not found.'), { status: 404 });
+    res.json({ ok: true, event: publicZaloBotEvent(database.prepare('SELECT * FROM zalo_bot_events WHERE id = ?').get(req.params.id)) });
+  } catch (err) {
+    console.error('Failed to mark Zalo bot event reviewed:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to mark Zalo bot event reviewed.' });
   }
 });
 
@@ -4530,57 +4604,87 @@ async function listReminderSendLogs({ draftId = '', limit = 50, transport = '', 
   return database.prepare(sql).all(...params).map(publicReminderSendLog);
 }
 
+function parseBooleanEnv(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback;
+  return /^(1|true|yes|on)$/i.test(String(value).trim());
+}
+
 function readZaloBotConfig() {
+  const webhookEnabled = parseBooleanEnv(process.env.ZALO_WEBHOOK_ENABLED, false);
   const webhookSecret = String(process.env.ZALO_WEBHOOK_SECRET || '').trim();
+  const verifyToken = String(process.env.ZALO_WEBHOOK_VERIFY_TOKEN || '').trim();
   const sendConfig = readReminderTransportConfig();
+  const phaseRealReplyEnabled = parseBooleanEnv(process.env.PHASE_REAL_ZALO_REPLY_ENABLED, false);
   return {
-    webhookConfigured: Boolean(webhookSecret),
-    allowMockWithoutSecret: !webhookSecret,
+    webhookEnabled,
+    webhookConfigured: webhookEnabled ? Boolean(webhookSecret && verifyToken) : Boolean(webhookSecret || verifyToken),
+    webhookSecretConfigured: Boolean(webhookSecret),
+    webhookVerifyTokenConfigured: Boolean(verifyToken),
+    webhookSafe: !webhookEnabled || Boolean(webhookSecret && verifyToken),
+    allowMockWithoutSecret: !webhookEnabled && !webhookSecret,
     sendEnabled: sendConfig.zalo.enabled,
     sendMode: sendConfig.zalo.mode,
-    canReplyReal: false
+    phaseRealReplyEnabled,
+    canReplyReal: sendConfig.zalo.enabled && sendConfig.zalo.mode === 'real' && phaseRealReplyEnabled
   };
 }
 
 function verifyZaloWebhookRequest(req) {
+  const enabled = parseBooleanEnv(process.env.ZALO_WEBHOOK_ENABLED, false);
   const secret = String(process.env.ZALO_WEBHOOK_SECRET || '').trim();
-  if (!secret) return { ok: true, productionReady: false, reason: 'missing_secret_mock_only' };
+  if (!enabled) return { ok: true, productionReady: false, signatureStatus: 'not_required', reason: 'webhook_disabled_mock_only' };
+  if (!secret) return { ok: false, productionReady: false, signatureStatus: 'rejected', reason: 'webhook_secret_missing', status: 503 };
   const signature = String(req.headers['x-zalo-signature'] || req.headers['x-hub-signature-256'] || req.headers['x-signature'] || '').trim();
-  if (!signature) return { ok: false, productionReady: true, reason: 'missing_signature' };
+  if (!signature) return { ok: false, productionReady: true, signatureStatus: 'rejected', reason: 'missing_signature', status: 401 };
   const payload = JSON.stringify(req.body || {});
   const digest = crypto.createHmac('sha256', secret).update(payload).digest('hex');
-  const normalizedSignature = signature.replace(/^sha256=/i, '');
+  const normalizedSignature = signature.replace(/^sha256=/i, '').trim();
+  if (!/^[a-f0-9]{64}$/i.test(normalizedSignature)) {
+    return { ok: false, productionReady: true, signatureStatus: 'rejected', reason: 'invalid_signature_format', status: 403 };
+  }
   const expected = Buffer.from(digest, 'hex');
   const actual = Buffer.from(normalizedSignature, 'hex');
   if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
-    return { ok: false, productionReady: true, reason: 'invalid_signature' };
+    return { ok: false, productionReady: true, signatureStatus: 'rejected', reason: 'invalid_signature', status: 403 };
   }
-  return { ok: true, productionReady: true, reason: 'signature_ok' };
+  return { ok: true, productionReady: true, signatureStatus: 'verified', reason: 'signature_ok' };
 }
 
 function normalizeZaloBotEvent(payload = {}, { source = 'webhook' } = {}) {
-  const eventId = String(payload.eventId || payload.event_id || payload.message_id || payload.msg_id || payload.id || `zalo_evt_${randomToken(10)}`).trim();
-  const eventName = String(payload.eventName || payload.event_name || payload.event || payload.type || '').trim().toLowerCase();
   const message = payload.message && typeof payload.message === 'object' ? payload.message : {};
   const sender = payload.sender && typeof payload.sender === 'object' ? payload.sender : payload.user && typeof payload.user === 'object' ? payload.user : {};
   const recipient = payload.recipient && typeof payload.recipient === 'object' ? payload.recipient : {};
   const group = payload.group && typeof payload.group === 'object' ? payload.group : {};
+  const eventId = String(
+    payload.eventId || payload.event_id || payload.message_id || payload.msg_id || payload.id
+    || message.message_id || message.msg_id || message.id || `zalo_evt_${randomToken(10)}`
+  ).trim();
+  const eventName = String(payload.eventName || payload.event_name || payload.event || payload.type || '').trim().toLowerCase();
   const text = String(payload.messageText || payload.message_text || payload.text || message.text || payload.content || '').trim();
   const groupId = String(payload.groupId || payload.group_id || group.id || group.group_id || recipient.group_id || '').trim();
   const senderId = String(payload.senderId || payload.sender_id || sender.id || sender.user_id || sender.uid || payload.user_id || '').trim();
   const senderName = String(payload.senderName || payload.sender_name || sender.name || payload.user_name || '').trim();
+  const recipientId = String(payload.recipientId || payload.recipient_id || recipient.id || recipient.user_id || recipient.oa_id || payload.to_id || '').trim();
+  const appId = String(payload.appId || payload.app_id || payload.appid || payload.app_id || '').trim();
+  const oaId = String(payload.oaId || payload.oa_id || payload.oaid || recipient.oa_id || payload.recipient_id || '').trim();
+  const eventTimestamp = String(payload.timestamp || payload.event_time || payload.time || message.timestamp || '').trim();
   const eventType = /follow/.test(eventName)
     ? (eventName.includes('unfollow') ? 'unfollow' : 'follow')
     : text ? 'message' : 'unknown';
   return {
     eventId,
+    source,
     channel: groupId ? 'group' : source === 'mock' ? 'mock' : 'oa',
     eventType,
+    appId,
+    oaId,
     senderId,
     senderName,
+    recipientId,
     groupId,
     messageText: text,
     normalizedText: normalizeKnowledgeText(text),
+    eventTimestamp,
     raw: payload
   };
 }
@@ -4625,16 +4729,23 @@ function publicZaloBotEvent(row) {
   return {
     id: row.id,
     eventId: row.event_id,
+    source: row.source || '',
     channel: row.channel,
     eventType: row.event_type,
+    appId: row.app_id || '',
+    oaId: row.oa_id || '',
     senderId: row.sender_id,
     senderName: row.sender_name,
+    recipientId: row.recipient_id || '',
     groupId: row.group_id,
     messageText: row.message_text,
     normalizedText: row.normalized_text,
     intent: row.intent,
     status: row.status,
     error: row.error,
+    signatureStatus: row.signature_status || '',
+    reviewedAt: row.reviewed_at || '',
+    eventTimestamp: row.event_timestamp || '',
     createdAt: row.created_at
   };
 }
@@ -4658,27 +4769,46 @@ function publicZaloBotReply(row) {
   };
 }
 
-async function insertZaloBotEvent(database, event, { intent = 'fallback', status = 'received', error = '' } = {}) {
+function redactSensitiveJson(value) {
+  const seen = new WeakSet();
+  return JSON.stringify(value || {}, (key, item) => {
+    if (/token|secret|password|access_token|refresh_token|authorization/i.test(key)) return '[redacted]';
+    if (item && typeof item === 'object') {
+      if (seen.has(item)) return '[circular]';
+      seen.add(item);
+    }
+    return item;
+  }).slice(0, 8000);
+}
+
+async function insertZaloBotEvent(database, event, { intent = 'fallback', status = 'received', error = '', signatureStatus = '' } = {}) {
   const id = `zalo_event_${randomToken(12)}`;
   database.prepare(`
     INSERT INTO zalo_bot_events (
-      id, event_id, channel, event_type, sender_id, sender_name, group_id,
-      message_text, normalized_text, intent, status, error, raw_json, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, event_id, source, channel, event_type, app_id, oa_id, sender_id, sender_name,
+      recipient_id, group_id, message_text, normalized_text, intent, status, error,
+      signature_status, event_timestamp, raw_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     event.eventId,
+    event.source,
     event.channel,
     event.eventType,
+    event.appId,
+    event.oaId,
     event.senderId,
     event.senderName,
+    event.recipientId,
     event.groupId,
     event.messageText,
     event.normalizedText,
     intent,
     status,
     error,
-    JSON.stringify(event.raw || {}),
+    signatureStatus,
+    event.eventTimestamp,
+    redactSensitiveJson(event.raw || {}),
     new Date().toISOString()
   );
   return id;
@@ -4728,6 +4858,7 @@ async function buildZaloBotAIReply(event, intent, authScope) {
       type: 'chat',
       botType: 'zalo_bot',
       intent,
+      source: event.source === 'webhook' ? 'webhook_real' : 'mock',
       engine: 'local'
     }),
     signal: AbortSignal.timeout(12_000)
@@ -4737,44 +4868,78 @@ async function buildZaloBotAIReply(event, intent, authScope) {
   return String(data.text || '').trim() || 'Toi chua co du du lieu de tra loi chinh xac.';
 }
 
-async function processZaloBotEvent(payload = {}, { source = 'webhook', adminUser = null } = {}) {
+async function logRejectedZaloWebhook(payload = {}, reason = 'rejected') {
+  const database = await getDatabase();
+  const event = normalizeZaloBotEvent(payload, { source: 'webhook' });
+  const eventRowId = await insertZaloBotEvent(database, event, {
+    intent: 'fallback',
+    status: 'rejected',
+    error: reason,
+    signatureStatus: 'rejected'
+  });
+  return publicZaloBotEvent(database.prepare('SELECT * FROM zalo_bot_events WHERE id = ?').get(eventRowId));
+}
+
+async function processZaloBotEvent(payload = {}, { source = 'webhook', adminUser = null, signatureStatus = '' } = {}) {
   const database = await getDatabase();
   const event = normalizeZaloBotEvent(payload, { source });
   let intent = classifyZaloBotIntent(stripZaloBotCommand(event.messageText));
   let eventStatus = 'received';
   let eventError = '';
 
+  if (source === 'webhook' && event.eventId) {
+    const duplicate = database.prepare(`
+      SELECT id FROM zalo_bot_events
+      WHERE event_id = ? AND source = 'webhook' AND status != 'rejected'
+      ORDER BY created_at DESC LIMIT 1
+    `).get(event.eventId);
+    if (duplicate) {
+      const eventRowId = await insertZaloBotEvent(database, event, {
+        intent,
+        status: 'ignored',
+        error: 'duplicate_event',
+        signatureStatus: signatureStatus || 'verified'
+      });
+      return {
+        duplicate: true,
+        event: publicZaloBotEvent(database.prepare('SELECT * FROM zalo_bot_events WHERE id = ?').get(eventRowId)),
+        reply: null
+      };
+    }
+  }
+
   if (event.eventType !== 'message') {
     eventStatus = 'ignored';
     eventError = 'non_message_event';
-    const eventRowId = await insertZaloBotEvent(database, event, { intent, status: eventStatus, error: eventError });
+    const eventRowId = await insertZaloBotEvent(database, event, { intent, status: eventStatus, error: eventError, signatureStatus });
     return { event: publicZaloBotEvent(database.prepare('SELECT * FROM zalo_bot_events WHERE id = ?').get(eventRowId)), reply: null };
   }
   if (!event.messageText) {
     eventStatus = 'ignored';
     eventError = 'empty_message';
-    const eventRowId = await insertZaloBotEvent(database, event, { intent, status: eventStatus, error: eventError });
+    const eventRowId = await insertZaloBotEvent(database, event, { intent, status: eventStatus, error: eventError, signatureStatus });
     return { event: publicZaloBotEvent(database.prepare('SELECT * FROM zalo_bot_events WHERE id = ?').get(eventRowId)), reply: null };
   }
   if (!isZaloGroupMessageEligible(event)) {
     eventStatus = 'ignored';
     eventError = 'group_without_command_or_mention';
-    const eventRowId = await insertZaloBotEvent(database, event, { intent, status: eventStatus, error: eventError });
+    const eventRowId = await insertZaloBotEvent(database, event, { intent, status: eventStatus, error: eventError, signatureStatus });
     return { event: publicZaloBotEvent(database.prepare('SELECT * FROM zalo_bot_events WHERE id = ?').get(eventRowId)), reply: null };
   }
 
-  const eventRowId = await insertZaloBotEvent(database, event, { intent, status: 'processing' });
+  const eventRowId = await insertZaloBotEvent(database, event, { intent, status: 'processing', signatureStatus });
   try {
     const { authScope } = await getZaloSenderAuthScope(event.senderId);
     const replyText = await buildZaloBotAIReply(event, intent, authScope);
     const config = readZaloBotConfig();
+    const realReplyBlocked = config.sendEnabled && config.sendMode === 'real' && !config.phaseRealReplyEnabled;
     const reply = await insertZaloBotReply(database, event, {
       eventRowId,
       intent,
       replyText,
-      transport: config.sendEnabled && config.sendMode === 'real' && config.canReplyReal ? 'zalo_real' : 'zalo_mock',
-      status: config.sendEnabled && config.sendMode === 'real' && config.canReplyReal ? 'blocked' : 'mock',
-      error: config.sendEnabled && config.sendMode === 'real' && config.canReplyReal ? 'real_reply_locked_phase_2p' : ''
+      transport: 'zalo_mock',
+      status: realReplyBlocked ? 'blocked_real_send' : 'mock_ready',
+      error: realReplyBlocked ? 'real_reply_locked_phase_2q' : ''
     });
     database.prepare('UPDATE zalo_bot_events SET status = ?, intent = ? WHERE id = ?').run('replied', intent, eventRowId);
     return { event: publicZaloBotEvent(database.prepare('SELECT * FROM zalo_bot_events WHERE id = ?').get(eventRowId)), reply };
@@ -4806,7 +4971,11 @@ async function getZaloBotStatus() {
   const replies = database.prepare('SELECT COUNT(*) AS totalReplies FROM zalo_bot_replies').get();
   return {
     ok: true,
+    webhookEnabled: config.webhookEnabled,
     webhookConfigured: config.webhookConfigured,
+    webhookSafe: config.webhookSafe,
+    webhookSecretConfigured: config.webhookSecretConfigured,
+    webhookVerifyTokenConfigured: config.webhookVerifyTokenConfigured,
     sendEnabled: config.sendEnabled,
     sendMode: config.sendMode,
     canReplyReal: false,
@@ -4816,6 +4985,78 @@ async function getZaloBotStatus() {
     errorCount: Number(counts?.errorCount || 0),
     lastEventAt: counts?.lastEventAt || ''
   };
+}
+
+async function getZaloWebhookStatus() {
+  const database = await getDatabase();
+  const config = readZaloBotConfig();
+  const counts = database.prepare(`
+    SELECT
+      SUM(CASE WHEN signature_status = 'verified' THEN 1 ELSE 0 END) AS signatureVerifiedCount,
+      SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejectedCount,
+      SUM(CASE WHEN error = 'duplicate_event' THEN 1 ELSE 0 END) AS duplicateCount,
+      MAX(CASE WHEN source = 'webhook' THEN created_at ELSE '' END) AS lastRealEventAt
+    FROM zalo_bot_events
+  `).get();
+  const rejected = database.prepare(`
+    SELECT error FROM zalo_bot_events
+    WHERE status = 'rejected'
+    ORDER BY created_at DESC LIMIT 1
+  `).get();
+  return {
+    ok: true,
+    webhookEnabled: config.webhookEnabled,
+    webhookConfigured: config.webhookConfigured,
+    webhookSafe: config.webhookSafe,
+    webhookSecretConfigured: config.webhookSecretConfigured,
+    webhookVerifyTokenConfigured: config.webhookVerifyTokenConfigured,
+    sendEnabled: config.sendEnabled,
+    sendMode: config.sendMode,
+    canReplyReal: false,
+    signatureVerifiedCount: Number(counts?.signatureVerifiedCount || 0),
+    rejectedCount: Number(counts?.rejectedCount || 0),
+    duplicateCount: Number(counts?.duplicateCount || 0),
+    lastRealEventAt: counts?.lastRealEventAt || '',
+    lastRejectedReason: rejected?.error || ''
+  };
+}
+
+async function replayZaloBotEvent(id) {
+  const database = await getDatabase();
+  const row = database.prepare('SELECT * FROM zalo_bot_events WHERE id = ?').get(id);
+  if (!row) throw Object.assign(new Error('Zalo bot event not found.'), { status: 404 });
+  const event = {
+    eventId: row.event_id,
+    source: row.source || 'webhook',
+    channel: row.channel,
+    eventType: row.event_type,
+    appId: row.app_id || '',
+    oaId: row.oa_id || '',
+    senderId: row.sender_id,
+    senderName: row.sender_name,
+    recipientId: row.recipient_id || '',
+    groupId: row.group_id,
+    messageText: row.message_text,
+    normalizedText: row.normalized_text,
+    eventTimestamp: row.event_timestamp || '',
+    raw: {}
+  };
+  if (event.eventType !== 'message' || !event.messageText || !isZaloGroupMessageEligible(event)) {
+    throw Object.assign(new Error('Event is not eligible for mock replay.'), { status: 400 });
+  }
+  const intent = classifyZaloBotIntent(stripZaloBotCommand(event.messageText));
+  const { authScope } = await getZaloSenderAuthScope(event.senderId);
+  const replyText = await buildZaloBotAIReply(event, intent, authScope);
+  const reply = await insertZaloBotReply(database, event, {
+    eventRowId: row.id,
+    intent,
+    replyText,
+    transport: 'zalo_mock',
+    status: 'mock_ready',
+    error: ''
+  });
+  database.prepare('UPDATE zalo_bot_events SET status = ?, intent = ? WHERE id = ?').run('replayed_mock', intent, row.id);
+  return { event: publicZaloBotEvent(database.prepare('SELECT * FROM zalo_bot_events WHERE id = ?').get(row.id)), reply };
 }
 
 async function listZaloBotEvents({ limit = 50 } = {}) {
