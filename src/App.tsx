@@ -85,8 +85,8 @@ export default function App() {
         credentials: 'same-origin',
         body: JSON.stringify({
           type: 'webview_chat',
-          botType: 'webview',
-          intent: 'chat',
+          botType: 'webview_chat',
+          intent: 'knowledge_question',
           message: userText
         })
       });

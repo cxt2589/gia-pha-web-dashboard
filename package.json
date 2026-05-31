@@ -19,6 +19,7 @@
     "test:phase2g-review": "node scripts/test-phase-2g-review.mjs",
     "test:phase2p-zalo-bot": "node scripts/test-phase-2p-zalo-bot.mjs",
     "test:phase2q-zalo-webhook": "node scripts/test-phase-2q-zalo-webhook.mjs",
+    "test:phase2r-ai-bots": "node scripts/test-phase-2r-ai-bots.mjs",
     "import:cao-toc-txt": "node scripts/import-cao-toc-txt-knowledge.mjs",
     "import:cao-toc-04": "node scripts/import-cao-toc-04-anniversaries.mjs",
     "test:lineage-display": "tsx scripts/test-lineage-display.ts",

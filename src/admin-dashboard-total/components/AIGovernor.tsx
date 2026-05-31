@@ -117,6 +117,11 @@ type AIRequestLog = {
   contextTrimmed: boolean;
   knowledgeMatchesCount: number;
   knowledgeSourceIds?: string[];
+  botConfigEngine?: string;
+  botConfigMaxChunks?: number;
+  botConfigMaxOutputTokens?: number;
+  cacheEnabled?: boolean;
+  configVersion?: string;
   errorMessage?: string;
   promptSnippet?: string;
 };
@@ -128,6 +133,28 @@ type AIRequestLogSummary = {
   avgDurationMs: number;
   totalContextChars: number;
   estimatedTokens: number;
+  topBotTypes?: { name: string; count: number }[];
+  topIntents?: { name: string; count: number }[];
+};
+
+type AIBotConfig = {
+  botType: string;
+  label: string;
+  enabled: boolean;
+  pausedReason: string;
+  engine: string;
+  maxKnowledgeChunks: number;
+  maxKnowledgeChars: number;
+  maxOutputTokens: number;
+  cacheEnabled: boolean;
+  cacheTtlMs: number;
+  retry429: number;
+  retryDelayMs: number;
+  publicAccess: boolean;
+  requiresKycForPrivateData: boolean;
+  systemPromptShort: string;
+  updatedAt: string;
+  updatedBy: string;
 };
 
 type ZaloBotStatus = {
@@ -451,6 +478,9 @@ export default function AIGovernor({
   const [appliedExtractionNote, setAppliedExtractionNote] = useState("");
   const [appliedExtractionFilter, setAppliedExtractionFilter] = useState("");
   const [appliedExtractionFieldFilter, setAppliedExtractionFieldFilter] = useState("");
+  const [aiBotConfigs, setAiBotConfigs] = useState<AIBotConfig[]>([]);
+  const [isAiBotConfigsLoading, setIsAiBotConfigsLoading] = useState(false);
+  const [aiBotConfigNote, setAiBotConfigNote] = useState("");
   const [zaloBotStatus, setZaloBotStatus] = useState<ZaloBotStatus | null>(null);
   const [zaloWebhookStatus, setZaloWebhookStatus] = useState<ZaloWebhookStatus | null>(null);
   const [zaloBotEvents, setZaloBotEvents] = useState<ZaloBotEvent[]>([]);
@@ -611,7 +641,7 @@ export default function AIGovernor({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         type,
-        botType: "governor",
+        botType: "ai_governor",
         intent: type,
         prompt: message,
         message,
@@ -949,6 +979,41 @@ export default function AIGovernor({
     }
   };
 
+  const loadAIBotConfigs = async () => {
+    setIsAiBotConfigsLoading(true);
+    try {
+      const response = await fetch("/api/ai/bot-configs");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Khong doc duoc cau hinh bot AI.");
+      setAiBotConfigs(Array.isArray(data.configs) ? data.configs : []);
+      setAiBotConfigNote("");
+    } catch (err: any) {
+      setAiBotConfigNote(`Khong doc duoc cau hinh bot AI: ${err?.message || "loi khong xac dinh"}`);
+    } finally {
+      setIsAiBotConfigsLoading(false);
+    }
+  };
+
+  const patchAIBotConfig = async (botType: string, patch: Partial<AIBotConfig>) => {
+    setIsAiBotConfigsLoading(true);
+    setAiBotConfigNote("");
+    try {
+      const response = await fetch(`/api/ai/bot-configs/${encodeURIComponent(botType)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch)
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Khong cap nhat duoc bot AI.");
+      setAiBotConfigs((prev) => prev.map((item) => item.botType === botType ? data.config : item));
+      setAiBotConfigNote(`Da cap nhat ${data.config?.label || botType}.`);
+    } catch (err: any) {
+      setAiBotConfigNote(`Loi cap nhat bot AI: ${err?.message || "khong xac dinh"}`);
+    } finally {
+      setIsAiBotConfigsLoading(false);
+    }
+  };
+
   const markZaloEventReviewed = async (eventId: string) => {
     setIsZaloBotLoading(true);
     setZaloBotNote("");
@@ -1017,6 +1082,7 @@ export default function AIGovernor({
     void loadAIRequestLogs();
     void loadAIEvalCases();
     void loadZaloBotPanel();
+    void loadAIBotConfigs();
   }, []);
 
   const handleScanWholeSystem = async () => {
@@ -1351,6 +1417,102 @@ export default function AIGovernor({
             </div>
 
             <div className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm xl:col-span-3">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <h3 className="flex items-center gap-2 font-serif text-lg font-bold text-red-950">
+                    <Settings className="h-5 w-5 text-amber-700" />
+                    Quan tri Bot AI
+                  </h3>
+                  <p className="mt-1 text-xs leading-relaxed text-stone-500">
+                    Cau hinh rieng cho webview_chat, dashboard_helper, ai_governor, article_writer, prayer_writer va zalo_bot.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadAIBotConfigs()}
+                  disabled={isAiBotConfigsLoading}
+                  className="inline-flex items-center gap-2 rounded border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-60"
+                >
+                  <RefreshCw className={`h-4 w-4 ${isAiBotConfigsLoading ? "animate-spin" : ""}`} />
+                  Tai cau hinh bot
+                </button>
+              </div>
+              {aiBotConfigNote && <p className="mt-2 rounded bg-amber-50 p-2 text-[11px] text-amber-900">{aiBotConfigNote}</p>}
+              <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-3">
+                {aiBotConfigs.map((config) => (
+                  <div key={config.botType} className="rounded-lg border border-stone-200 bg-[#fbfaf6] p-3 text-xs">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="font-bold text-red-950">{config.label}</p>
+                        <p className="mt-0.5 text-[11px] text-stone-500">{config.botType}</p>
+                      </div>
+                      <label className="inline-flex items-center gap-1 font-bold text-stone-600">
+                        <input
+                          type="checkbox"
+                          checked={config.enabled}
+                          disabled={isAiBotConfigsLoading || config.botType === "zalo_bot"}
+                          onChange={(event) => void patchAIBotConfig(config.botType, { enabled: event.target.checked })}
+                        />
+                        {config.enabled ? "on" : "off"}
+                      </label>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <label className="block">
+                        <span className="mb-1 block text-[10px] font-bold uppercase text-stone-400">Engine</span>
+                        <select
+                          value={config.engine}
+                          disabled={isAiBotConfigsLoading || config.botType === "zalo_bot"}
+                          onChange={(event) => void patchAIBotConfig(config.botType, { engine: event.target.value })}
+                          className="w-full rounded border border-stone-200 bg-white px-2 py-1.5"
+                        >
+                          <option value="local">local</option>
+                          <option value="local-knowledge">local-knowledge</option>
+                          <option value="gemini">gemini</option>
+                        </select>
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[10px] font-bold uppercase text-stone-400">Chunks</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={20}
+                          value={config.maxKnowledgeChunks}
+                          disabled={isAiBotConfigsLoading}
+                          onChange={(event) => void patchAIBotConfig(config.botType, { maxKnowledgeChunks: Number(event.target.value) })}
+                          className="w-full rounded border border-stone-200 bg-white px-2 py-1.5"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[10px] font-bold uppercase text-stone-400">Tokens</span>
+                        <input
+                          type="number"
+                          min={200}
+                          max={4000}
+                          value={config.maxOutputTokens}
+                          disabled={isAiBotConfigsLoading}
+                          onChange={(event) => void patchAIBotConfig(config.botType, { maxOutputTokens: Number(event.target.value) })}
+                          className="w-full rounded border border-stone-200 bg-white px-2 py-1.5"
+                        />
+                      </label>
+                      <label className="flex items-end gap-2 pb-1 font-bold text-stone-600">
+                        <input
+                          type="checkbox"
+                          checked={config.cacheEnabled}
+                          disabled={isAiBotConfigsLoading}
+                          onChange={(event) => void patchAIBotConfig(config.botType, { cacheEnabled: event.target.checked })}
+                        />
+                        Cache
+                      </label>
+                    </div>
+                    {config.pausedReason && <p className="mt-2 rounded bg-amber-50 px-2 py-1 text-[11px] text-amber-900">{config.pausedReason}</p>}
+                    <p className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-stone-500">{config.systemPromptShort}</p>
+                  </div>
+                ))}
+                {!aiBotConfigs.length && <p className="text-xs text-stone-500">Chua co cau hinh bot AI hoac tai khoan hien tai chua co quyen admin.</p>}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm xl:col-span-3">
               <h3 className="mb-3 flex items-center gap-2 font-serif text-lg font-bold text-red-950">
                 <ClipboardList className="h-5 w-5 text-amber-700" />
                 Nhật ký AI
@@ -1398,6 +1560,37 @@ export default function AIGovernor({
               {aiLogNote && <p className="mt-2 rounded bg-amber-50 p-2 text-[11px] text-amber-800">{aiLogNote}</p>}
             </div>
           </div>
+
+          <section className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
+            <h3 className="mb-4 flex items-center gap-2 font-serif text-lg font-bold text-red-950">
+              <BrainCircuit className="h-5 w-5 text-amber-700" />
+              So do van hanh AI
+            </h3>
+            <div className="grid grid-cols-1 gap-2 text-xs md:grid-cols-5">
+              {[
+                ["1. Surface", "webview / dashboard / article / prayer"],
+                ["2. Gateway", "/api/ai/chat + botType + intent"],
+                ["3. Config", "ai_bot_configs: engine, cache, token"],
+                ["4. Local data", "database, aliases, knowledge, anniversaries"],
+                ["5. Response", "local neu du, Gemini khi can"]
+              ].map(([title, detail]) => (
+                <button
+                  key={title}
+                  type="button"
+                  onClick={() => void loadAIBotConfigs()}
+                  className="min-h-[92px] rounded-lg border border-stone-200 bg-[#fbfaf6] p-3 text-left hover:border-amber-300 hover:bg-amber-50/40"
+                >
+                  <span className="block font-bold text-red-950">{title}</span>
+                  <span className="mt-2 block leading-relaxed text-stone-500">{detail}</span>
+                </button>
+              ))}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+              {(aiLogSummary?.topBotTypes || []).slice(0, 6).map((item) => (
+                <span key={item.name} className="rounded bg-stone-100 px-2 py-1 font-bold text-stone-600">{item.name}: {item.count}</span>
+              ))}
+            </div>
+          </section>
 
           <section className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
             <h3 className="mb-4 flex items-center gap-2 font-serif text-lg font-bold text-red-950">

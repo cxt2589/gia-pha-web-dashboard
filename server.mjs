@@ -470,9 +470,34 @@ async function getDatabase() {
       context_trimmed INTEGER NOT NULL DEFAULT 0,
       knowledge_matches_count INTEGER NOT NULL DEFAULT 0,
       knowledge_source_ids_json TEXT NOT NULL DEFAULT '[]',
+      bot_config_engine TEXT NOT NULL DEFAULT '',
+      bot_config_max_chunks INTEGER NOT NULL DEFAULT 0,
+      bot_config_max_output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_enabled INTEGER NOT NULL DEFAULT 1,
+      config_version TEXT NOT NULL DEFAULT '',
       error_code TEXT NOT NULL DEFAULT '',
       error_message TEXT NOT NULL DEFAULT '',
       prompt_snippet TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS ai_bot_configs (
+      bot_type TEXT PRIMARY KEY,
+      label TEXT NOT NULL DEFAULT '',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      paused_reason TEXT NOT NULL DEFAULT '',
+      engine TEXT NOT NULL DEFAULT 'local-knowledge',
+      max_knowledge_chunks INTEGER NOT NULL DEFAULT 5,
+      max_knowledge_chars INTEGER NOT NULL DEFAULT 6000,
+      max_output_tokens INTEGER NOT NULL DEFAULT 700,
+      cache_enabled INTEGER NOT NULL DEFAULT 1,
+      cache_ttl_ms INTEGER NOT NULL DEFAULT 300000,
+      retry_429 INTEGER NOT NULL DEFAULT 1,
+      retry_delay_ms INTEGER NOT NULL DEFAULT 900,
+      public_access INTEGER NOT NULL DEFAULT 0,
+      requires_kyc_for_private_data INTEGER NOT NULL DEFAULT 1,
+      system_prompt_short TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_by TEXT NOT NULL DEFAULT 'system'
     );
 
     CREATE TABLE IF NOT EXISTS extracted_anniversary_candidates (
@@ -619,6 +644,11 @@ async function getDatabase() {
   ensureTableColumn(db, 'knowledge_chunks', 'content_ascii', "ALTER TABLE knowledge_chunks ADD COLUMN content_ascii TEXT NOT NULL DEFAULT ''");
   ensureTableColumn(db, 'knowledge_chunks', 'char_count', "ALTER TABLE knowledge_chunks ADD COLUMN char_count INTEGER NOT NULL DEFAULT 0");
   ensureTableColumn(db, 'knowledge_chunks', 'token_estimate', "ALTER TABLE knowledge_chunks ADD COLUMN token_estimate INTEGER NOT NULL DEFAULT 0");
+  ensureTableColumn(db, 'ai_request_logs', 'bot_config_engine', "ALTER TABLE ai_request_logs ADD COLUMN bot_config_engine TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'ai_request_logs', 'bot_config_max_chunks', "ALTER TABLE ai_request_logs ADD COLUMN bot_config_max_chunks INTEGER NOT NULL DEFAULT 0");
+  ensureTableColumn(db, 'ai_request_logs', 'bot_config_max_output_tokens', "ALTER TABLE ai_request_logs ADD COLUMN bot_config_max_output_tokens INTEGER NOT NULL DEFAULT 0");
+  ensureTableColumn(db, 'ai_request_logs', 'cache_enabled', "ALTER TABLE ai_request_logs ADD COLUMN cache_enabled INTEGER NOT NULL DEFAULT 1");
+  ensureTableColumn(db, 'ai_request_logs', 'config_version', "ALTER TABLE ai_request_logs ADD COLUMN config_version TEXT NOT NULL DEFAULT ''");
   ensureTableColumn(db, 'reminder_send_logs', 'blocked_reason', "ALTER TABLE reminder_send_logs ADD COLUMN blocked_reason TEXT NOT NULL DEFAULT ''");
   ensureTableColumn(db, 'reminder_send_logs', 'request_id', "ALTER TABLE reminder_send_logs ADD COLUMN request_id TEXT NOT NULL DEFAULT ''");
   ensureTableColumn(db, 'reminder_send_logs', 'response_id', "ALTER TABLE reminder_send_logs ADD COLUMN response_id TEXT NOT NULL DEFAULT ''");
@@ -636,6 +666,7 @@ async function getDatabase() {
     CREATE INDEX IF NOT EXISTS idx_zalo_bot_events_event_id ON zalo_bot_events(event_id);
     CREATE INDEX IF NOT EXISTS idx_zalo_bot_events_status ON zalo_bot_events(status);
   `);
+  seedDefaultAIBotConfigs(db);
   return db;
 }
 
@@ -643,6 +674,135 @@ function ensureTableColumn(database, tableName, columnName, alterSql) {
   const columns = database.prepare(`PRAGMA table_info(${tableName})`).all();
   if (!columns.some((column) => column.name === columnName)) {
     database.exec(alterSql);
+  }
+}
+
+const DEFAULT_AI_BOT_CONFIGS = [
+  {
+    botType: 'webview_chat',
+    label: 'Webview chatbot',
+    enabled: 1,
+    engine: 'local-knowledge',
+    maxKnowledgeChunks: 5,
+    maxKnowledgeChars: 5000,
+    maxOutputTokens: 600,
+    cacheEnabled: 1,
+    cacheTtlMs: 300000,
+    retry429: 1,
+    retryDelayMs: 900,
+    publicAccess: 1,
+    requiresKycForPrivateData: 1,
+    systemPromptShort: 'Tra loi ngan gon, uu tien du lieu local, khong lo thong tin rieng neu chua KYC.'
+  },
+  {
+    botType: 'dashboard_helper',
+    label: 'Tro ly dashboard',
+    enabled: 1,
+    engine: 'local-knowledge',
+    maxKnowledgeChunks: 8,
+    maxKnowledgeChars: 9000,
+    maxOutputTokens: 900,
+    cacheEnabled: 1,
+    cacheTtlMs: 300000,
+    retry429: 1,
+    retryDelayMs: 900,
+    publicAccess: 0,
+    requiresKycForPrivateData: 0,
+    systemPromptShort: 'Ho tro admin tra cuu va thao tac dashboard, uu tien du lieu da xac minh.'
+  },
+  {
+    botType: 'ai_governor',
+    label: 'AI Tong Quan',
+    enabled: 1,
+    engine: 'local-knowledge',
+    maxKnowledgeChunks: 10,
+    maxKnowledgeChars: 12000,
+    maxOutputTokens: 1300,
+    cacheEnabled: 1,
+    cacheTtlMs: 180000,
+    retry429: 1,
+    retryDelayMs: 900,
+    publicAccess: 0,
+    requiresKycForPrivateData: 0,
+    systemPromptShort: 'Phan tich he thong, de xuat sua, neu ro nguon va muc can xac minh.'
+  },
+  {
+    botType: 'article_writer',
+    label: 'AI viet bai',
+    enabled: 1,
+    engine: 'gemini',
+    maxKnowledgeChunks: 8,
+    maxKnowledgeChars: 10000,
+    maxOutputTokens: 1800,
+    cacheEnabled: 0,
+    cacheTtlMs: 0,
+    retry429: 1,
+    retryDelayMs: 900,
+    publicAccess: 0,
+    requiresKycForPrivateData: 0,
+    systemPromptShort: 'Viet ban nhap dai hon tu nguon da duyet, khong bia su kien hay nhan vat.'
+  },
+  {
+    botType: 'prayer_writer',
+    label: 'AI soan so/trac thu',
+    enabled: 1,
+    engine: 'gemini',
+    maxKnowledgeChunks: 10,
+    maxKnowledgeChars: 12000,
+    maxOutputTokens: 1800,
+    cacheEnabled: 0,
+    cacheTtlMs: 0,
+    retry429: 1,
+    retryDelayMs: 900,
+    publicAccess: 0,
+    requiresKycForPrivateData: 0,
+    systemPromptShort: 'Soan so/trac thu can trong, khong tu bia Han Nom, chuc tuoc, ngay gio hoac nien dai.'
+  },
+  {
+    botType: 'zalo_bot',
+    label: 'Zalo bot',
+    enabled: 0,
+    pausedReason: 'Tam dung cho OA xac thuc',
+    engine: 'local-knowledge',
+    maxKnowledgeChunks: 5,
+    maxKnowledgeChars: 5000,
+    maxOutputTokens: 500,
+    cacheEnabled: 1,
+    cacheTtlMs: 300000,
+    retry429: 0,
+    retryDelayMs: 900,
+    publicAccess: 0,
+    requiresKycForPrivateData: 1,
+    systemPromptShort: 'Tam dung trong Phase 2R, chi hien trang thai cho OA.'
+  }
+];
+
+function seedDefaultAIBotConfigs(database) {
+  const insert = database.prepare(`
+    INSERT OR IGNORE INTO ai_bot_configs (
+      bot_type, label, enabled, paused_reason, engine, max_knowledge_chunks, max_knowledge_chars,
+      max_output_tokens, cache_enabled, cache_ttl_ms, retry_429, retry_delay_ms,
+      public_access, requires_kyc_for_private_data, system_prompt_short, updated_at, updated_by
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 'system')
+  `);
+  for (const config of DEFAULT_AI_BOT_CONFIGS) {
+    insert.run(
+      config.botType,
+      config.label,
+      config.enabled,
+      config.pausedReason || '',
+      config.engine,
+      config.maxKnowledgeChunks,
+      config.maxKnowledgeChars,
+      config.maxOutputTokens,
+      config.cacheEnabled,
+      config.cacheTtlMs,
+      config.retry429,
+      config.retryDelayMs,
+      config.publicAccess,
+      config.requiresKycForPrivateData,
+      config.systemPromptShort
+    );
   }
 }
 
@@ -2195,7 +2355,7 @@ function publicEvalCase(testCase) {
 
 async function answerAIQualityCase(testCase) {
   const knowledge = await searchKnowledgeWithAliases(testCase.question, {
-    limit: AI_GATEWAY_KNOWLEDGE_TOP_K,
+    limit: botConfig.maxKnowledgeChunks,
     authScope: testCase.scope === 'public' || testCase.scope === 'webview_public' ? 'anonymous' : 'admin'
   });
   const requiredAliasAnswer = buildRequiredAliasAnswer(testCase.question);
@@ -3063,6 +3223,27 @@ app.get('/api/ai/logs/summary', async (req, res) => {
   }
 });
 
+app.get('/api/ai/bot-configs', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json({ ok: true, configs: await listAIBotConfigs() });
+  } catch (err) {
+    console.error('Failed to list AI bot configs:', err);
+    res.status(500).json({ error: 'Failed to list AI bot configs.' });
+  }
+});
+
+app.patch('/api/ai/bot-configs/:botType', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json({ ok: true, config: await updateAIBotConfig(req.params.botType, req.body || {}, admin.authUser) });
+  } catch (err) {
+    console.error('Failed to update AI bot config:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to update AI bot config.' });
+  }
+});
+
 app.get('/api/ai/eval/cases', async (req, res) => {
   try {
     if (!await requireAdmin(req, res)) return;
@@ -3410,25 +3591,39 @@ function normalizeGatewayText(value) {
   return String(value || '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
 }
 
+function normalizeAIBotType(value, type = '') {
+  const normalized = normalizeGatewayText(value);
+  if (['webview', 'webview_chat', 'web_chat'].includes(normalized)) return 'webview_chat';
+  if (['dashboard', 'dashboard_helper', 'admin', 'eval'].includes(normalized)) return 'dashboard_helper';
+  if (['governor', 'ai_governor'].includes(normalized)) return 'ai_governor';
+  if (['article', 'article_writer', 'writer'].includes(normalized)) return 'article_writer';
+  if (['prayer', 'prayer_writer', 'trac_thu', 'han_nom', 'han-nom', 'ceremony'].includes(normalized)) return 'prayer_writer';
+  if (['zalo', 'zalo_bot'].includes(normalized)) return 'zalo_bot';
+  if (!normalized && type === 'webview_chat') return 'webview_chat';
+  return normalized || 'dashboard_helper';
+}
+
 function normalizeAIGatewayContext(body = {}, routeName = 'ai-chat') {
   const type = normalizeGatewayText(body.type || body.intent || 'chat') || 'chat';
   const explicitIntent = normalizeGatewayText(body.intent);
   const explicitBotType = normalizeGatewayText(body.botType || body.bot_type);
   let intent = explicitIntent || type;
-  let botType = explicitBotType || 'dashboard';
+  let botType = normalizeAIBotType(explicitBotType, type);
 
   if (type === 'webview_chat') {
-    botType = explicitBotType || 'webview';
+    botType = normalizeAIBotType(explicitBotType || 'webview_chat', type);
     intent = explicitIntent || 'chat';
   } else if (['zalo', 'zalo_campaign', 'campaign', 'zalo_rule_template'].includes(type)) {
-    botType = explicitBotType || 'zalo';
+    botType = normalizeAIBotType(explicitBotType || 'zalo_bot', type);
     intent = explicitIntent || (type === 'zalo_rule_template' ? 'zalo_rule_template' : 'campaign');
   } else if (['audit', 'system_audit', 'chatbox_policy', 'policy'].includes(type)) {
-    botType = explicitBotType || 'governor';
+    botType = normalizeAIBotType(explicitBotType || 'ai_governor', type);
     intent = explicitIntent || type;
   } else if (['ceremony', 'prayer', 'han_nom', 'han-nom', 'appeal'].includes(type)) {
+    botType = normalizeAIBotType(explicitBotType || 'prayer_writer', type);
     intent = explicitIntent || 'ceremony';
   } else if (['article', 'article_template', 'webview_suggestion_article'].includes(type)) {
+    botType = normalizeAIBotType(explicitBotType || 'article_writer', type);
     intent = explicitIntent || type;
   }
 
@@ -3441,6 +3636,90 @@ function normalizeAIGatewayContext(body = {}, routeName = 'ai-chat') {
   };
 }
 
+function publicAIBotConfig(row) {
+  return {
+    botType: row.bot_type,
+    label: row.label,
+    enabled: Boolean(row.enabled),
+    pausedReason: row.paused_reason || '',
+    engine: row.engine,
+    maxKnowledgeChunks: row.max_knowledge_chunks,
+    maxKnowledgeChars: row.max_knowledge_chars,
+    maxOutputTokens: row.max_output_tokens,
+    cacheEnabled: Boolean(row.cache_enabled),
+    cacheTtlMs: row.cache_ttl_ms,
+    retry429: row.retry_429,
+    retryDelayMs: row.retry_delay_ms,
+    publicAccess: Boolean(row.public_access),
+    requiresKycForPrivateData: Boolean(row.requires_kyc_for_private_data),
+    systemPromptShort: row.system_prompt_short || '',
+    updatedAt: row.updated_at,
+    updatedBy: row.updated_by || ''
+  };
+}
+
+async function getAIBotConfig(botType) {
+  const database = await getDatabase();
+  const normalized = normalizeAIBotType(botType);
+  const row = database.prepare('SELECT * FROM ai_bot_configs WHERE bot_type = ?').get(normalized)
+    || database.prepare('SELECT * FROM ai_bot_configs WHERE bot_type = ?').get('dashboard_helper');
+  return publicAIBotConfig(row);
+}
+
+async function listAIBotConfigs() {
+  const database = await getDatabase();
+  return database.prepare('SELECT * FROM ai_bot_configs ORDER BY bot_type').all().map(publicAIBotConfig);
+}
+
+async function updateAIBotConfig(botType, body = {}, adminUser = {}) {
+  const database = await getDatabase();
+  const current = database.prepare('SELECT * FROM ai_bot_configs WHERE bot_type = ?').get(normalizeAIBotType(botType));
+  if (!current) throw Object.assign(new Error('AI bot config not found.'), { status: 404 });
+  const next = {
+    label: body.label === undefined ? current.label : String(body.label || '').trim(),
+    enabled: body.enabled === undefined ? Number(current.enabled) : (body.enabled ? 1 : 0),
+    pausedReason: body.pausedReason === undefined ? current.paused_reason : String(body.pausedReason || '').trim(),
+    engine: body.engine === undefined ? current.engine : normalizeGatewayText(body.engine) || current.engine,
+    maxKnowledgeChunks: Math.max(0, Math.min(20, Number(body.maxKnowledgeChunks ?? current.max_knowledge_chunks) || 0)),
+    maxKnowledgeChars: Math.max(1000, Math.min(40000, Number(body.maxKnowledgeChars ?? current.max_knowledge_chars) || 6000)),
+    maxOutputTokens: Math.max(200, Math.min(4000, Number(body.maxOutputTokens ?? current.max_output_tokens) || 700)),
+    cacheEnabled: body.cacheEnabled === undefined ? Number(current.cache_enabled) : (body.cacheEnabled ? 1 : 0),
+    cacheTtlMs: Math.max(0, Math.min(3600000, Number(body.cacheTtlMs ?? current.cache_ttl_ms) || 0)),
+    retry429: Math.max(0, Math.min(3, Number(body.retry429 ?? current.retry_429) || 0)),
+    retryDelayMs: Math.max(100, Math.min(5000, Number(body.retryDelayMs ?? current.retry_delay_ms) || 900)),
+    publicAccess: body.publicAccess === undefined ? Number(current.public_access) : (body.publicAccess ? 1 : 0),
+    requiresKycForPrivateData: body.requiresKycForPrivateData === undefined ? Number(current.requires_kyc_for_private_data) : (body.requiresKycForPrivateData ? 1 : 0),
+    systemPromptShort: body.systemPromptShort === undefined ? current.system_prompt_short : compactText(body.systemPromptShort || '', 1800),
+    updatedBy: adminUser?.username || adminUser?.fullName || adminUser?.id || 'admin'
+  };
+  database.prepare(`
+    UPDATE ai_bot_configs
+    SET label = ?, enabled = ?, paused_reason = ?, engine = ?, max_knowledge_chunks = ?,
+      max_knowledge_chars = ?, max_output_tokens = ?, cache_enabled = ?, cache_ttl_ms = ?,
+      retry_429 = ?, retry_delay_ms = ?, public_access = ?, requires_kyc_for_private_data = ?,
+      system_prompt_short = ?, updated_at = datetime('now'), updated_by = ?
+    WHERE bot_type = ?
+  `).run(
+    next.label,
+    next.enabled,
+    next.pausedReason,
+    next.engine,
+    next.maxKnowledgeChunks,
+    next.maxKnowledgeChars,
+    next.maxOutputTokens,
+    next.cacheEnabled,
+    next.cacheTtlMs,
+    next.retry429,
+    next.retryDelayMs,
+    next.publicAccess,
+    next.requiresKycForPrivateData,
+    next.systemPromptShort,
+    next.updatedBy,
+    current.bot_type
+  );
+  return publicAIBotConfig(database.prepare('SELECT * FROM ai_bot_configs WHERE bot_type = ?').get(current.bot_type));
+}
+
 function pickDashboardEngine(aiConfig = {}, intent = 'chat') {
   if (intent === 'ceremony') return aiConfig.engineCeremony || aiConfig.engineChat || 'gemini';
   if (['article', 'article_template', 'webview_suggestion_article'].includes(intent)) return aiConfig.engineArticles || aiConfig.engineChat || 'gemini';
@@ -3449,7 +3728,7 @@ function pickDashboardEngine(aiConfig = {}, intent = 'chat') {
 }
 
 function shouldHydrateDashboardAIContext(context = {}) {
-  return context.botType !== 'webview' &&
+  return context.botType !== 'webview_chat' &&
     (DASHBOARD_AI_CONTEXT_TYPES.has(context.type) || DASHBOARD_AI_CONTEXT_TYPES.has(context.intent));
 }
 
@@ -3488,8 +3767,8 @@ function buildAIGatewayCacheKey(context = {}) {
   }));
 }
 
-function getAIGatewayCachedResponse(cacheKey) {
-  if (!AI_GATEWAY_CACHE_TTL_MS || !cacheKey) return null;
+function getAIGatewayCachedResponse(cacheKey, { enabled = true } = {}) {
+  if (!enabled || !AI_GATEWAY_CACHE_TTL_MS || !cacheKey) return null;
   const now = Date.now();
   pruneAIGatewayCache(now);
   const entry = aiGatewayCache.get(cacheKey);
@@ -3500,12 +3779,12 @@ function getAIGatewayCachedResponse(cacheKey) {
   return { ...entry.value, cached: true };
 }
 
-function setAIGatewayCachedResponse(cacheKey, value) {
-  if (!AI_GATEWAY_CACHE_TTL_MS || !cacheKey || !value?.text) return;
+function setAIGatewayCachedResponse(cacheKey, value, { enabled = true, ttlMs = AI_GATEWAY_CACHE_TTL_MS } = {}) {
+  if (!enabled || !ttlMs || !cacheKey || !value?.text) return;
   pruneAIGatewayCache();
   aiGatewayCache.set(cacheKey, {
     value,
-    expiresAt: Date.now() + AI_GATEWAY_CACHE_TTL_MS
+    expiresAt: Date.now() + ttlMs
   });
 }
 
@@ -3543,9 +3822,10 @@ async function recordAIRequestLog(meta = {}) {
     INSERT INTO ai_request_logs (
       id, route, bot_type, intent, engine, provider, model, status, cached, duration_ms,
       request_chars, context_chars, estimated_tokens, context_trimmed,
-      knowledge_matches_count, knowledge_source_ids_json, error_code, error_message, prompt_snippet
+      knowledge_matches_count, knowledge_source_ids_json, bot_config_engine, bot_config_max_chunks,
+      bot_config_max_output_tokens, cache_enabled, config_version, error_code, error_message, prompt_snippet
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     meta.id || `ailog_${sha256Base64Url(`${meta.requestId || randomToken(8)}:${Date.now()}`).slice(0, 24)}`,
     String(meta.route || ''),
@@ -3563,6 +3843,11 @@ async function recordAIRequestLog(meta = {}) {
     meta.contextTrimmed ? 1 : 0,
     Number(meta.knowledgeMatchesCount || 0),
     JSON.stringify(knowledgeSourceIds),
+    String(meta.botConfigEngine || ''),
+    Number(meta.botConfigMaxChunks || 0),
+    Number(meta.botConfigMaxOutputTokens || 0),
+    meta.cacheEnabled === false ? 0 : 1,
+    String(meta.configVersion || ''),
     String(meta.errorCode || ''),
     compactText(meta.errorMessage || '', 260),
     promptSnippet
@@ -3593,6 +3878,11 @@ async function listAIRequestLogs(limit = 50) {
     contextTrimmed: Boolean(row.context_trimmed),
     knowledgeMatchesCount: row.knowledge_matches_count,
     knowledgeSourceIds: safeJsonParse(row.knowledge_source_ids_json, []),
+    botConfigEngine: row.bot_config_engine || '',
+    botConfigMaxChunks: row.bot_config_max_chunks || 0,
+    botConfigMaxOutputTokens: row.bot_config_max_output_tokens || 0,
+    cacheEnabled: Boolean(row.cache_enabled),
+    configVersion: row.config_version || '',
     errorCode: row.error_code,
     errorMessage: row.error_message,
     promptSnippet: row.prompt_snippet
@@ -5483,7 +5773,7 @@ async function handleGeminiRequest(req, res) {
     }
   }
   const requestedEngine = String(requestContext?.engine || '').trim().toLowerCase();
-  if (requestedEngine === 'local') {
+  if (requestedEngine === 'local' || requestedEngine === 'local-knowledge') {
     res.json({ model: 'local', engine: 'local', text: await buildLocalAIResponse({ ...req, body: requestContext }, userQuery) });
     return;
   }
@@ -5523,22 +5813,26 @@ async function callGeminiProvider({ apiKey, requestContext, message, requestId }
   const ai = new GoogleGenAI({ apiKey });
   const model = String(requestContext?.modelName || process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
   const temperature = Number(requestContext?.temperature);
-  const config = Number.isFinite(temperature)
-    ? { temperature: Math.max(0, Math.min(1, temperature)) }
-    : undefined;
+  const maxOutputTokens = Math.max(1, Math.min(8192, Number(requestContext?.maxOutputTokens || requestContext?.botConfig?.maxOutputTokens || 0) || 0));
+  const config = {
+    ...(Number.isFinite(temperature) ? { temperature: Math.max(0, Math.min(1, temperature)) } : {}),
+    ...(maxOutputTokens ? { maxOutputTokens } : {})
+  };
   const baseMessage = message.length > MAX_GEMINI_INPUT_CHARS
     ? `${message.slice(0, MAX_GEMINI_INPUT_CHARS)}\n\n[He thong da rut gon phan tai lieu qua dai de tranh vuot quota Gemini.]`
     : message;
   let lastError = null;
 
-  for (let attempt = 0; attempt <= AI_GATEWAY_RETRY_429; attempt += 1) {
+  const retry429 = Math.max(0, Math.min(3, Number(requestContext.retry429 ?? AI_GATEWAY_RETRY_429) || 0));
+  const retryDelayOverrideMs = Math.max(100, Math.min(5000, Number(requestContext.retryDelayMs || 0) || 0));
+  for (let attempt = 0; attempt <= retry429; attempt += 1) {
     try {
       const attemptMessage = attempt > 0
         ? compactText(baseMessage, Math.max(1800, Math.floor(MAX_GEMINI_INPUT_CHARS * 0.75)))
         : baseMessage;
       const response = await ai.models.generateContent({
         model,
-        ...(config ? { config } : {}),
+        ...(Object.keys(config).length ? { config } : {}),
         contents: [
           'Ban la tro ly gia pha ho Cao. Tra loi ngan gon, can trong, chi dua tren du lieu nguoi dung cung cap hoac kien thuc pho thong ve cach quan ly gia pha. Khong bia thong tin pha he cu the.',
           attemptMessage
@@ -5555,9 +5849,9 @@ async function callGeminiProvider({ apiKey, requestContext, message, requestId }
     } catch (err) {
       const parsed = parseGeminiApiError(err);
       lastError = parsed;
-      if (parsed.status !== 429 || attempt >= AI_GATEWAY_RETRY_429) break;
-      const delayMs = parseRetryDelayMs(parsed.retryDelay);
-      console.warn(`[ai-gateway] requestId=${requestId} provider=gemini status=429 retry=${attempt + 1}/${AI_GATEWAY_RETRY_429} delayMs=${delayMs}`);
+      if (parsed.status !== 429 || attempt >= retry429) break;
+      const delayMs = retryDelayOverrideMs || parseRetryDelayMs(parsed.retryDelay);
+      console.warn(`[ai-gateway] requestId=${requestId} provider=gemini status=429 retry=${attempt + 1}/${retry429} delayMs=${delayMs}`);
       await sleep(delayMs);
     }
   }
@@ -5578,6 +5872,51 @@ async function handleAIGatewayRequest(req, res) {
 
   const userQuery = String(req.body?.prompt || message).trim();
   let requestContext = normalizeAIGatewayContext(req.body || {}, routeName);
+  const botConfig = await getAIBotConfig(requestContext.botType);
+  requestContext = {
+    ...requestContext,
+    botType: botConfig.botType,
+    botConfig,
+    engine: requestContext.engine || botConfig.engine,
+    maxOutputTokens: botConfig.maxOutputTokens,
+    retry429: botConfig.retry429,
+    retryDelayMs: botConfig.retryDelayMs
+  };
+  const botCacheOptions = { enabled: botConfig.cacheEnabled, ttlMs: botConfig.cacheTtlMs };
+  if (!botConfig.enabled) {
+    const pausedResponse = {
+      model: 'bot-paused',
+      provider: 'policy',
+      engine: 'policy',
+      botType: requestContext.botType,
+      intent: requestContext.intent,
+      text: botConfig.pausedReason ? `Bot nay dang tam dung: ${botConfig.pausedReason}.` : 'Bot nay dang tam dung.'
+    };
+    logAIGatewayRequest({
+      requestId,
+      route: routeName,
+      botType: requestContext.botType,
+      intent: requestContext.intent,
+      type: requestContext.type,
+      engine: 'policy',
+      provider: 'policy',
+      model: 'bot-paused',
+      status: 200,
+      cached: false,
+      durationMs: Date.now() - startedAt,
+      requestChars: userQuery.length,
+      contextChars: message.length,
+      estimatedTokens: estimateTextTokens(message),
+      promptSnippet: userQuery,
+      botConfigEngine: botConfig.engine,
+      botConfigMaxChunks: botConfig.maxKnowledgeChunks,
+      botConfigMaxOutputTokens: botConfig.maxOutputTokens,
+      cacheEnabled: botConfig.cacheEnabled,
+      configVersion: botConfig.updatedAt
+    });
+    res.json(pausedResponse);
+    return;
+  }
   const requestType = requestContext.type;
   let gatewayKnowledgeResult = null;
   const logGateway = (fields = {}) => logAIGatewayRequest({
@@ -5593,6 +5932,11 @@ async function handleAIGatewayRequest(req, res) {
     knowledgeMatchesCount: requestContext.localKnowledgeMatches?.chunkCount || fields.knowledgeMatchesCount || 0,
     knowledgeSourceIds: requestContext.localKnowledgeMatches?.sourceIds || fields.knowledgeSourceIds || [],
     contextTrimmed: Boolean(requestContext.contextTrimmed || fields.contextTrimmed),
+    botConfigEngine: botConfig.engine,
+    botConfigMaxChunks: botConfig.maxKnowledgeChunks,
+    botConfigMaxOutputTokens: botConfig.maxOutputTokens,
+    cacheEnabled: botConfig.cacheEnabled,
+    configVersion: botConfig.updatedAt,
     ...fields
   });
   try {
@@ -5658,7 +6002,7 @@ async function handleAIGatewayRequest(req, res) {
 
     const requiredAliasAnswer = buildRequiredAliasAnswer(userQuery || message);
     const initialKnowledge = await searchKnowledgeWithAliases(userQuery || message, {
-      limit: AI_GATEWAY_KNOWLEDGE_TOP_K,
+      limit: botConfig.maxKnowledgeChunks,
       authScope: requestContext.authScope || 'anonymous'
     });
     const initialKnowledgeAnswer = requiredAliasAnswer || buildAliasLookupAnswer(initialKnowledge);
@@ -5709,7 +6053,7 @@ async function handleAIGatewayRequest(req, res) {
           message,
           prompt: userQuery
         });
-        const cachedPolicyResponse = getAIGatewayCachedResponse(policyCacheKey);
+        const cachedPolicyResponse = getAIGatewayCachedResponse(policyCacheKey, botCacheOptions);
         if (cachedPolicyResponse) {
           logGateway({
             engine: 'policy',
@@ -5729,7 +6073,7 @@ async function handleAIGatewayRequest(req, res) {
           intent: requestContext.intent,
           text: webviewContext.blockedText
         };
-        setAIGatewayCachedResponse(policyCacheKey, policyResponse);
+        setAIGatewayCachedResponse(policyCacheKey, policyResponse, botCacheOptions);
         logGateway({
           engine: 'policy',
           provider: 'policy',
@@ -5771,7 +6115,7 @@ async function handleAIGatewayRequest(req, res) {
 
   try {
     const localKnowledge = await searchKnowledgeWithAliases(userQuery || message, {
-      limit: AI_GATEWAY_KNOWLEDGE_TOP_K,
+      limit: botConfig.maxKnowledgeChunks,
       authScope: requestContext.authScope || 'anonymous'
     });
     gatewayKnowledgeResult = localKnowledge;
@@ -5883,7 +6227,7 @@ async function handleAIGatewayRequest(req, res) {
         prompt: userQuery,
         localKnowledgeAnswer
       });
-      setAIGatewayCachedResponse(knowledgeCacheKey, knowledgeResponse);
+      setAIGatewayCachedResponse(knowledgeCacheKey, knowledgeResponse, botCacheOptions);
       logGateway({
         engine: 'local-knowledge',
         model: 'local-knowledge',
@@ -5897,7 +6241,7 @@ async function handleAIGatewayRequest(req, res) {
       return;
     }
 
-    const localKnowledgeContext = formatKnowledgeContextForAI(localKnowledge);
+    const localKnowledgeContext = compactText(formatKnowledgeContextForAI(localKnowledge), botConfig.maxKnowledgeChars);
     if (localKnowledgeContext) {
       message = `${message}\n\n${localKnowledgeContext}`;
       requestContext = {
@@ -5922,7 +6266,7 @@ async function handleAIGatewayRequest(req, res) {
     message,
     prompt: userQuery
   });
-  const cachedResponse = getAIGatewayCachedResponse(cacheKey);
+  const cachedResponse = getAIGatewayCachedResponse(cacheKey, botCacheOptions);
   if (cachedResponse) {
     logGateway({
       engine: requestContext.engine,
@@ -5941,16 +6285,16 @@ async function handleAIGatewayRequest(req, res) {
     const localResponse = {
       model: 'local',
       provider: 'local',
-      engine: 'local',
+      engine: requestedEngine,
       botType: requestContext.botType,
       intent: requestContext.intent,
       text: localKnowledgeAnswer || await buildLocalAIResponse({ ...req, body: requestContext }, userQuery),
       knowledgeMatchesCount: requestContext.localKnowledgeMatches?.chunkCount || 0,
       knowledgeSourceIds: requestContext.localKnowledgeMatches?.sourceIds || []
     };
-    setAIGatewayCachedResponse(cacheKey, localResponse);
+    setAIGatewayCachedResponse(cacheKey, localResponse, botCacheOptions);
     logGateway({
-      engine: 'local',
+      engine: requestedEngine,
       model: 'local',
       status: 200,
       cached: false,
@@ -6008,7 +6352,7 @@ async function handleAIGatewayRequest(req, res) {
       knowledgeMatchesCount: requestContext.localKnowledgeMatches?.chunkCount || 0,
       knowledgeSourceIds: requestContext.localKnowledgeMatches?.sourceIds || []
     };
-    setAIGatewayCachedResponse(cacheKey, responsePayload);
+    setAIGatewayCachedResponse(cacheKey, responsePayload, botCacheOptions);
     logGateway({
       engine: responsePayload.engine,
       provider: responsePayload.provider,
