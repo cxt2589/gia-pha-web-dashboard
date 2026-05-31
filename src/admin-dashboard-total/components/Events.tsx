@@ -28,6 +28,23 @@ interface VerifiedAnniversary {
   note?: string;
 }
 
+interface AnniversaryDraft {
+  id: string;
+  memberId: string;
+  memberName: string;
+  title: string;
+  lunarDateText: string;
+  solarDate: string;
+  location: string;
+  branch: string;
+  generation: string;
+  messageDraft: string;
+  channel: "dashboard" | "zalo" | "web_chat" | "all";
+  status: "draft" | "approved" | "scheduled" | "sent" | "rejected";
+  createdAt: string;
+  updatedAt: string;
+}
+
 export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInitialPrompt, members = [] }: EventsProps) {
   const [selectedCategory, setSelectedCategory] = useState<string>("Tất cả");
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -36,6 +53,9 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
   const [anniversaryMonth, setAnniversaryMonth] = useState(String(new Date().getMonth() + 1));
   const [anniversaries, setAnniversaries] = useState<VerifiedAnniversary[]>([]);
   const [anniversaryLoading, setAnniversaryLoading] = useState(false);
+  const [anniversaryDrafts, setAnniversaryDrafts] = useState<AnniversaryDraft[]>([]);
+  const [draftLoading, setDraftLoading] = useState(false);
+  const [draftEditing, setDraftEditing] = useState<Record<string, string>>({});
 
   // Form states
   const [newTitle, setNewTitle] = useState("");
@@ -71,6 +91,67 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
       cancelled = true;
     };
   }, [anniversaryTab]);
+
+  const loadAnniversaryDrafts = async () => {
+    setDraftLoading(true);
+    try {
+      const response = await fetch("/api/anniversary-drafts?limit=80");
+      const data = await response.json();
+      if (Array.isArray(data.drafts)) {
+        setAnniversaryDrafts(data.drafts);
+        setDraftEditing(Object.fromEntries(data.drafts.map((draft: AnniversaryDraft) => [draft.id, draft.messageDraft])));
+      }
+    } catch {
+      setAnniversaryDrafts([]);
+    } finally {
+      setDraftLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadAnniversaryDrafts();
+  }, []);
+
+  const createAnniversaryDraft = async (item: VerifiedAnniversary, channel: AnniversaryDraft["channel"] = "dashboard") => {
+    const response = await fetch("/api/anniversary-drafts/from-anniversary", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memberId: item.memberId, year: item.lunarYear, channel })
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      window.alert(data.error || "Không tạo được bản nhắc ngày giỗ.");
+      return;
+    }
+    await loadAnniversaryDrafts();
+  };
+
+  const updateAnniversaryDraft = async (draft: AnniversaryDraft, patch: Partial<AnniversaryDraft>) => {
+    const response = await fetch(`/api/anniversary-drafts/${encodeURIComponent(draft.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...patch,
+        messageDraft: Object.prototype.hasOwnProperty.call(patch, "messageDraft") ? patch.messageDraft : draftEditing[draft.id]
+      })
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      window.alert(data.error || "Không cập nhật được bản nhắc.");
+      return;
+    }
+    await loadAnniversaryDrafts();
+  };
+
+  const deleteAnniversaryDraft = async (draft: AnniversaryDraft) => {
+    const response = await fetch(`/api/anniversary-drafts/${encodeURIComponent(draft.id)}`, { method: "DELETE" });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      window.alert(data.error || "Không xóa được bản nhắc.");
+      return;
+    }
+    await loadAnniversaryDrafts();
+  };
 
   const visibleAnniversaries = useMemo(() => {
     const search = deceasedSearch.trim().toLowerCase();
@@ -396,20 +477,107 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
                     Âm lịch {item.lunarDay}/{item.lunarMonth} · Dương lịch {item.lunarYear}: {item.solarDisplayDate || item.solarDate}
                   </p>
                   <p className="text-[10px] text-stone-400">{item.source} · {item.certainty}{item.note ? ` · ${item.note}` : ""}</p>
-                  <button
-                    type="button"
-                    disabled
-                    className="mt-1 rounded border border-dashed border-stone-200 bg-stone-50 px-2 py-1 text-[10px] font-bold text-stone-400"
-                    title="Chức năng tạo nháp sự kiện sẽ dùng cho Phase nhắc việc sau"
-                  >
-                    Tạo nháp sự kiện
-                  </button>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => createAnniversaryDraft(item, "dashboard")}
+                      className="rounded bg-red-900 px-2 py-1 text-[10px] font-bold text-white hover:bg-neutral-900"
+                    >
+                      Tạo bản nhắc
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => createAnniversaryDraft(item, "all")}
+                      className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900 hover:bg-amber-100"
+                    >
+                      Tạo sự kiện nháp
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
           ) : (
             <div className="rounded-lg border border-dashed border-stone-200 bg-white/60 p-4 text-center text-xs text-stone-500">
               Chưa có lịch giỗ đã xác minh phù hợp bộ lọc.
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-xl border border-blue-100 bg-blue-50/20 p-3 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-serif font-bold text-stone-850">Bản nhắc ngày giỗ</h3>
+              <p className="text-[11px] text-stone-500">Phase này chỉ tạo nháp, chưa gửi Zalo tự động.</p>
+            </div>
+            <button
+              type="button"
+              onClick={loadAnniversaryDrafts}
+              className="self-start rounded border border-blue-200 bg-white px-2.5 py-1 text-[11px] font-bold text-blue-800 hover:bg-blue-50"
+            >
+              Tải lại
+            </button>
+          </div>
+
+          {draftLoading ? (
+            <div className="rounded-lg border border-dashed border-blue-100 bg-white/70 p-4 text-center text-xs text-stone-500">
+              Đang tải bản nhắc...
+            </div>
+          ) : anniversaryDrafts.length ? (
+            <div className="space-y-3 max-h-[28rem] overflow-y-auto pr-1">
+              {anniversaryDrafts.map((draft) => (
+                <div key={draft.id} className="rounded-lg border border-blue-100 bg-white p-3 text-xs space-y-2">
+                  <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-2">
+                    <div className="space-y-1">
+                      <p className="font-serif text-sm font-bold text-stone-850">{draft.title}</p>
+                      <p className="text-[11px] text-stone-500">
+                        {draft.memberName} · {draft.lunarDateText} · {draft.solarDate} · {draft.channel}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {(["draft", "approved", "scheduled", "rejected"] as AnniversaryDraft["status"][]).map((status) => (
+                        <button
+                          key={status}
+                          type="button"
+                          onClick={() => updateAnniversaryDraft(draft, { status })}
+                          className={`rounded px-2 py-1 text-[10px] font-bold border ${
+                            draft.status === status
+                              ? "bg-blue-900 text-white border-blue-900"
+                              : "bg-white text-stone-600 border-stone-200 hover:bg-stone-50"
+                          }`}
+                        >
+                          {status}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <textarea
+                    value={draftEditing[draft.id] ?? draft.messageDraft}
+                    onChange={(event) => setDraftEditing((prev) => ({ ...prev, [draft.id]: event.target.value }))}
+                    rows={4}
+                    className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-xs text-stone-800 focus:outline-none focus:border-blue-400"
+                  />
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => updateAnniversaryDraft(draft, { messageDraft: draftEditing[draft.id] ?? draft.messageDraft })}
+                      className="rounded bg-blue-800 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-blue-950"
+                    >
+                      Lưu nội dung
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteAnniversaryDraft(draft)}
+                      className="rounded border border-red-200 bg-red-50 px-3 py-1.5 text-[11px] font-bold text-red-800 hover:bg-red-100"
+                    >
+                      Xóa
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-dashed border-blue-100 bg-white/70 p-4 text-center text-xs text-stone-500">
+              Chưa có bản nhắc ngày giỗ. Hãy tạo từ một mục lịch giỗ đã xác minh.
             </div>
           )}
         </div>

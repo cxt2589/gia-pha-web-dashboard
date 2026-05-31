@@ -508,6 +508,26 @@ async function getDatabase() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS anniversary_event_drafts (
+      id TEXT PRIMARY KEY,
+      anniversary_key TEXT NOT NULL DEFAULT '',
+      member_id TEXT NOT NULL DEFAULT '',
+      member_name TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL DEFAULT '',
+      lunar_date_text TEXT NOT NULL DEFAULT '',
+      solar_date TEXT NOT NULL DEFAULT '',
+      location TEXT NOT NULL DEFAULT '',
+      branch TEXT NOT NULL DEFAULT '',
+      generation TEXT NOT NULL DEFAULT '',
+      message_draft TEXT NOT NULL DEFAULT '',
+      channel TEXT NOT NULL DEFAULT 'dashboard',
+      status TEXT NOT NULL DEFAULT 'draft',
+      source TEXT NOT NULL DEFAULT 'anniversary',
+      created_by TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_norm ON knowledge_chunks(content_norm);
     CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm ON entity_aliases(alias_norm);
     CREATE INDEX IF NOT EXISTS idx_entity_aliases_ascii ON entity_aliases(alias_ascii);
@@ -517,6 +537,9 @@ async function getDatabase() {
     CREATE INDEX IF NOT EXISTS idx_extracted_ann_status ON extracted_anniversary_candidates(status);
     CREATE INDEX IF NOT EXISTS idx_extracted_ann_audit_candidate ON extracted_anniversary_audit_logs(candidate_id);
     CREATE INDEX IF NOT EXISTS idx_extracted_ann_audit_created ON extracted_anniversary_audit_logs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_anniversary_drafts_member ON anniversary_event_drafts(member_id);
+    CREATE INDEX IF NOT EXISTS idx_anniversary_drafts_status ON anniversary_event_drafts(status);
+    CREATE INDEX IF NOT EXISTS idx_anniversary_drafts_updated ON anniversary_event_drafts(updated_at);
   `);
   ensureTableColumn(db, 'knowledge_sources', 'summary', "ALTER TABLE knowledge_sources ADD COLUMN summary TEXT NOT NULL DEFAULT ''");
   ensureTableColumn(db, 'knowledge_sources', 'tags_json', "ALTER TABLE knowledge_sources ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'");
@@ -2474,6 +2497,64 @@ app.get('/api/anniversaries/member/:memberId', async (req, res) => {
   }
 });
 
+app.get('/api/anniversary-drafts', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit || 100) || 100));
+    const status = String(req.query.status || '').trim();
+    const q = String(req.query.q || '').trim();
+    res.json({ ok: true, drafts: await listAnniversaryDrafts({ limit, status, q }) });
+  } catch (err) {
+    console.error('Failed to list anniversary drafts:', err);
+    res.status(500).json({ error: 'Failed to list anniversary drafts.' });
+  }
+});
+
+app.post('/api/anniversary-drafts/from-anniversary', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const draft = await createAnniversaryDraftFromAnniversary({
+      memberId: req.body?.memberId,
+      year: req.body?.year,
+      channel: req.body?.channel,
+      location: req.body?.location,
+      note: req.body?.note,
+      createdBy: admin.authUser?.username || admin.authUser?.fullName || admin.session?.account || ''
+    });
+    res.status(201).json({ ok: true, draft });
+  } catch (err) {
+    console.error('Failed to create anniversary draft:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to create anniversary draft.' });
+  }
+});
+
+app.patch('/api/anniversary-drafts/:id', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const draft = await updateAnniversaryDraft(req.params.id, req.body || {});
+    res.json({ ok: true, draft });
+  } catch (err) {
+    console.error('Failed to update anniversary draft:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to update anniversary draft.' });
+  }
+});
+
+app.delete('/api/anniversary-drafts/:id', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const deleted = await deleteAnniversaryDraft(req.params.id);
+    if (!deleted) {
+      res.status(404).json({ error: 'Anniversary draft not found.' });
+      return;
+    }
+    res.json({ ok: true, deleted: true });
+  } catch (err) {
+    console.error('Failed to delete anniversary draft:', err);
+    res.status(500).json({ error: 'Failed to delete anniversary draft.' });
+  }
+});
+
 app.get('/api/knowledge/search', async (req, res) => {
   const query = String(req.query.q || '').trim();
   if (!query) {
@@ -3530,6 +3611,156 @@ async function buildAnniversaryLocalAnswer(query, authScope = 'anonymous') {
   return null;
 }
 
+function normalizeAnniversaryDraftChannel(value) {
+  const channel = String(value || 'dashboard').trim().toLowerCase();
+  return ['dashboard', 'zalo', 'web_chat', 'all'].includes(channel) ? channel : 'dashboard';
+}
+
+function normalizeAnniversaryDraftStatus(value, fallback = 'draft') {
+  const status = String(value || fallback).trim().toLowerCase();
+  return ['draft', 'approved', 'scheduled', 'sent', 'rejected'].includes(status) ? status : fallback;
+}
+
+function publicAnniversaryDraft(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    anniversaryKey: row.anniversary_key,
+    memberId: row.member_id,
+    memberName: row.member_name,
+    title: row.title,
+    lunarDateText: row.lunar_date_text,
+    solarDate: row.solar_date,
+    location: row.location,
+    branch: row.branch,
+    generation: row.generation,
+    messageDraft: row.message_draft,
+    channel: row.channel,
+    status: row.status,
+    source: row.source,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function composeAnniversaryNoticeDraft(anniversary, { channel = 'dashboard', location = '', note = '' } = {}) {
+  const lunarDateText = `${anniversary.lunarDay}/${anniversary.lunarMonth} am lich${anniversary.isLeapMonth ? ' (thang nhuan)' : ''}`;
+  const titleSuffix = anniversary.title ? ` - ${anniversary.title}` : '';
+  const lines = [
+    `Kinh thong bao: nam ${anniversary.lunarYear}, ngay gio cua ${anniversary.memberName}${titleSuffix} la ${lunarDateText}, roi vao ngay ${anniversary.solarDisplayDate || anniversary.solarDate} duong lich.`,
+    'Du lieu ngay gio nay da duoc xac minh/applied trong he thong gia pha.',
+    anniversary.branch ? `Chi/nganh: ${anniversary.branch}.` : '',
+    anniversary.generation ? `Doi: ${anniversary.generation}.` : '',
+    location ? `Dia diem du kien: ${location}.` : '',
+    anniversary.note ? `Ghi chu du lieu: ${anniversary.note}.` : '',
+    note ? `Ghi chu them: ${note}.` : '',
+    channel === 'zalo'
+      ? 'Ban nhac nay moi la ban nhap cho kenh Zalo, chua gui tu dong.'
+      : 'Ban nhac nay moi la ban nhap, chua gui tu dong.'
+  ].filter(Boolean);
+  return lines.join('\n');
+}
+
+async function getAnniversaryForDraft(memberId, year) {
+  const anniversaries = await buildAnniversaryItems({ year, authScope: 'admin' });
+  return anniversaries.find((item) => item.memberId === memberId) || null;
+}
+
+async function listAnniversaryDrafts({ limit = 100, status = '', q = '' } = {}) {
+  const database = await getDatabase();
+  const rows = database.prepare('SELECT * FROM anniversary_event_drafts ORDER BY updated_at DESC, created_at DESC LIMIT ?').all(Math.max(1, Math.min(500, limit)));
+  const statusNorm = normalizeAnniversaryDraftStatus(status, '');
+  const qNorm = normalizeVietnameseSearch(q);
+  return rows
+    .filter((row) => !statusNorm || row.status === statusNorm)
+    .filter((row) => {
+      if (!qNorm) return true;
+      return normalizeVietnameseSearch([row.member_name, row.title, row.lunar_date_text, row.solar_date, row.channel, row.status].join(' ')).includes(qNorm);
+    })
+    .map(publicAnniversaryDraft);
+}
+
+async function createAnniversaryDraftFromAnniversary({ memberId, year, channel, location, note, createdBy }) {
+  const targetYear = normalizeAnniversaryYear(year);
+  const anniversary = await getAnniversaryForDraft(String(memberId || '').trim(), targetYear);
+  if (!anniversary) {
+    const err = new Error('Member does not have a verified/applied anniversary for this year.');
+    err.status = 404;
+    throw err;
+  }
+
+  const normalizedChannel = normalizeAnniversaryDraftChannel(channel);
+  const safeLocation = String(location || '').trim();
+  const safeNote = String(note || '').trim();
+  const lunarDateText = `${anniversary.lunarDay}/${anniversary.lunarMonth} am lich${anniversary.isLeapMonth ? ' (thang nhuan)' : ''}`;
+  const id = `anniv_draft_${randomToken(12)}`;
+  const title = `Nhac ngay gio ${anniversary.memberName} - ${anniversary.solarDisplayDate || anniversary.solarDate}`;
+  const messageDraft = composeAnniversaryNoticeDraft(anniversary, {
+    channel: normalizedChannel,
+    location: safeLocation,
+    note: safeNote
+  });
+  const database = await getDatabase();
+  database.prepare(`
+    INSERT INTO anniversary_event_drafts (
+      id, anniversary_key, member_id, member_name, title, lunar_date_text, solar_date,
+      location, branch, generation, message_draft, channel, status, source, created_by,
+      created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 'anniversary', ?, datetime('now'), datetime('now'))
+  `).run(
+    id,
+    `${anniversary.memberId}:${targetYear}`,
+    anniversary.memberId,
+    anniversary.memberName,
+    title,
+    lunarDateText,
+    anniversary.solarDate,
+    safeLocation,
+    anniversary.branch || '',
+    String(anniversary.generation || ''),
+    messageDraft,
+    normalizedChannel,
+    createdBy || ''
+  );
+  return publicAnniversaryDraft(database.prepare('SELECT * FROM anniversary_event_drafts WHERE id = ?').get(id));
+}
+
+async function updateAnniversaryDraft(id, patch = {}) {
+  const database = await getDatabase();
+  const current = database.prepare('SELECT * FROM anniversary_event_drafts WHERE id = ?').get(String(id || ''));
+  if (!current) {
+    const err = new Error('Anniversary draft not found.');
+    err.status = 404;
+    throw err;
+  }
+  const next = {
+    title: Object.prototype.hasOwnProperty.call(patch, 'title') ? String(patch.title || '').trim() : current.title,
+    location: Object.prototype.hasOwnProperty.call(patch, 'location') ? String(patch.location || '').trim() : current.location,
+    messageDraft: Object.prototype.hasOwnProperty.call(patch, 'messageDraft') ? String(patch.messageDraft || '').trim() : current.message_draft,
+    channel: Object.prototype.hasOwnProperty.call(patch, 'channel') ? normalizeAnniversaryDraftChannel(patch.channel) : current.channel,
+    status: Object.prototype.hasOwnProperty.call(patch, 'status') ? normalizeAnniversaryDraftStatus(patch.status, current.status) : current.status
+  };
+  if (!next.title || !next.messageDraft) {
+    const err = new Error('Title and messageDraft are required.');
+    err.status = 400;
+    throw err;
+  }
+  database.prepare(`
+    UPDATE anniversary_event_drafts
+    SET title = ?, location = ?, message_draft = ?, channel = ?, status = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(next.title, next.location, next.messageDraft, next.channel, next.status, current.id);
+  return publicAnniversaryDraft(database.prepare('SELECT * FROM anniversary_event_drafts WHERE id = ?').get(current.id));
+}
+
+async function deleteAnniversaryDraft(id) {
+  const database = await getDatabase();
+  const result = database.prepare('DELETE FROM anniversary_event_drafts WHERE id = ?').run(String(id || ''));
+  return result.changes > 0;
+}
+
 async function buildLocalAIResponse(req, message) {
   const anniversaryAnswer = await buildAnniversaryLocalAnswer(message, req.body?.authScope || 'admin');
   if (anniversaryAnswer) return anniversaryAnswer;
@@ -4063,6 +4294,33 @@ async function handleAIGatewayRequest(req, res) {
   }
 
   try {
+    if (requestContext.intent === 'anniversary_notice_draft' && requestContext.anniversary) {
+      const text = composeAnniversaryNoticeDraft(requestContext.anniversary, {
+        channel: requestContext.channel,
+        location: requestContext.location,
+        note: requestContext.note
+      });
+      const localDraftResponse = {
+        model: 'local-anniversary-draft',
+        provider: 'local',
+        engine: 'local',
+        botType: requestContext.botType,
+        intent: requestContext.intent,
+        text,
+        knowledgeMatchesCount: 0,
+        knowledgeSourceIds: []
+      };
+      logGateway({
+        engine: 'local-anniversary-draft',
+        model: 'local-anniversary-draft',
+        status: 200,
+        cached: false,
+        durationMs: Date.now() - startedAt
+      });
+      res.json(localDraftResponse);
+      return;
+    }
+
     const anniversaryAnswer = await buildAnniversaryLocalAnswer(userQuery || message, requestContext.authScope || 'anonymous');
     if (anniversaryAnswer) {
       const knowledgeResponse = {

@@ -198,6 +198,25 @@ function ensurePhase2GSchema(database) {
       admin_user TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    CREATE TABLE IF NOT EXISTS anniversary_event_drafts (
+      id TEXT PRIMARY KEY,
+      anniversary_key TEXT NOT NULL DEFAULT '',
+      member_id TEXT NOT NULL DEFAULT '',
+      member_name TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL DEFAULT '',
+      lunar_date_text TEXT NOT NULL DEFAULT '',
+      solar_date TEXT NOT NULL DEFAULT '',
+      location TEXT NOT NULL DEFAULT '',
+      branch TEXT NOT NULL DEFAULT '',
+      generation TEXT NOT NULL DEFAULT '',
+      message_draft TEXT NOT NULL DEFAULT '',
+      channel TEXT NOT NULL DEFAULT 'dashboard',
+      status TEXT NOT NULL DEFAULT 'draft',
+      source TEXT NOT NULL DEFAULT 'anniversary',
+      created_by TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 }
 
@@ -213,6 +232,7 @@ async function main() {
   const phase2jMemberId = `phase2j-member-${Date.now()}`;
   const phase2jCandidateId = `phase2j-candidate-${Date.now()}`;
   const legacyAnniversaryMemberId = `phase2k-legacy-member-${Date.now()}`;
+  const createdDraftIds = [];
   const testTree = JSON.parse(JSON.stringify(originalTree));
   addTempMemberToTree(testTree, memberId);
   testTree.children.push({
@@ -491,6 +511,79 @@ async function main() {
       detail: `HTTP ${memberAnniversary.response.status}`
     });
 
+    const publicDrafts = await fetchJson('/api/anniversary-drafts?limit=1');
+    results.push({
+      id: 'phase2l-drafts-public-403',
+      passed: publicDrafts.response.status === 403,
+      detail: `HTTP ${publicDrafts.response.status}`
+    });
+
+    const createDraft = await fetchJson('/api/anniversary-drafts/from-anniversary', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ memberId: phase2jMemberId, year: 2026, channel: 'zalo' })
+    });
+    const draft = createDraft.data.draft || {};
+    if (draft.id) createdDraftIds.push(draft.id);
+    const draftMessage = String(draft.messageDraft || '');
+    results.push({
+      id: 'phase2l-create-draft-from-anniversary',
+      passed: createDraft.response.status === 201
+        && draft.memberId === phase2jMemberId
+        && draft.channel === 'zalo'
+        && draft.status === 'draft'
+        && /15\/5/i.test(draftMessage)
+        && /29\/06\/2026|2026-06-29/i.test(draftMessage)
+        && /chua gui tu dong/i.test(draftMessage)
+        && !/Tu Duong|Cao Ninh Binh|1901|1970/i.test(draftMessage),
+      detail: draftMessage.slice(0, 180)
+    });
+
+    const missingDraft = await fetchJson('/api/anniversary-drafts/from-anniversary', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ memberId: `${memberId}-dup-a`, year: 2026, channel: 'dashboard' })
+    });
+    results.push({
+      id: 'phase2l-no-draft-without-anniversary',
+      passed: missingDraft.response.status === 404,
+      detail: `HTTP ${missingDraft.response.status}`
+    });
+
+    const patchDraft = draft.id ? await fetchJson(`/api/anniversary-drafts/${encodeURIComponent(draft.id)}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ status: 'approved', messageDraft: `${draftMessage}\nAdmin da sua noi dung.` })
+    }) : { response: { ok: false, status: 0 }, data: {} };
+    results.push({
+      id: 'phase2l-patch-draft',
+      passed: patchDraft.response.ok
+        && patchDraft.data.draft?.status === 'approved'
+        && /Admin da sua noi dung/.test(String(patchDraft.data.draft?.messageDraft || '')),
+      detail: `HTTP ${patchDraft.response.status}`
+    });
+
+    const scheduleDraft = draft.id ? await fetchJson(`/api/anniversary-drafts/${encodeURIComponent(draft.id)}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ status: 'scheduled' })
+    }) : { response: { ok: false, status: 0 }, data: {} };
+    results.push({
+      id: 'phase2l-scheduled-does-not-send',
+      passed: scheduleDraft.response.ok && scheduleDraft.data.draft?.status === 'scheduled',
+      detail: `HTTP ${scheduleDraft.response.status}; local status only`
+    });
+
+    const deleteDraft = draft.id ? await fetchJson(`/api/anniversary-drafts/${encodeURIComponent(draft.id)}`, {
+      method: 'DELETE',
+      headers
+    }) : { response: { ok: false, status: 0 }, data: {} };
+    results.push({
+      id: 'phase2l-delete-draft',
+      passed: deleteDraft.response.ok && deleteDraft.data.deleted === true,
+      detail: `HTTP ${deleteDraft.response.status}`
+    });
+
     const upcomingAnniversaries = await fetchJson('/api/anniversaries/upcoming?days=900', { headers: { Cookie: tempAdmin.cookie } });
     const upcomingItems = Array.isArray(upcomingAnniversaries.data.anniversaries) ? upcomingAnniversaries.data.anniversaries : [];
     const sortedUpcoming = upcomingItems.every((item, index) => index === 0 || Number(upcomingItems[index - 1].daysUntil) <= Number(item.daysUntil));
@@ -573,6 +666,9 @@ async function main() {
     cleanupDb.prepare('DELETE FROM extracted_anniversary_candidates WHERE id = ?').run(phase2jCandidateId);
     cleanupDb.prepare('DELETE FROM extracted_anniversary_audit_logs WHERE candidate_id = ?').run(candidateId);
     cleanupDb.prepare('DELETE FROM extracted_anniversary_audit_logs WHERE candidate_id = ?').run(phase2jCandidateId);
+    for (const draftId of createdDraftIds) {
+      cleanupDb.prepare('DELETE FROM anniversary_event_drafts WHERE id = ?').run(draftId);
+    }
     cleanupDb.close();
     tempAdmin.cleanup();
   }
