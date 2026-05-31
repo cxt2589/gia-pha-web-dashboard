@@ -7,7 +7,7 @@ import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI } from '@google/genai';
-import { formatGenealogyDateStructured, parseGenealogyDateText } from './src/utils/genealogyDate.mjs';
+import { convertLunarToSolar, formatGenealogyDateStructured, parseGenealogyDateText } from './src/utils/genealogyDate.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 loadEnv({ path: resolve(__dirname, '.env.local') });
@@ -2432,6 +2432,48 @@ app.get('/api/knowledge/status', async (_req, res) => {
   }
 });
 
+app.get('/api/anniversaries', async (req, res) => {
+  try {
+    const year = normalizeAnniversaryYear(req.query.year);
+    const { authScope } = await getRequestAuthContext(req);
+    const anniversaries = await buildAnniversaryItems({ year, authScope });
+    res.json({ ok: true, year, anniversaries });
+  } catch (err) {
+    console.error('Failed to list anniversaries:', err);
+    res.status(500).json({ error: 'Failed to list anniversaries.' });
+  }
+});
+
+app.get('/api/anniversaries/upcoming', async (req, res) => {
+  try {
+    const days = Math.max(1, Math.min(730, Number(req.query.days || 60) || 60));
+    const { authScope } = await getRequestAuthContext(req);
+    const anniversaries = await buildUpcomingAnniversaryItems({ days, authScope });
+    res.json({ ok: true, days, anniversaries });
+  } catch (err) {
+    console.error('Failed to list upcoming anniversaries:', err);
+    res.status(500).json({ error: 'Failed to list upcoming anniversaries.' });
+  }
+});
+
+app.get('/api/anniversaries/member/:memberId', async (req, res) => {
+  try {
+    const year = normalizeAnniversaryYear(req.query.year);
+    const { authScope } = await getRequestAuthContext(req);
+    const memberId = String(req.params.memberId || '').trim();
+    const anniversaries = await buildAnniversaryItems({ year, authScope });
+    const anniversary = anniversaries.find((item) => item.memberId === memberId);
+    if (!anniversary) {
+      res.status(404).json({ error: 'Anniversary not found for member.' });
+      return;
+    }
+    res.json({ ok: true, year, anniversary });
+  } catch (err) {
+    console.error('Failed to read member anniversary:', err);
+    res.status(500).json({ error: 'Failed to read member anniversary.' });
+  }
+});
+
 app.get('/api/knowledge/search', async (req, res) => {
   const query = String(req.query.q || '').trim();
   if (!query) {
@@ -3294,11 +3336,212 @@ function summarizeLocalDocuments(docs = []) {
     .join('\n');
 }
 
-function buildLocalAIResponse(req, message) {
+function normalizeAnniversaryYear(value) {
+  const currentYear = new Date().getFullYear();
+  const year = Number(value || currentYear);
+  if (!Number.isInteger(year) || year < 1900 || year > 2150) return currentYear;
+  return year;
+}
+
+function isoDateToStartOfDay(isoDate) {
+  const match = String(isoDate || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+}
+
+function getDaysUntilIsoDate(isoDate) {
+  const target = isoDateToStartOfDay(isoDate);
+  if (!target) return null;
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((target.getTime() - today.getTime()) / 86400000);
+}
+
+function isUsableLunarAnniversaryDate(date) {
+  return Boolean(
+    date &&
+    typeof date === 'object' &&
+    date.calendar === 'lunar' &&
+    Number.isInteger(Number(date.day)) &&
+    Number.isInteger(Number(date.month)) &&
+    Number(date.day) >= 1 &&
+    Number(date.day) <= 31 &&
+    Number(date.month) >= 1 &&
+    Number(date.month) <= 12 &&
+    ['verified', 'uncertain'].includes(String(date.certainty || 'verified'))
+  );
+}
+
+function getMemberLunarAnniversary(member) {
+  if (isUsableLunarAnniversaryDate(member?.deathAnniversaryLunarStructured)) {
+    return {
+      source: 'structured',
+      date: member.deathAnniversaryLunarStructured,
+      certainty: member.deathAnniversaryLunarStructured.certainty || 'verified'
+    };
+  }
+  const raw = String(member?.deathAnniversaryLunar || member?.lunarAnniversary || '').trim();
+  if (!raw) return null;
+  const parsed = parseGenealogyDateText(raw, 'lunar');
+  if (!isUsableLunarAnniversaryDate(parsed)) return null;
+  return { source: 'legacyParsed', date: parsed, certainty: parsed.certainty || 'verified' };
+}
+
+function normalizeAnniversaryMemberQuery(query) {
+  const normalized = normalizeVietnameseSearch(query);
+  if (/\bcao to\b/.test(normalized)) return 'cao dinh thuat';
+  if (/\bthuy to\b/.test(normalized) || /\bcu lang\b/.test(normalized)) return 'cao dinh lang';
+  return normalized;
+}
+
+function hasSpecificMemberNameMatch(query, memberText) {
+  const meaningfulTerms = normalizeVietnameseSearch(query)
+    .split(/[^a-z0-9]+/)
+    .filter((word) => word.length >= 3)
+    .filter((word) => !['ngay', 'gio', 'nam', 'nay', 'roi', 'vao', 'duong', 'lich', 'cao', 'dinh', 'khong', 'phai', 'cua', 'cho', 'hoi'].includes(word));
+  if (!meaningfulTerms.length) return false;
+  const haystack = normalizeVietnameseSearch(memberText);
+  return meaningfulTerms.some((word) => haystack.includes(word));
+}
+
+async function buildAnniversaryItems({ year, authScope = 'anonymous' } = {}) {
+  const targetYear = normalizeAnniversaryYear(year);
+  const tree = await readLineageTreeForAI();
+  const members = tree ? flattenLineageTree(tree) : [];
+  const canShowPrivate = ['admin', 'kyc_verified'].includes(authScope);
+  const items = [];
+  for (const member of members) {
+    const anniversary = getMemberLunarAnniversary(member);
+    if (!anniversary) continue;
+    const solar = convertLunarToSolar({
+      day: Number(anniversary.date.day),
+      month: Number(anniversary.date.month),
+      lunarYear: targetYear,
+      isLeapMonth: Boolean(anniversary.date.isLeapMonth)
+    });
+    if (!solar) continue;
+    const deathYear = String(member.deathYear || member.deathDateStructured?.year || '').trim();
+    items.push({
+      memberId: member.id,
+      memberName: member.name,
+      generation: member.generation,
+      title: member.title,
+      rankRole: member.title,
+      branch: canShowPrivate ? member.branch : '',
+      lunarDay: Number(anniversary.date.day),
+      lunarMonth: Number(anniversary.date.month),
+      lunarYear: targetYear,
+      isLeapMonth: Boolean(anniversary.date.isLeapMonth),
+      solarDate: solar.isoDate,
+      solarDisplayDate: solar.displayDate,
+      daysUntil: getDaysUntilIsoDate(solar.isoDate),
+      source: anniversary.source,
+      certainty: anniversary.certainty,
+      deathYear,
+      deathDate: member.solarDeathDate || formatGenealogyDateStructured(member.deathDateStructured) || '',
+      note: deathYear || member.solarDeathDate ? '' : 'Nam mat chua ro',
+      rawLunarDate: anniversary.date.rawText || member.deathAnniversaryLunar || member.lunarAnniversary || ''
+    });
+  }
+  return items.sort((a, b) => String(a.solarDate).localeCompare(String(b.solarDate)) || a.memberName.localeCompare(b.memberName));
+}
+
+async function buildUpcomingAnniversaryItems({ days = 60, authScope = 'anonymous' } = {}) {
+  const currentYear = new Date().getFullYear();
+  const allItems = [
+    ...await buildAnniversaryItems({ year: currentYear, authScope }),
+    ...await buildAnniversaryItems({ year: currentYear + 1, authScope })
+  ];
+  const seen = new Set();
+  return allItems
+    .filter((item) => Number.isFinite(item.daysUntil) && item.daysUntil >= 0 && item.daysUntil <= days)
+    .filter((item) => {
+      const key = `${item.memberId}:${item.solarDate}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => a.daysUntil - b.daysUntil || a.memberName.localeCompare(b.memberName));
+}
+
+function formatAnniversaryItemLine(item) {
+  const lunarText = `${item.lunarDay}/${item.lunarMonth} am lich${item.isLeapMonth ? ' (thang nhuan)' : ''}`;
+  const solarText = item.solarDisplayDate || item.solarDate || 'chua tinh duoc';
+  const rawText = item.rawLunarDate && item.rawLunarDate !== lunarText ? `; ghi chu goc: ${item.rawLunarDate}` : '';
+  const note = item.note ? `; ${item.note}` : '';
+  const title = item.title ? ` - ${item.title}` : '';
+  return `- ${item.memberName}${title}: ${lunarText}${rawText}; nam ${item.lunarYear} roi vao ngay ${solarText} duong lich${note}.`;
+}
+
+async function buildAnniversaryLocalAnswer(query, authScope = 'anonymous') {
+  if (!isAnniversaryQuestion(query)) return null;
+  const normalized = normalizeVietnameseSearch(query);
+  if (/\b(ngay mat|mat ngay)\b/.test(normalized) && !/\b(gio|ky|ky nhat|le gio|cung gio)\b/.test(normalized)) {
+    return null;
+  }
+  const yearMatch = normalized.match(/\b(20\d{2}|21\d{2})\b/);
+  const year = normalizeAnniversaryYear(yearMatch?.[1]);
+
+  if (/\b(sap toi|gan toi|upcoming)\b/.test(normalized)) {
+    const upcoming = await buildUpcomingAnniversaryItems({ days: 60, authScope });
+    if (!upcoming.length) return 'Chua tim thay ngay gio da xac minh trong 60 ngay toi.';
+    return [
+      'Lich gio sap toi theo du lieu da xac minh/applied:',
+      upcoming.slice(0, 8).map(formatAnniversaryItemLine).join('\n')
+    ].join('\n');
+  }
+
+  if (/\b(thang nay)\b/.test(normalized)) {
+    const currentMonth = new Date().getMonth() + 1;
+    const items = (await buildAnniversaryItems({ year, authScope })).filter((item) => {
+      const date = isoDateToStartOfDay(item.solarDate);
+      return date && date.getMonth() + 1 === currentMonth;
+    });
+    if (!items.length) return 'Chua tim thay ngay gio da xac minh trong thang nay.';
+    return [
+      `Lich gio trong thang ${currentMonth}/${year} theo du lieu da xac minh/applied:`,
+      items.slice(0, 12).map(formatAnniversaryItemLine).join('\n')
+    ].join('\n');
+  }
+
+  const items = await buildAnniversaryItems({ year, authScope });
+  const memberQuery = normalizeAnniversaryMemberQuery(query);
+  const matched = items
+    .map((item) => ({
+      item,
+      score: scoreTextAgainstQuery(memberQuery, [item.memberName, item.title, item.branch].join(' '))
+    }))
+    .filter((entry) => {
+      const memberText = [entry.item.memberName, entry.item.title, entry.item.branch].join(' ');
+      return (entry.score >= 2 && hasSpecificMemberNameMatch(memberQuery, memberText)) ||
+        memberQuery.includes(normalizeVietnameseSearch(entry.item.memberName));
+    })
+    .sort((a, b) => b.score - a.score || a.item.memberName.localeCompare(b.item.memberName))
+    .map((entry) => entry.item);
+
+  if (matched.length) {
+    return [
+      `Theo du lieu ngay gio da xac minh/applied trong cay pha, nam ${year}:`,
+      matched.slice(0, 5).map(formatAnniversaryItemLine).join('\n'),
+      'Neu nam mat con thieu, he thong chi quy doi ngay gio am lich sang ngay duong cua nam duoc hoi, khong tu tao nam mat.'
+    ].join('\n');
+  }
+
+  return null;
+}
+
+async function buildLocalAIResponse(req, message) {
+  const anniversaryAnswer = await buildAnniversaryLocalAnswer(message, req.body?.authScope || 'admin');
+  if (anniversaryAnswer) return anniversaryAnswer;
   const lineageMatches = Array.isArray(req.body?.lineageMatches) ? req.body.lineageMatches : [];
   const eventMatches = Array.isArray(req.body?.eventMatches) ? req.body.eventMatches : [];
   if (isAnniversaryQuestion(message)) {
-    const anniversaryMembers = lineageMatches.filter((member) => member?.deathAnniversaryLunar || member?.solarDeathDate || member?.deathYear);
+    const memberQuery = normalizeAnniversaryMemberQuery(message);
+    const anniversaryMembers = lineageMatches.filter((member) => {
+      if (!member?.deathAnniversaryLunar && !member?.solarDeathDate && !member?.deathYear) return false;
+      const memberText = [member.name, member.title, member.branch].join(' ');
+      return scoreTextAgainstQuery(memberQuery, memberText) >= 2 && hasSpecificMemberNameMatch(memberQuery, memberText);
+    });
     if (anniversaryMembers.length) {
       return [
         'Theo dữ liệu phả đồ hiện có, tôi tìm thấy thông tin kỵ nhật liên quan:',
@@ -3700,7 +3943,7 @@ async function handleGeminiRequest(req, res) {
   }
   const requestedEngine = String(requestContext?.engine || '').trim().toLowerCase();
   if (requestedEngine === 'local') {
-    res.json({ model: 'local', engine: 'local', text: buildLocalAIResponse({ ...req, body: requestContext }, message) });
+    res.json({ model: 'local', engine: 'local', text: await buildLocalAIResponse({ ...req, body: requestContext }, userQuery) });
     return;
   }
   if (!apiKey) {
@@ -3820,6 +4063,31 @@ async function handleAIGatewayRequest(req, res) {
   }
 
   try {
+    const anniversaryAnswer = await buildAnniversaryLocalAnswer(userQuery || message, requestContext.authScope || 'anonymous');
+    if (anniversaryAnswer) {
+      const knowledgeResponse = {
+        model: 'local-anniversary',
+        provider: 'local',
+        engine: 'local',
+        botType: requestContext.botType,
+        intent: requestContext.intent,
+        text: anniversaryAnswer,
+        knowledgeMatchesCount: 1,
+        knowledgeSourceIds: []
+      };
+      logGateway({
+        engine: 'local-anniversary',
+        model: 'local-anniversary',
+        status: 200,
+        cached: false,
+        durationMs: Date.now() - startedAt,
+        knowledgeMatchesCount: 1,
+        knowledgeSourceIds: []
+      });
+      res.json(knowledgeResponse);
+      return;
+    }
+
     const requiredAliasAnswer = buildRequiredAliasAnswer(userQuery || message);
     const initialKnowledge = await searchKnowledgeWithAliases(userQuery || message, {
       limit: AI_GATEWAY_KNOWLEDGE_TOP_K,
@@ -4108,7 +4376,7 @@ async function handleAIGatewayRequest(req, res) {
       engine: 'local',
       botType: requestContext.botType,
       intent: requestContext.intent,
-      text: localKnowledgeAnswer || buildLocalAIResponse({ ...req, body: requestContext }, message),
+      text: localKnowledgeAnswer || await buildLocalAIResponse({ ...req, body: requestContext }, userQuery),
       knowledgeMatchesCount: requestContext.localKnowledgeMatches?.chunkCount || 0,
       knowledgeSourceIds: requestContext.localKnowledgeMatches?.sourceIds || []
     };

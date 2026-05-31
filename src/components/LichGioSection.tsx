@@ -7,6 +7,22 @@ import React from 'react';
 import { ANNIVERSARY_EVENTS } from '../data/lineageData';
 import { Calendar, MapPin, Sparkles, User, ListChecks, Heart, Landmark, FlameKindling } from 'lucide-react';
 
+type VerifiedAnniversary = {
+  memberId: string;
+  memberName: string;
+  generation?: number;
+  title?: string;
+  lunarDay: number;
+  lunarMonth: number;
+  lunarYear: number;
+  solarDate: string;
+  solarDisplayDate?: string;
+  daysUntil?: number | null;
+  source: string;
+  certainty: string;
+  note?: string;
+};
+
 export default function LichGioSection() {
   const [virtualIncenses, setVirtualIncenses] = React.useState<Array<{ name: string; message: string; date: string }>>([
     { name: 'Cao Gia Tuấn', message: 'Kính lạy cụ Tổ, cháu ở xa quê hương không về bái tế mong cụ hiển linh phù hộ bản tộc cát tường.', date: '27/05/2026' },
@@ -16,6 +32,30 @@ export default function LichGioSection() {
   const [donorMessage, setDonorMessage] = React.useState('');
   const [offeringType, setOfferingType] = React.useState<'nhang' | 'hoa' | 'tra'>('nhang');
   const [offeringCount, setOfferingCount] = React.useState(122); // Simulated count of total ancestral offerings
+  const [verifiedAnniversaries, setVerifiedAnniversaries] = React.useState<VerifiedAnniversary[]>([]);
+  const [anniversaryLoading, setAnniversaryLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const loadAnniversaries = async () => {
+      setAnniversaryLoading(true);
+      try {
+        const response = await fetch('/api/anniversaries/upcoming?days=366');
+        const data = await response.json();
+        if (!cancelled && Array.isArray(data.anniversaries)) {
+          setVerifiedAnniversaries(data.anniversaries);
+        }
+      } catch {
+        if (!cancelled) setVerifiedAnniversaries([]);
+      } finally {
+        if (!cancelled) setAnniversaryLoading(false);
+      }
+    };
+    loadAnniversaries();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Form submit handler to add new live virtual incense logs
   const handleOfferIncense = (e: React.FormEvent) => {
@@ -56,6 +96,41 @@ export default function LichGioSection() {
           </div>
 
           <div className="space-y-6">
+            <div className="bg-white border border-secondary/20 rounded-sm p-5 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-serif text-lg font-bold text-primary">Lịch giỗ xác minh từ phả hệ</h3>
+                  <p className="text-xs text-ink-charcoal/60">Quy đổi âm lịch sang dương lịch cho năm hiện tại, chỉ dùng dữ liệu đã duyệt/applied hoặc dữ liệu phả hệ đọc được.</p>
+                </div>
+                <span className="text-[10px] font-mono uppercase text-secondary bg-secondary/10 px-2 py-1 rounded-sm">
+                  {anniversaryLoading ? 'Đang tải' : `${verifiedAnniversaries.length} mục`}
+                </span>
+              </div>
+              {verifiedAnniversaries.length ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {verifiedAnniversaries.slice(0, 8).map((item) => (
+                    <div key={`${item.memberId}-${item.solarDate}`} className="border border-ink-charcoal/10 bg-silk-paper/50 rounded-sm p-3 text-xs space-y-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <strong className="font-serif text-sm text-primary">{item.memberName}</strong>
+                        {typeof item.daysUntil === 'number' && (
+                          <span className="font-mono text-[10px] text-secondary">{item.daysUntil === 0 ? 'Hôm nay' : `${item.daysUntil} ngày`}</span>
+                        )}
+                      </div>
+                      {item.title && <p className="text-ink-charcoal/60">{item.title}</p>}
+                      <p className="text-ink-charcoal/80">
+                        Âm lịch: <strong>{item.lunarDay}/{item.lunarMonth}</strong> · Dương lịch {item.lunarYear}: <strong>{item.solarDisplayDate || item.solarDate}</strong>
+                      </p>
+                      <p className="text-[10px] text-ink-charcoal/45">{item.source} · {item.certainty}{item.note ? ` · ${item.note}` : ''}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-xs text-ink-charcoal/55 bg-silk-paper/60 border border-dashed border-ink-charcoal/10 rounded-sm p-3">
+                  {anniversaryLoading ? 'Đang tải lịch giỗ đã xác minh...' : 'Chưa có lịch giỗ đã xác minh trong khoảng một năm tới.'}
+                </div>
+              )}
+            </div>
+
             {ANNIVERSARY_EVENTS.map((event) => (
               <div 
                 key={event.id}

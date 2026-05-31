@@ -73,10 +73,10 @@ const cases = [
     id: 'anniversary-lang-unverified',
     question: T.langAnniversary,
     search: 'ng\u00e0y gi\u1ed7 Cao \u0110\u00ecnh L\u1ea1ng',
-    expectedContains: [T.caoDinhLang, T.missingAnniversary],
+    expectedContains: [T.caoDinhLang, '13/4', '29/05/2026', 'Nam mat chua ro'],
     mustNotContain: ['20/02/2026', T.caoNinhBinh, T.caoQuyCong, T.caoVanLam],
-    requiresKnowledge: true,
-    note: 'If no verified anniversary date exists, the AI must not invent one.'
+    requiresKnowledge: false,
+    note: 'Phase 2K can answer verified/applied lunar anniversary from the lineage tree.'
   },
   {
     id: 'anniversary-thuat-unverified',

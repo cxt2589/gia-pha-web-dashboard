@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Calendar, MapPin, User, Plus, FileText, CheckCircle, Clock, AlertCircle, X, Coins, Trash2, Search } from "lucide-react";
 import { ClanEvent, FamilyMember } from "../types";
@@ -11,10 +11,31 @@ interface EventsProps {
   members?: FamilyMember[];
 }
 
+interface VerifiedAnniversary {
+  memberId: string;
+  memberName: string;
+  generation?: number;
+  title?: string;
+  branch?: string;
+  lunarDay: number;
+  lunarMonth: number;
+  lunarYear: number;
+  solarDate: string;
+  solarDisplayDate?: string;
+  daysUntil?: number | null;
+  source: string;
+  certainty: string;
+  note?: string;
+}
+
 export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInitialPrompt, members = [] }: EventsProps) {
   const [selectedCategory, setSelectedCategory] = useState<string>("Tất cả");
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [deceasedSearch, setDeceasedSearch] = useState("");
+  const [anniversaryTab, setAnniversaryTab] = useState<"upcoming" | "month" | "year">("upcoming");
+  const [anniversaryMonth, setAnniversaryMonth] = useState(String(new Date().getMonth() + 1));
+  const [anniversaries, setAnniversaries] = useState<VerifiedAnniversary[]>([]);
+  const [anniversaryLoading, setAnniversaryLoading] = useState(false);
 
   // Form states
   const [newTitle, setNewTitle] = useState("");
@@ -27,6 +48,45 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
   const [newCategory, setNewCategory] = useState<"Cúng Giỗ" | "Họp Họ" | "Khánh Thành" | "Khuyến Học" | "Khác">("Cúng Giỗ");
 
   const categories = ["Tất cả", "Cúng Giỗ", "Họp Họ", "Khánh Thành", "Khuyến Học", "Khác"];
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadAnniversaries = async () => {
+      setAnniversaryLoading(true);
+      try {
+        const endpoint = anniversaryTab === "upcoming"
+          ? "/api/anniversaries/upcoming?days=366"
+          : `/api/anniversaries?year=${new Date().getFullYear()}`;
+        const response = await fetch(endpoint);
+        const data = await response.json();
+        if (!cancelled && Array.isArray(data.anniversaries)) setAnniversaries(data.anniversaries);
+      } catch {
+        if (!cancelled) setAnniversaries([]);
+      } finally {
+        if (!cancelled) setAnniversaryLoading(false);
+      }
+    };
+    loadAnniversaries();
+    return () => {
+      cancelled = true;
+    };
+  }, [anniversaryTab]);
+
+  const visibleAnniversaries = useMemo(() => {
+    const search = deceasedSearch.trim().toLowerCase();
+    return anniversaries.filter((item) => {
+      if (anniversaryTab === "month") {
+        const month = Number(anniversaryMonth);
+        if (month && item.lunarMonth !== month) return false;
+      }
+      if (!search) return true;
+      return [item.memberName, item.title, item.branch, `${item.lunarDay}/${item.lunarMonth}`]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(search);
+    });
+  }, [anniversaries, anniversaryMonth, anniversaryTab, deceasedSearch]);
 
   // Filtered events
   const filteredEvents = events.filter(e => {
@@ -276,6 +336,82 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
               className="bg-stone-50 border border-stone-200 rounded-lg pl-9 pr-3.5 py-1.5 text-xs text-stone-800 focus:outline-none focus:border-amber-400 w-48 sm:w-56"
             />
           </div>
+        </div>
+
+        <div className="space-y-3 rounded-xl border border-amber-100 bg-amber-50/20 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap gap-1">
+              {[
+                ["upcoming", "Sắp tới"],
+                ["month", "Theo tháng"],
+                ["year", "Cả năm"]
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setAnniversaryTab(value as "upcoming" | "month" | "year")}
+                  className={`rounded-lg px-2.5 py-1 text-[11px] font-bold border ${
+                    anniversaryTab === value
+                      ? "bg-amber-900 text-white border-amber-900"
+                      : "bg-white text-stone-600 border-stone-200 hover:bg-stone-50"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {anniversaryTab === "month" && (
+              <select
+                value={anniversaryMonth}
+                onChange={(event) => setAnniversaryMonth(event.target.value)}
+                className="rounded-lg border border-stone-200 bg-white px-2 py-1 text-[11px] font-semibold text-stone-700"
+              >
+                {Array.from({ length: 12 }, (_, index) => String(index + 1)).map((month) => (
+                  <option key={month} value={month}>Tháng âm {month}</option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          {anniversaryLoading ? (
+            <div className="rounded-lg border border-dashed border-stone-200 bg-white/60 p-4 text-center text-xs text-stone-500">
+              Đang tải lịch giỗ đã xác minh...
+            </div>
+          ) : visibleAnniversaries.length ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-96 overflow-y-auto pr-1">
+              {visibleAnniversaries.map((item) => (
+                <div key={`${item.memberId}-${item.solarDate}`} className="rounded-lg border border-amber-200/70 bg-white p-3 text-xs space-y-1">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="font-serif font-bold text-red-950">
+                      {item.memberName}
+                      {item.generation ? <span className="ml-1 rounded bg-amber-100 px-1 text-[9px] font-sans text-amber-900">Đời {item.generation}</span> : null}
+                    </p>
+                    {typeof item.daysUntil === "number" && (
+                      <span className="rounded bg-stone-100 px-1.5 py-0.5 font-mono text-[10px] text-stone-600">{item.daysUntil === 0 ? "Hôm nay" : `${item.daysUntil} ngày`}</span>
+                    )}
+                  </div>
+                  {item.title && <p className="text-[11px] text-stone-500">{item.title}</p>}
+                  {item.branch && <p className="text-[11px] text-stone-500">Chi/ngành: <strong>{item.branch}</strong></p>}
+                  <p className="font-semibold text-amber-900">
+                    Âm lịch {item.lunarDay}/{item.lunarMonth} · Dương lịch {item.lunarYear}: {item.solarDisplayDate || item.solarDate}
+                  </p>
+                  <p className="text-[10px] text-stone-400">{item.source} · {item.certainty}{item.note ? ` · ${item.note}` : ""}</p>
+                  <button
+                    type="button"
+                    disabled
+                    className="mt-1 rounded border border-dashed border-stone-200 bg-stone-50 px-2 py-1 text-[10px] font-bold text-stone-400"
+                    title="Chức năng tạo nháp sự kiện sẽ dùng cho Phase nhắc việc sau"
+                  >
+                    Tạo nháp sự kiện
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-dashed border-stone-200 bg-white/60 p-4 text-center text-xs text-stone-500">
+              Chưa có lịch giỗ đã xác minh phù hợp bộ lọc.
+            </div>
+          )}
         </div>
 
         {/* List ancestral deaths */}

@@ -8,4 +8,10 @@ export function convertLunarToSolar(date: {
   month: number;
   lunarYear: number;
   isLeapMonth?: boolean;
-}): null;
+}): null | {
+  day: number;
+  month: number;
+  year: number;
+  isoDate: string;
+  displayDate: string;
+};

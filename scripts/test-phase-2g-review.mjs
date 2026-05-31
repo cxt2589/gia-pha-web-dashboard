@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { parseGenealogyDateText } from '../src/utils/genealogyDate.mjs';
+import { convertLunarToSolar, parseGenealogyDateText } from '../src/utils/genealogyDate.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
@@ -212,6 +212,7 @@ async function main() {
   const candidateId = `phase2g-candidate-${Date.now()}`;
   const phase2jMemberId = `phase2j-member-${Date.now()}`;
   const phase2jCandidateId = `phase2j-candidate-${Date.now()}`;
+  const legacyAnniversaryMemberId = `phase2k-legacy-member-${Date.now()}`;
   const testTree = JSON.parse(JSON.stringify(originalTree));
   addTempMemberToTree(testTree, memberId);
   testTree.children.push({
@@ -222,6 +223,17 @@ async function main() {
     title: 'Temporary lunar-only test member',
     branch: 'Chi test Phase 2J',
     isLiving: false,
+    children: []
+  });
+  testTree.children.push({
+    id: legacyAnniversaryMemberId,
+    name: 'Cao Dinh Legacy Phase 2K',
+    generation: Number(testTree.generation || 0) + 1,
+    parentId: testTree.id,
+    title: 'Temporary legacy anniversary test member',
+    branch: 'Chi test Phase 2K',
+    isLiving: false,
+    deathAnniversaryLunar: '12/6 am lich',
     children: []
   });
   putState(database, 'lineage-tree', testTree);
@@ -247,6 +259,12 @@ async function main() {
         detail: JSON.stringify(actual)
       });
     }
+    const convertedLunar = convertLunarToSolar({ day: 15, month: 5, lunarYear: 2026 });
+    results.push({
+      id: 'phase2k-lunar-to-solar-unit',
+      passed: Boolean(convertedLunar?.isoDate && convertedLunar.year === 2026),
+      detail: JSON.stringify(convertedLunar)
+    });
 
     const publicList = await fetchJson('/api/knowledge/extracted-anniversaries?limit=1');
     results.push({
@@ -441,6 +459,45 @@ async function main() {
         && !lunarOnlyMember?.deathYear
         && !lunarOnlyMember?.solarDeathDate,
       detail: JSON.stringify(lunarOnlyMember?.deathAnniversaryLunarStructured || {})
+    });
+
+    const anniversaries2026 = await fetchJson('/api/anniversaries?year=2026', { headers: { Cookie: tempAdmin.cookie } });
+    const phase2jAnniversary = anniversaries2026.data.anniversaries?.find((item) => item.memberId === phase2jMemberId);
+    const legacyAnniversary = anniversaries2026.data.anniversaries?.find((item) => item.memberId === legacyAnniversaryMemberId);
+    results.push({
+      id: 'phase2k-anniversaries-api-structured',
+      passed: anniversaries2026.response.ok
+        && phase2jAnniversary?.lunarDay === 15
+        && phase2jAnniversary?.lunarMonth === 5
+        && Boolean(phase2jAnniversary?.solarDate)
+        && phase2jAnniversary?.note === 'Nam mat chua ro',
+      detail: JSON.stringify(phase2jAnniversary || {})
+    });
+    results.push({
+      id: 'phase2k-anniversaries-api-legacy-fallback',
+      passed: anniversaries2026.response.ok
+        && legacyAnniversary?.lunarDay === 12
+        && legacyAnniversary?.lunarMonth === 6
+        && legacyAnniversary?.source === 'legacyParsed',
+      detail: JSON.stringify(legacyAnniversary || {})
+    });
+
+    const memberAnniversary = await fetchJson(`/api/anniversaries/member/${encodeURIComponent(phase2jMemberId)}?year=2026`, { headers: { Cookie: tempAdmin.cookie } });
+    results.push({
+      id: 'phase2k-member-anniversary-api',
+      passed: memberAnniversary.response.ok
+        && memberAnniversary.data.anniversary?.memberId === phase2jMemberId
+        && memberAnniversary.data.anniversary?.lunarDay === 15,
+      detail: `HTTP ${memberAnniversary.response.status}`
+    });
+
+    const upcomingAnniversaries = await fetchJson('/api/anniversaries/upcoming?days=900', { headers: { Cookie: tempAdmin.cookie } });
+    const upcomingItems = Array.isArray(upcomingAnniversaries.data.anniversaries) ? upcomingAnniversaries.data.anniversaries : [];
+    const sortedUpcoming = upcomingItems.every((item, index) => index === 0 || Number(upcomingItems[index - 1].daysUntil) <= Number(item.daysUntil));
+    results.push({
+      id: 'phase2k-upcoming-anniversaries-sorted',
+      passed: upcomingAnniversaries.response.ok && upcomingItems.length > 0 && sortedUpcoming,
+      detail: `items ${upcomingItems.length}`
     });
 
     const appliedQuestion = await fetchJson('/api/ai/chat', {

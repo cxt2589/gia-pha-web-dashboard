@@ -1,3 +1,5 @@
+import { Lunar } from 'lunar-javascript';
+
 const MONTH_NAMES = new Map([
   ['gieng', 1],
   ['mot', 1],
@@ -154,5 +156,23 @@ export function formatGenealogyDateStructured(date) {
 }
 
 export function convertLunarToSolar(_date) {
-  return null;
+  const day = Number(_date?.day);
+  const month = Number(_date?.month);
+  const lunarYear = Number(_date?.lunarYear);
+  if (!validDayMonth(day, month) || !Number.isInteger(lunarYear) || lunarYear < 1000 || lunarYear > 2150) {
+    return null;
+  }
+  try {
+    const lunar = Lunar.fromYmd(lunarYear, _date?.isLeapMonth ? -Math.abs(month) : month, day);
+    const solar = lunar.getSolar();
+    return {
+      day: solar.getDay(),
+      month: solar.getMonth(),
+      year: solar.getYear(),
+      isoDate: `${solar.getYear()}-${String(solar.getMonth()).padStart(2, '0')}-${String(solar.getDay()).padStart(2, '0')}`,
+      displayDate: `${String(solar.getDay()).padStart(2, '0')}/${String(solar.getMonth()).padStart(2, '0')}/${solar.getYear()}`
+    };
+  } catch {
+    return null;
+  }
 }
