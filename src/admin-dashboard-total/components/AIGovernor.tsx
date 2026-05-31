@@ -1675,115 +1675,6 @@ export default function AIGovernor({
             </div>
 
             <div className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm xl:col-span-3">
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                  <h3 className="flex items-center gap-2 font-serif text-lg font-bold text-red-950">
-                    <Settings className="h-5 w-5 text-amber-700" />
-                    Quản trị Bot AI
-                  </h3>
-                  <p className="mt-1 text-xs leading-relaxed text-stone-500">
-                    Cấu hình riêng cho webview_chat, dashboard_helper, ai_governor, article_writer, prayer_writer và zalo_bot.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void loadAIBotConfigs()}
-                  disabled={isAiBotConfigsLoading}
-                  className="inline-flex items-center gap-2 rounded border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-60"
-                >
-                  <RefreshCw className={`h-4 w-4 ${isAiBotConfigsLoading ? "animate-spin" : ""}`} />
-                  Tải cấu hình bot
-                </button>
-              </div>
-              {aiBotConfigNote && <p className="mt-2 rounded bg-amber-50 p-2 text-[11px] text-amber-900">{aiBotConfigNote}</p>}
-              <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-3">
-                {aiBotConfigs.map((config) => (
-                  <div key={config.botType} className="rounded-lg border border-stone-200 bg-[#fbfaf6] p-3 text-xs">
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <p className="font-bold text-red-950">{config.label}</p>
-                        <p className="mt-0.5 text-[11px] text-stone-500">{config.botType}</p>
-                      </div>
-                      <button
-                        type="button"
-                        disabled={isAiBotConfigsLoading || config.botType === "zalo_bot"}
-                        onClick={() => void patchAIBotConfig(config.botType, { enabled: !config.enabled })}
-                        className={`inline-flex h-6 w-12 items-center rounded-full p-0.5 transition disabled:cursor-not-allowed disabled:opacity-60 ${
-                          config.enabled ? "bg-emerald-500" : "bg-stone-300"
-                        }`}
-                        aria-pressed={config.enabled}
-                        title={config.enabled ? "Đang bật" : "Đang tắt"}
-                      >
-                        <span
-                          className={`h-5 w-5 rounded-full bg-white shadow transition ${
-                            config.enabled ? "translate-x-6" : "translate-x-0"
-                          }`}
-                        />
-                      </button>
-                    </div>
-                    <div className="mt-3 grid grid-cols-2 gap-2">
-                      <label className="block">
-                        <span className="mb-1 block text-[10px] font-bold uppercase text-stone-400">Engine</span>
-                        <select
-                          value={config.engine}
-                          disabled={isAiBotConfigsLoading || config.botType === "zalo_bot"}
-                          onChange={(event) => void patchAIBotConfig(config.botType, { engine: event.target.value })}
-                          className="w-full rounded border border-stone-200 bg-white px-2 py-1.5"
-                        >
-                          <option value="local">local</option>
-                          <option value="local-knowledge">local-knowledge</option>
-                          <option value="gemini">gemini</option>
-                        </select>
-                      </label>
-                      <label className="block">
-                        <span className="mb-1 block text-[10px] font-bold uppercase text-stone-400">Chunks</span>
-                        <input
-                          type="number"
-                          min={0}
-                          max={20}
-                          value={config.maxKnowledgeChunks}
-                          disabled={isAiBotConfigsLoading}
-                          onChange={(event) => void patchAIBotConfig(config.botType, { maxKnowledgeChunks: Number(event.target.value) })}
-                          className="w-full rounded border border-stone-200 bg-white px-2 py-1.5"
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="mb-1 block text-[10px] font-bold uppercase text-stone-400">Tokens</span>
-                        <input
-                          type="number"
-                          min={200}
-                          max={4000}
-                          value={config.maxOutputTokens}
-                          disabled={isAiBotConfigsLoading}
-                          onChange={(event) => void patchAIBotConfig(config.botType, { maxOutputTokens: Number(event.target.value) })}
-                          className="w-full rounded border border-stone-200 bg-white px-2 py-1.5"
-                        />
-                      </label>
-                      <label className="flex cursor-pointer items-end gap-2 pb-1 font-bold text-stone-600">
-                        <input
-                          type="checkbox"
-                          checked={config.cacheEnabled}
-                          disabled={isAiBotConfigsLoading}
-                          onChange={(event) => void patchAIBotConfig(config.botType, { cacheEnabled: event.target.checked })}
-                          className="sr-only"
-                        />
-                        <span className={`flex h-7 w-7 items-center justify-center rounded-lg border ${
-                          config.cacheEnabled ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-stone-200 bg-white text-transparent"
-                        }`}>
-                          <CheckCircle2 className="h-4 w-4" />
-                        </span>
-                        Cache
-                      </label>
-                    </div>
-                    {config.pausedReason && <p className="mt-2 rounded bg-amber-50 px-2 py-1 text-[11px] text-amber-900">{config.pausedReason}</p>}
-                    <p className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-stone-500">{config.systemPromptShort}</p>
-                  </div>
-                ))}
-                {!aiBotConfigs.length && <p className="text-xs text-stone-500">Chưa có cấu hình bot AI hoặc tài khoản hiện tại chưa có quyền admin.</p>}
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm xl:col-span-3">
               <h3 className="mb-3 flex items-center gap-2 font-serif text-lg font-bold text-red-950">
                 <ClipboardList className="h-5 w-5 text-amber-700" />
                 Nhật ký AI
@@ -2057,21 +1948,24 @@ export default function AIGovernor({
                             <p className="text-[10px] font-black uppercase tracking-wide text-amber-700">Cài đặt bot AI</p>
                             <p className="mt-1 text-xs text-stone-500">Đồng bộ với cấu hình chung qua ai_bot_configs.</p>
                           </div>
-                          <button
-                            type="button"
-                            disabled={isAiBotConfigsLoading || selectedOperationBotConfig.botType === "zalo_bot"}
-                            onClick={() => void patchAIBotConfig(selectedOperationBotConfig.botType, { enabled: !selectedOperationBotConfig.enabled })}
-                            className={`inline-flex h-7 w-14 items-center rounded-full p-0.5 transition disabled:cursor-not-allowed disabled:opacity-60 ${
-                              selectedOperationBotConfig.enabled ? "bg-emerald-500" : "bg-stone-300"
-                            }`}
-                            aria-pressed={selectedOperationBotConfig.enabled}
-                          >
-                            <span
-                              className={`h-6 w-6 rounded-full bg-white shadow transition ${
-                                selectedOperationBotConfig.enabled ? "translate-x-7" : "translate-x-0"
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-bold uppercase text-stone-400">{selectedOperationBotConfig.enabled ? "On" : "Off"}</span>
+                            <button
+                              type="button"
+                              disabled={isAiBotConfigsLoading || selectedOperationBotConfig.botType === "zalo_bot"}
+                              onClick={() => void patchAIBotConfig(selectedOperationBotConfig.botType, { enabled: !selectedOperationBotConfig.enabled })}
+                              className={`inline-flex h-5 w-10 items-center rounded-full p-0.5 transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                                selectedOperationBotConfig.enabled ? "bg-emerald-500" : "bg-stone-300"
                               }`}
-                            />
-                          </button>
+                              aria-pressed={selectedOperationBotConfig.enabled}
+                            >
+                              <span
+                                className={`h-4 w-4 rounded-full bg-white shadow transition ${
+                                  selectedOperationBotConfig.enabled ? "translate-x-5" : "translate-x-0"
+                                }`}
+                              />
+                            </button>
+                          </div>
                         </div>
 
                         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -2112,7 +2006,7 @@ export default function AIGovernor({
                               className="w-full rounded-lg border border-stone-200 bg-white px-3 py-2"
                             />
                           </label>
-                          <label className="flex cursor-pointer items-end gap-2 pb-1 text-xs font-bold text-stone-600">
+                          <label className="flex h-full cursor-pointer items-center gap-2 rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-600">
                             <input
                               type="checkbox"
                               checked={selectedOperationBotConfig.cacheEnabled}
@@ -2120,10 +2014,10 @@ export default function AIGovernor({
                               onChange={(event) => void patchAIBotConfig(selectedOperationBotConfig.botType, { cacheEnabled: event.target.checked })}
                               className="sr-only"
                             />
-                            <span className={`flex h-9 w-9 items-center justify-center rounded-xl border ${
+                            <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border ${
                               selectedOperationBotConfig.cacheEnabled ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-stone-200 bg-white text-transparent"
                             }`}>
-                              <CheckCircle2 className="h-5 w-5" />
+                              <CheckCircle2 className="h-4 w-4" />
                             </span>
                             Cache
                           </label>
