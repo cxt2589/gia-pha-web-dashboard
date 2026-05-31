@@ -5,8 +5,9 @@
 
 import React from 'react';
 import { ANCESTRAL_TREE } from '../data/lineageData';
-import { AncestorNode } from '../types';
+import { AncestorNode, GenealogyDateStructured } from '../types';
 import { deriveLunarAnniversaryFromSolarDeathDate, getAnniversaryCountdown } from '../utils/lunarConverter';
+import { parseGenealogyDateText } from '../utils/genealogyDate.mjs';
 import { getPersistedTreeData, hydratePersistedTreeDataFromBackend, savePersistedTreeData, getAppSettings } from '../utils/configManager';
 import {
   computeClanLeaderRules,
@@ -38,6 +39,8 @@ import {
 } from 'lucide-react';
 
 type WebviewAuthProvider = 'zalo' | 'gmail';
+const parseStructuredGenealogyDate = (...args: Parameters<typeof parseGenealogyDateText>): GenealogyDateStructured =>
+  parseGenealogyDateText(...args) as GenealogyDateStructured;
 
 type WebviewAuthSession = {
   provider: WebviewAuthProvider;
@@ -800,6 +803,9 @@ export default function GiaPhaTree() {
             isLiving: spouseIsLiving,
             solarBirthDate: spouseSolarBirthDate,
             solarDeathDate: spouseSolarDeathDate,
+            birthDateStructured: parseStructuredGenealogyDate(spouseSolarBirthDate || spouseBirthYear, 'solar'),
+            deathDateStructured: parseStructuredGenealogyDate(spouseSolarDeathDate || spouseDeathYear, 'solar'),
+            deathAnniversaryLunarStructured: parseStructuredGenealogyDate(spouseLunarAnniversary, 'lunar'),
             email: spouseEmail
           }] : [],
           motherName: newMemberMother,
@@ -812,6 +818,9 @@ export default function GiaPhaTree() {
           deathPlace: newMemberDeathPlace,
           solarBirthDate: newMemberSolarBirthDate,
           solarDeathDate: newMemberSolarDeathDate,
+          birthDateStructured: parseStructuredGenealogyDate(newMemberSolarBirthDate || newMemberBirthYear, 'solar'),
+          deathDateStructured: parseStructuredGenealogyDate(newMemberSolarDeathDate || newMemberDeathYear, 'solar'),
+          deathAnniversaryLunarStructured: parseStructuredGenealogyDate(newMemberLunarAnniversary, 'lunar'),
           email: newMemberEmail,
           gender: newMemberGender,
           children: []
@@ -889,6 +898,9 @@ export default function GiaPhaTree() {
           isLiving: spouseIsLiving,
           solarBirthDate: spouseSolarBirthDate,
           solarDeathDate: spouseSolarDeathDate,
+          birthDateStructured: parseStructuredGenealogyDate(spouseSolarBirthDate || spouseBirthYear, 'solar'),
+          deathDateStructured: parseStructuredGenealogyDate(spouseSolarDeathDate || spouseDeathYear, 'solar'),
+          deathAnniversaryLunarStructured: parseStructuredGenealogyDate(spouseLunarAnniversary, 'lunar'),
           email: spouseEmail
         };
 
@@ -958,6 +970,9 @@ export default function GiaPhaTree() {
           isLiving: spouseIsLiving,
           solarBirthDate: spouseSolarBirthDate,
           solarDeathDate: spouseSolarDeathDate,
+          birthDateStructured: parseStructuredGenealogyDate(spouseSolarBirthDate || spouseBirthYear, 'solar'),
+          deathDateStructured: parseStructuredGenealogyDate(spouseSolarDeathDate || spouseDeathYear, 'solar'),
+          deathAnniversaryLunarStructured: parseStructuredGenealogyDate(spouseLunarAnniversary, 'lunar'),
           email: spouseEmail
         };
 
@@ -1038,6 +1053,9 @@ export default function GiaPhaTree() {
         node.phone3 = newMemberPhone3;
         node.solarBirthDate = newMemberSolarBirthDate;
         node.solarDeathDate = newMemberSolarDeathDate;
+        node.birthDateStructured = parseStructuredGenealogyDate(newMemberSolarBirthDate || newMemberBirthYear, 'solar');
+        node.deathDateStructured = parseStructuredGenealogyDate(newMemberSolarDeathDate || newMemberDeathYear, 'solar');
+        node.deathAnniversaryLunarStructured = parseStructuredGenealogyDate(newMemberLunarAnniversary, 'lunar');
         node.email = newMemberEmail;
         node.gender = newMemberGender;
         syncSpouseDetailsFromText(node, newMemberSpouse);

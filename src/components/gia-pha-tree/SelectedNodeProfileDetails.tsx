@@ -3,6 +3,7 @@ import { Award, Bookmark, Calendar, FileText, Heart, Mail, MapPin, Phone, Scroll
 import { AncestorNode } from '../../types';
 import { convertSolarToLunarText, getAnniversaryCountdown } from '../../utils/lunarConverter';
 import { formatNodeTitle, isUnknownText } from '../../utils/lineageDisplay';
+import { formatGenealogyDateStructured } from '../../utils/genealogyDate.mjs';
 
 type AnniversaryInfo = ReturnType<typeof getAnniversaryCountdown>;
 
@@ -53,6 +54,9 @@ export function SelectedNodeProfileDetails({
     .map((part) => part.charAt(0))
     .join('')
     .toUpperCase() || 'C';
+  const structuredDeathAnniversary = formatGenealogyDateStructured(selectedNode.deathAnniversaryLunarStructured);
+  const structuredDeathDate = formatGenealogyDateStructured(selectedNode.deathDateStructured);
+  const structuredBirthDate = formatGenealogyDateStructured(selectedNode.birthDateStructured);
 
   return (
     <>
@@ -234,6 +238,14 @@ export function SelectedNodeProfileDetails({
                 <Scroll className="w-3.5 h-3.5 text-rose-700 shadow-none" />
                 Chi tiết Kỷ nhật (Ngày giỗ năm nay)
               </div>
+              {structuredDeathAnniversary && (
+                <div className="rounded border border-rose-100 bg-white/70 px-2 py-1 text-xs font-semibold text-primary">
+                  Ngay gio: {structuredDeathAnniversary}
+                  {selectedNode.deathAnniversaryLunarStructured?.precision === 'day_month' && !selectedNode.deathYear && !selectedNode.solarDeathDate
+                    ? '; nam mat: chua ro'
+                    : ''}
+                </div>
+              )}
               {(() => {
                 const info = getAnniversaryCountdown(effectiveLunarAnniversary);
                 if (!info) return <span className="text-rose-950/50">Chưa thể xác định kỵ nhật năm nay</span>;

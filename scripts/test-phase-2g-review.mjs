@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import { parseGenealogyDateText } from '../src/utils/genealogyDate.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
@@ -152,6 +153,38 @@ function insertTempCandidate(database, candidateId, memberId) {
   );
 }
 
+function insertTempLunarOnlyCandidate(database, candidateId, memberId) {
+  database.prepare(`
+    INSERT INTO extracted_anniversary_candidates (
+      id, source_id, chunk_id, person_name, person_name_norm, generation, branch,
+      birth_text, death_text, death_anniversary_lunar, hometown, grave_text,
+      source_quote, heading_path, matched_member_id, matched_member_name,
+      match_confidence, status, metadata_json, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `).run(
+    candidateId,
+    'source_phase2j_test',
+    'chunk_phase2j_test',
+    'Cao Dinh Lunar Only Phase 2J',
+    'cao dinh lunar only phase 2j',
+    'test',
+    '',
+    '',
+    '',
+    '15/5 am lich',
+    '',
+    '',
+    'Doan nguon test Phase 2J',
+    'Phase 2J Test Source',
+    memberId,
+    'Cao Dinh Lunar Only Phase 2J',
+    'manual',
+    'pending',
+    JSON.stringify({ phase: '2j-test' })
+  );
+}
+
 function ensurePhase2GSchema(database) {
   database.exec(`
     CREATE TABLE IF NOT EXISTS extracted_anniversary_audit_logs (
@@ -177,10 +210,23 @@ async function main() {
 
   const memberId = `phase2g-member-${Date.now()}`;
   const candidateId = `phase2g-candidate-${Date.now()}`;
+  const phase2jMemberId = `phase2j-member-${Date.now()}`;
+  const phase2jCandidateId = `phase2j-candidate-${Date.now()}`;
   const testTree = JSON.parse(JSON.stringify(originalTree));
   addTempMemberToTree(testTree, memberId);
+  testTree.children.push({
+    id: phase2jMemberId,
+    name: 'Cao Dinh Lunar Only Phase 2J',
+    generation: Number(testTree.generation || 0) + 1,
+    parentId: testTree.id,
+    title: 'Temporary lunar-only test member',
+    branch: 'Chi test Phase 2J',
+    isLiving: false,
+    children: []
+  });
   putState(database, 'lineage-tree', testTree);
   insertTempCandidate(database, candidateId, memberId);
+  insertTempLunarOnlyCandidate(database, phase2jCandidateId, phase2jMemberId);
   database.close();
 
   const tempAdmin = installTempAdminSession();
@@ -188,6 +234,20 @@ async function main() {
   const results = [];
 
   try {
+    const parserCases = [
+      ['parser-lunar-day-month', parseGenealogyDateText('15/5 am lich'), { calendar: 'lunar', precision: 'day_month', day: 15, month: 5, year: null }],
+      ['parser-solar-full-date', parseGenealogyDateText('12/03/1985', 'solar'), { calendar: 'solar', precision: 'full_date', day: 12, month: 3, year: 1985 }],
+      ['parser-year-only', parseGenealogyDateText('1985'), { precision: 'year', year: 1985 }],
+      ['parser-unknown', parseGenealogyDateText('khuyet'), { precision: 'unknown', year: null }]
+    ];
+    for (const [id, actual, expected] of parserCases) {
+      results.push({
+        id,
+        passed: Object.entries(expected).every(([key, value]) => actual[key] === value),
+        detail: JSON.stringify(actual)
+      });
+    }
+
     const publicList = await fetchJson('/api/knowledge/extracted-anniversaries?limit=1');
     results.push({
       id: 'public-403',
@@ -231,6 +291,38 @@ async function main() {
       id: 'reject-does-not-apply',
       passed: reject.response.ok && rejectedApply.response.status === 400,
       detail: `reject ${reject.response.status}, apply ${rejectedApply.response.status}`
+    });
+
+    await fetchJson(`/api/knowledge/extracted-anniversaries/${phase2jCandidateId}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ status: 'approved' })
+    });
+    await fetchJson(`/api/knowledge/extracted-anniversaries/${phase2jCandidateId}/apply`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ memberId: phase2jMemberId, fieldTypes: ['lunar_anniversary'] })
+    });
+
+    const lunarOnlyQuestion = await fetchJson('/api/ai/chat', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        message: 'ngay gio Cao Dinh Lunar Only Phase 2J la ngay nao?',
+        type: 'chat',
+        botType: 'dashboard',
+        intent: 'quality_check_phase_2j',
+        engine: 'local'
+      })
+    });
+    const lunarOnlyAnswer = String(lunarOnlyQuestion.data.text || '');
+    results.push({
+      id: 'ai-lunar-day-month-no-invented-year',
+      passed: lunarOnlyQuestion.response.ok
+        && /15\/5|15 thang 5/i.test(lunarOnlyAnswer)
+        && /chua ro|chua duoc xac minh|chÆ°a rÃµ|chÆ°a Ä‘Æ°á»£c xÃ¡c minh/i.test(lunarOnlyAnswer)
+        && !/1901|1970|1985/.test(lunarOnlyAnswer),
+      detail: lunarOnlyAnswer.slice(0, 180)
     });
 
     await fetchJson(`/api/knowledge/extracted-anniversaries/${candidateId}`, {
@@ -326,6 +418,31 @@ async function main() {
       detail: `HTTP ${appliedDetail.response.status}`
     });
 
+    await fetchJson(`/api/knowledge/extracted-anniversaries/${phase2jCandidateId}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ status: 'approved' })
+    });
+    const lunarOnlyApply = await fetchJson(`/api/knowledge/extracted-anniversaries/${phase2jCandidateId}/apply`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ memberId: phase2jMemberId, fieldTypes: ['lunar_anniversary'] })
+    });
+    const lunarOnlyDb = new DatabaseSync(databaseFile);
+    const lunarOnlyTree = getState(lunarOnlyDb, 'lineage-tree', null);
+    lunarOnlyDb.close();
+    const lunarOnlyMember = lunarOnlyTree.children.find((item) => item.id === phase2jMemberId);
+    results.push({
+      id: 'apply-lunar-day-month-no-fake-death-year',
+      passed: lunarOnlyApply.response.ok
+        && lunarOnlyMember?.deathAnniversaryLunar === '15/5 am lich'
+        && lunarOnlyMember?.deathAnniversaryLunarStructured?.precision === 'day_month'
+        && lunarOnlyMember?.deathAnniversaryLunarStructured?.year === null
+        && !lunarOnlyMember?.deathYear
+        && !lunarOnlyMember?.solarDeathDate,
+      detail: JSON.stringify(lunarOnlyMember?.deathAnniversaryLunarStructured || {})
+    });
+
     const appliedQuestion = await fetchJson('/api/ai/chat', {
       method: 'POST',
       headers,
@@ -396,7 +513,9 @@ async function main() {
     cleanupDb.exec('PRAGMA busy_timeout = 5000');
     putState(cleanupDb, 'lineage-tree', originalTree);
     cleanupDb.prepare('DELETE FROM extracted_anniversary_candidates WHERE id = ?').run(candidateId);
+    cleanupDb.prepare('DELETE FROM extracted_anniversary_candidates WHERE id = ?').run(phase2jCandidateId);
     cleanupDb.prepare('DELETE FROM extracted_anniversary_audit_logs WHERE candidate_id = ?').run(candidateId);
+    cleanupDb.prepare('DELETE FROM extracted_anniversary_audit_logs WHERE candidate_id = ?').run(phase2jCandidateId);
     cleanupDb.close();
     tempAdmin.cleanup();
   }

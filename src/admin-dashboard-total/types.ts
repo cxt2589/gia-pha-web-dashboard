@@ -15,6 +15,9 @@ export interface FamilyMember {
   solarBirthDate?: string;
   solarDeathDate?: string;
   deathAnniversaryLunar?: string;
+  birthDateStructured?: GenealogyDateStructured;
+  deathDateStructured?: GenealogyDateStructured;
+  deathAnniversaryLunarStructured?: GenealogyDateStructured;
   graveLocation?: string;
   motherName?: string;
   residence?: string;
@@ -28,6 +31,19 @@ export interface FamilyMember {
   photo?: string;
   bio?: string;
   achievements?: string[];
+}
+
+export interface GenealogyDateStructured {
+  calendar: "solar" | "lunar" | "unknown";
+  precision: "full_date" | "day_month" | "month_year" | "year" | "approximate" | "unknown";
+  day: number | null;
+  month: number | null;
+  year: number | null;
+  rawText: string;
+  certainty: "verified" | "candidate" | "uncertain";
+  sourceId?: string;
+  chunkId?: string;
+  isLeapMonth?: boolean;
 }
 
 export interface ClanEvent {

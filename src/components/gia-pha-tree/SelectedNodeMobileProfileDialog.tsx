@@ -3,6 +3,7 @@ import { Award, Bookmark, Calendar, Heart, MapPin, Scroll, Users, X } from 'luci
 import { AncestorNode } from '../../types';
 import { convertSolarToLunarText, getAnniversaryCountdown } from '../../utils/lunarConverter';
 import { formatNodeTitle, isUnknownText } from '../../utils/lineageDisplay';
+import { formatGenealogyDateStructured } from '../../utils/genealogyDate.mjs';
 
 type AnniversaryInfo = ReturnType<typeof getAnniversaryCountdown>;
 type SpouseDetail = NonNullable<AncestorNode['spouseDetails']>[number];
@@ -224,6 +225,14 @@ export function SelectedNodeMobileProfileDialog({
                 <Scroll className="w-3 h-3 text-rose-700 hover:shadow-none" />
                 Chi tiết Ngày giỗ năm nay
               </div>
+              {formatGenealogyDateStructured(selectedNode.deathAnniversaryLunarStructured) && (
+                <div className="rounded border border-rose-100 bg-white/70 px-2 py-1 text-xs font-semibold text-primary">
+                  Ngay gio: {formatGenealogyDateStructured(selectedNode.deathAnniversaryLunarStructured)}
+                  {selectedNode.deathAnniversaryLunarStructured?.precision === 'day_month' && !selectedNode.deathYear && !selectedNode.solarDeathDate
+                    ? '; nam mat: chua ro'
+                    : ''}
+                </div>
+              )}
               {(() => {
                 const info = getAnniversaryCountdown(effectiveLunarAnniversary);
                 if (!info) return <span className="text-rose-950/50">Chưa xác định kỵ nhật năm nay</span>;

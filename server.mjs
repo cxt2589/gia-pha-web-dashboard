@@ -7,6 +7,7 @@ import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI } from '@google/genai';
+import { formatGenealogyDateStructured, parseGenealogyDateText } from './src/utils/genealogyDate.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 loadEnv({ path: resolve(__dirname, '.env.local') });
@@ -1343,6 +1344,9 @@ function publicLineageMemberSearchResult(member, score = 0, confidence = 'none',
       birth: member.solarBirthDate || member.birthYear || '',
       death: member.solarDeathDate || member.deathYear || '',
       lunar_anniversary: member.deathAnniversaryLunar || member.lunarAnniversary || '',
+      birth_structured: member.birthDateStructured || null,
+      death_structured: member.deathDateStructured || null,
+      lunar_anniversary_structured: member.deathAnniversaryLunarStructured || null,
       hometown: member.birthPlace || member.residence || '',
       grave: member.graveLocation || member.burialPlace || ''
     }
@@ -1591,12 +1595,12 @@ function getLineageNodeById(node, memberId) {
 function mapExtractedFieldToLineageFields(fieldType) {
   switch (fieldType) {
     case 'birth':
-      return ['solarBirthDate', 'birthYear'];
+      return ['birthDateStructured', 'solarBirthDate', 'birthYear'];
     case 'death':
-      return ['solarDeathDate', 'deathYear'];
+      return ['deathDateStructured', 'solarDeathDate', 'deathYear'];
     case 'lunar_anniversary':
     case 'anniversary':
-      return ['deathAnniversaryLunar', 'lunarAnniversary'];
+      return ['deathAnniversaryLunarStructured', 'deathAnniversaryLunar', 'lunarAnniversary'];
     case 'hometown':
       return ['birthPlace'];
     case 'grave':
@@ -1607,36 +1611,47 @@ function mapExtractedFieldToLineageFields(fieldType) {
   }
 }
 
-function extractYearFromText(value) {
-  const match = String(value || '').match(/\b(1[5-9]\d{2}|20\d{2}|21\d{2})\b/);
-  return match ? match[1] : '';
+function structuredDateForLineage(value, defaultCalendar, row = {}) {
+  const structured = parseGenealogyDateText(value, defaultCalendar);
+  if (!structured || structured.precision === 'unknown') return null;
+  return {
+    ...structured,
+    sourceId: row.source_id || row.sourceId || undefined,
+    chunkId: row.chunk_id || row.chunkId || undefined
+  };
 }
 
-function isFullSolarDate(value) {
-  return /\b\d{1,2}[/-]\d{1,2}[/-]\d{3,4}\b/.test(String(value || ''));
-}
-
-function buildLineageFieldUpdates(fieldType, value) {
+function buildLineageFieldUpdates(fieldType, value, row = {}) {
   const text = String(value || '').trim();
   if (!text) return [];
-  const year = extractYearFromText(text);
   switch (fieldType) {
-    case 'birth':
-      return [
-        ...(isFullSolarDate(text) ? [{ field: 'solarBirthDate', value: text }] : []),
-        { field: 'birthYear', value: year || text }
-      ];
-    case 'death':
-      return [
-        ...(isFullSolarDate(text) ? [{ field: 'solarDeathDate', value: text }] : []),
-        { field: 'deathYear', value: year || text }
-      ];
+    case 'birth': {
+      const structured = structuredDateForLineage(text, 'solar', row);
+      const updates = structured ? [{ field: 'birthDateStructured', value: structured }] : [];
+      if (structured?.precision === 'full_date' && structured.calendar === 'solar') {
+        updates.push({ field: 'solarBirthDate', value: text });
+      }
+      if (structured?.year) updates.push({ field: 'birthYear', value: String(structured.year) });
+      return updates.length ? updates : [{ field: 'birthYear', value: text }];
+    }
+    case 'death': {
+      const structured = structuredDateForLineage(text, 'solar', row);
+      const updates = structured ? [{ field: 'deathDateStructured', value: structured }] : [];
+      if (structured?.precision === 'full_date' && structured.calendar === 'solar') {
+        updates.push({ field: 'solarDeathDate', value: text });
+      }
+      if (structured?.year) updates.push({ field: 'deathYear', value: String(structured.year) });
+      return updates.length ? updates : [{ field: 'deathYear', value: text }];
+    }
     case 'lunar_anniversary':
-    case 'anniversary':
+    case 'anniversary': {
+      const structured = structuredDateForLineage(text, 'lunar', row);
       return [
+        ...(structured ? [{ field: 'deathAnniversaryLunarStructured', value: structured }] : []),
         { field: 'deathAnniversaryLunar', value: text },
         { field: 'lunarAnniversary', value: text }
       ];
+    }
     case 'hometown':
       return [{ field: 'birthPlace', value: text }];
     case 'grave':
@@ -1695,18 +1710,20 @@ async function applyExtractedAnniversaryCandidate(id, body = {}, adminUser = {})
   for (const fieldType of requestedTypes) {
     const value = getCandidateValueForField(row, fieldType);
     if (!value) continue;
-    const lineageUpdates = buildLineageFieldUpdates(fieldType, value);
+    const lineageUpdates = buildLineageFieldUpdates(fieldType, value, row);
     for (const update of lineageUpdates) {
       const lineageField = update.field;
       const nextValue = update.value;
-      const oldValue = String(target[lineageField] || '').trim();
-      if (oldValue && oldValue !== nextValue && !force) {
-        conflicts.push({ fieldType, lineageField, oldValue, newValue: nextValue });
+      const oldRawValue = target[lineageField];
+      const oldValue = typeof oldRawValue === 'object' && oldRawValue !== null ? JSON.stringify(oldRawValue) : String(oldRawValue || '').trim();
+      const nextComparableValue = typeof nextValue === 'object' && nextValue !== null ? JSON.stringify(nextValue) : String(nextValue || '').trim();
+      if (oldValue && oldValue !== nextComparableValue && !force) {
+        conflicts.push({ fieldType, lineageField, oldValue, newValue: nextValue, rawText: value });
         continue;
       }
-      if (oldValue === nextValue) continue;
+      if (oldValue === nextComparableValue) continue;
       target[lineageField] = nextValue;
-      changes.push({ fieldType, lineageField, oldValue, newValue: nextValue });
+      changes.push({ fieldType, lineageField, oldValue, newValue: nextValue, rawText: value, sourceId: row.source_id, chunkId: row.chunk_id });
     }
   }
 
@@ -1960,6 +1977,10 @@ function buildExtractedAnniversaryAnswer(query, candidates) {
   if (!usable.length) return null;
   const lines = usable.slice(0, 3).map((row) => {
     const status = normalizeExtractedCandidateStatus(row.status);
+    const lunarStructured = parseGenealogyDateText(row.death_anniversary_lunar, 'lunar');
+    const lunarMissingYearNote = lunarStructured.precision === 'day_month' && !lunarStructured.year
+      ? ' (nam mat chua duoc xac minh)'
+      : '';
     const statusText = status === 'applied'
       ? 'dữ liệu đã áp dụng'
       : status === 'approved'
@@ -1971,7 +1992,7 @@ function buildExtractedAnniversaryAnswer(query, candidates) {
       row.birth_text ? `ngày/năm sinh: ${row.birth_text}` : '',
       row.hometown ? `quê quán: ${row.hometown}` : '',
       row.grave_text ? `mộ chí: ${compactText(row.grave_text, 260)}` : ''
-    ].filter(Boolean).join('; ');
+    ].filter(Boolean).join('; ') + lunarMissingYearNote;
     const match = row.match_confidence === 'exact' || row.match_confidence === 'partial'
       ? `; đối chiếu cây phả: ${row.matched_member_name || row.matched_member_id} (${row.match_confidence})`
       : '; chưa khớp chắc với cây phả';
@@ -3347,6 +3368,9 @@ function flattenLineageTree(node, parent = null, output = []) {
     solarDeathDate: String(node.solarDeathDate || '').trim(),
     deathAnniversaryLunar: String(node.deathAnniversaryLunar || node.lunarAnniversary || '').trim(),
     lunarAnniversary: String(node.lunarAnniversary || node.deathAnniversaryLunar || '').trim(),
+    birthDateStructured: node.birthDateStructured || null,
+    deathDateStructured: node.deathDateStructured || null,
+    deathAnniversaryLunarStructured: node.deathAnniversaryLunarStructured || null,
     birthPlace: String(node.birthPlace || '').trim(),
     deathPlace: String(node.deathPlace || '').trim(),
     graveLocation: String(node.graveLocation || node.burialPlace || '').trim(),
@@ -3480,7 +3504,21 @@ function isSensitiveGenealogyQuestion(message) {
   ].some((keyword) => text.includes(keyword));
 }
 
+function formatStructuredMemberDateLine(label, structuredDate) {
+  if (!structuredDate || typeof structuredDate !== 'object' || structuredDate.precision === 'unknown') return '';
+  const formatted = formatGenealogyDateStructured(structuredDate);
+  if (!formatted) return '';
+  if (structuredDate.precision === 'day_month' && structuredDate.calendar === 'lunar') {
+    return `${label}: ${formatted}; nam mat: chua ro`;
+  }
+  return `${label}: ${formatted}`;
+}
+
 function formatMemberContext(member, canShowPrivate) {
+  const structuredAnniversary = formatStructuredMemberDateLine('Ngay gio/ky nhat am lich', member.deathAnniversaryLunarStructured);
+  const structuredDeath = formatStructuredMemberDateLine('Ngay/nam mat', member.deathDateStructured);
+  const structuredBirth = formatStructuredMemberDateLine('Ngay/nam sinh', member.birthDateStructured);
+  const structuredLines = [structuredAnniversary, structuredDeath, structuredBirth].filter(Boolean);
   const publicLines = [
     `Tên: ${member.name}`,
     `Đời: ${member.generation}`,
@@ -3501,7 +3539,7 @@ function formatMemberContext(member, canShowPrivate) {
     member.graveLocation ? `Mộ phần: ${member.graveLocation}` : '',
     member.bio ? `Hành trạng: ${compactText(member.bio, 420)}` : ''
   ] : [];
-  return [...publicLines, ...privateLines].filter(Boolean).join('; ');
+  return [...publicLines, ...structuredLines, ...privateLines].filter(Boolean).join('; ');
 }
 
 async function buildWebviewAIContext(req, message) {

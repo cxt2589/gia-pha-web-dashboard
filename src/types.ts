@@ -18,7 +18,23 @@ export interface SpouseDetail {
   isLiving?: boolean;
   solarBirthDate?: string;
   solarDeathDate?: string;
+  birthDateStructured?: GenealogyDateStructured;
+  deathDateStructured?: GenealogyDateStructured;
+  deathAnniversaryLunarStructured?: GenealogyDateStructured;
   email?: string;
+}
+
+export interface GenealogyDateStructured {
+  calendar: 'solar' | 'lunar' | 'unknown';
+  precision: 'full_date' | 'day_month' | 'month_year' | 'year' | 'approximate' | 'unknown';
+  day: number | null;
+  month: number | null;
+  year: number | null;
+  rawText: string;
+  certainty: 'verified' | 'candidate' | 'uncertain';
+  sourceId?: string;
+  chunkId?: string;
+  isLeapMonth?: boolean;
 }
 
 export interface AncestorNode {
@@ -50,6 +66,9 @@ export interface AncestorNode {
   solarBirthDate?: string; // Ngày sinh dương lịch
   solarDeathDate?: string; // Ngày mất dương lịch
   email?: string; // Email liên lạc
+  birthDateStructured?: GenealogyDateStructured;
+  deathDateStructured?: GenealogyDateStructured;
+  deathAnniversaryLunarStructured?: GenealogyDateStructured;
   photo?: string; // Anh chan dung hoac avatar
   gender?: 'nam' | 'nữ'; // Giới tính (Nam/Nữ)
 }

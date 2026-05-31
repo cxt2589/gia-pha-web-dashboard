@@ -8,6 +8,10 @@ import { flattenTreeToList, parseCSVToObjects, savePersistedTreeData } from "../
 import { parseWorksheetToRows } from "../../utils/spreadsheetImport";
 import { mapLineageNodesToDashboardMembers } from "../data/lineageBridge";
 import { convertSolarToLunarText, convertSolarToLunarTextFromLich247, deriveLunarAnniversaryFromSolarDeathDate, deriveLunarAnniversaryFromSolarDeathDateViaLich247 } from "../../utils/lunarConverter";
+import { parseGenealogyDateText } from "../../utils/genealogyDate.mjs";
+
+const parseStructuredGenealogyDate = (...args: Parameters<typeof parseGenealogyDateText>): FamilyMember["birthDateStructured"] =>
+  parseGenealogyDateText(...args) as FamilyMember["birthDateStructured"];
 
 interface GenealogyProps {
   members: FamilyMember[];
@@ -625,6 +629,9 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
       return;
     }
     const originalMember = editingMemberId ? members.find((member) => member.id === editingMemberId) : undefined;
+    const birthDateStructured = parseStructuredGenealogyDate(newSolarBirthDate || newBirthYear, "solar");
+    const deathDateStructured = parseStructuredGenealogyDate(newSolarDeathDate || newDeathYear, "solar");
+    const deathAnniversaryLunarStructured = parseStructuredGenealogyDate(newDeathLunar, "lunar");
 
     const newMember: FamilyMember = {
       id: editingMemberId || "custom-gen-" + Date.now(),
@@ -643,6 +650,9 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
       solarBirthDate: newSolarBirthDate || undefined,
       solarDeathDate: newIsDeceased ? (newSolarDeathDate || undefined) : undefined,
       deathAnniversaryLunar: newIsDeceased ? (newDeathLunar || undefined) : undefined,
+      birthDateStructured: birthDateStructured.precision !== "unknown" ? birthDateStructured : undefined,
+      deathDateStructured: newIsDeceased && deathDateStructured.precision !== "unknown" ? deathDateStructured : undefined,
+      deathAnniversaryLunarStructured: newIsDeceased && deathAnniversaryLunarStructured.precision !== "unknown" ? deathAnniversaryLunarStructured : undefined,
       graveLocation: newGrave || undefined,
       motherName: newMotherName || undefined,
       residence: newResidence || undefined,
@@ -778,6 +788,9 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
       const deathYear = row[10] ? String(row[10]).trim() : "";
       const deathAnniversaryLunar = row[11] ? String(row[11]).trim() : "";
       const graveLocation = row[12] ? String(row[12]).trim() : "";
+      const birthDateStructured = parseStructuredGenealogyDate(birthYear, "solar");
+      const deathDateStructured = parseStructuredGenealogyDate(deathYear, "solar");
+      const deathAnniversaryLunarStructured = parseStructuredGenealogyDate(deathAnniversaryLunar, "lunar");
 
       const generationVal = parseInt(String(row[13])) || 8;
       const fatherName = row[14] ? String(row[14]).trim() : "";
@@ -820,6 +833,9 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
         birthYear: birthYear || undefined,
         deathYear: isDeceased ? (deathYear || undefined) : undefined,
         deathAnniversaryLunar: isDeceased ? (deathAnniversaryLunar || undefined) : undefined,
+        birthDateStructured: birthDateStructured.precision !== "unknown" ? birthDateStructured : undefined,
+        deathDateStructured: isDeceased && deathDateStructured.precision !== "unknown" ? deathDateStructured : undefined,
+        deathAnniversaryLunarStructured: isDeceased && deathAnniversaryLunarStructured.precision !== "unknown" ? deathAnniversaryLunarStructured : undefined,
         graveLocation: graveLocation || undefined,
         spouse: spouse || undefined,
         parentId: parentId || undefined,
@@ -1718,27 +1734,27 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                   {newIsDeceased && (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
                       <div className="space-y-1">
-                        <label className="text-stone-600 block">Năm tạ thế (Dương lịch):</label>
+                        <label className="text-stone-600 block">Năm mất dương lịch nếu chỉ biết năm:</label>
                         <input 
                           type="text" 
-                          placeholder="Ví dụ: 1985" 
+                          placeholder="Ví dụ: 1985 hoặc khoảng 1985" 
                           value={newDeathYear}
                           onChange={(e) => setNewDeathYear(e.target.value)}
                           className="w-full bg-white border border-stone-200 rounded px-2.5 py-1 focus:outline-none focus:border-red-800 text-stone-850"
                         />
                       </div>
                       <div className="space-y-1">
-                        <label className="text-stone-600 block">Lễ kỵ ngày ngày (Âm lịch):</label>
+                        <label className="text-stone-600 block">Ngày giỗ âm lịch (có thể thiếu năm):</label>
                         <input 
                           type="text" 
-                          placeholder="Ví dụ: mùng 5 tháng Giêng" 
+                          placeholder="Ví dụ: 15/5 âm lịch hoặc mùng 5 tháng Giêng" 
                           value={newDeathLunar}
                           onChange={(e) => setNewDeathLunar(e.target.value)}
                           className="w-full bg-white border border-stone-200 rounded px-2.5 py-1 focus:outline-none focus:border-red-800 text-stone-850"
                         />
                       </div>
                       <div className="space-y-1">
-                        <label className="text-stone-600 block">Ngày mất dương lịch:</label>
+                        <label className="text-stone-600 block">Ngày mất dương lịch đầy đủ:</label>
                         <input
                           type="text"
                           placeholder="Ví dụ: 12/03/1985"
