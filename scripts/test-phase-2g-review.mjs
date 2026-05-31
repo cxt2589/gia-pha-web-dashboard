@@ -217,6 +217,21 @@ function ensurePhase2GSchema(database) {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    CREATE TABLE IF NOT EXISTS reminder_send_logs (
+      id TEXT PRIMARY KEY,
+      draft_id TEXT NOT NULL DEFAULT '',
+      channel TEXT NOT NULL DEFAULT 'dashboard',
+      recipient_type TEXT NOT NULL DEFAULT 'admin_test',
+      recipient_id TEXT NOT NULL DEFAULT '',
+      recipient_name TEXT NOT NULL DEFAULT '',
+      message TEXT NOT NULL DEFAULT '',
+      transport TEXT NOT NULL DEFAULT 'mock',
+      status TEXT NOT NULL DEFAULT 'queued',
+      error TEXT NOT NULL DEFAULT '',
+      sent_by TEXT NOT NULL DEFAULT '',
+      sent_at TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 }
 
@@ -233,6 +248,7 @@ async function main() {
   const phase2jCandidateId = `phase2j-candidate-${Date.now()}`;
   const legacyAnniversaryMemberId = `phase2k-legacy-member-${Date.now()}`;
   const createdDraftIds = [];
+  const createdReminderLogIds = [];
   const testTree = JSON.parse(JSON.stringify(originalTree));
   addTempMemberToTree(testTree, memberId);
   testTree.children.push({
@@ -574,6 +590,102 @@ async function main() {
       detail: `HTTP ${scheduleDraft.response.status}; local status only`
     });
 
+    const publicSendTest = draft.id ? await fetchJson(`/api/anniversary-drafts/${encodeURIComponent(draft.id)}/send-test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ channel: 'zalo', recipientManual: 'admin-test' })
+    }) : { response: { ok: false, status: 0 }, data: {} };
+    results.push({
+      id: 'phase2m-send-test-public-403',
+      passed: publicSendTest.response.status === 403,
+      detail: `HTTP ${publicSendTest.response.status}`
+    });
+
+    const missingRecipientSend = draft.id ? await fetchJson(`/api/anniversary-drafts/${encodeURIComponent(draft.id)}/send-test`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ channel: 'zalo' })
+    }) : { response: { ok: false, status: 0 }, data: {} };
+    results.push({
+      id: 'phase2m-send-test-requires-recipient',
+      passed: missingRecipientSend.response.status === 400,
+      detail: `HTTP ${missingRecipientSend.response.status}`
+    });
+
+    const realDisabledSend = draft.id ? await fetchJson(`/api/anniversary-drafts/${encodeURIComponent(draft.id)}/send-test`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ channel: 'zalo', recipientManual: 'admin-test', sendReal: true })
+    }) : { response: { ok: false, status: 0 }, data: {} };
+    results.push({
+      id: 'phase2m-send-real-disabled-400',
+      passed: realDisabledSend.response.status === 400,
+      detail: `HTTP ${realDisabledSend.response.status}`
+    });
+
+    const mockSend = draft.id ? await fetchJson(`/api/anniversary-drafts/${encodeURIComponent(draft.id)}/send-test`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ channel: 'zalo', recipientType: 'admin_test', recipientManual: 'admin-test', sendReal: false })
+    }) : { response: { ok: false, status: 0 }, data: {} };
+    const mockLog = mockSend.data.log || {};
+    if (mockLog.id) createdReminderLogIds.push(mockLog.id);
+    results.push({
+      id: 'phase2m-send-test-approved-mock',
+      passed: mockSend.response.status === 201
+        && mockLog.draftId === draft.id
+        && mockLog.status === 'sent'
+        && mockLog.transport === 'zalo_mock'
+        && /Admin da sua noi dung/.test(String(mockLog.message || '')),
+      detail: JSON.stringify({ http: mockSend.response.status, error: mockSend.data.error, status: mockLog.status, transport: mockLog.transport })
+    });
+
+    const draftLogs = draft.id ? await fetchJson(`/api/anniversary-drafts/${encodeURIComponent(draft.id)}/send-logs`, { headers: { Cookie: tempAdmin.cookie } }) : { response: { ok: false, status: 0 }, data: {} };
+    results.push({
+      id: 'phase2m-get-draft-send-logs',
+      passed: draftLogs.response.ok && Array.isArray(draftLogs.data.logs) && draftLogs.data.logs.some((log) => log.id === mockLog.id),
+      detail: `logs ${draftLogs.data.logs?.length || 0}`
+    });
+
+    const allReminderLogsPublic = await fetchJson('/api/reminder-send-logs?limit=5');
+    results.push({
+      id: 'phase2m-reminder-logs-public-403',
+      passed: allReminderLogsPublic.response.status === 403,
+      detail: `HTTP ${allReminderLogsPublic.response.status}`
+    });
+
+    const allReminderLogsAdmin = await fetchJson('/api/reminder-send-logs?limit=20', { headers: { Cookie: tempAdmin.cookie } });
+    results.push({
+      id: 'phase2m-reminder-logs-admin',
+      passed: allReminderLogsAdmin.response.ok && Array.isArray(allReminderLogsAdmin.data.logs) && allReminderLogsAdmin.data.logs.some((log) => log.id === mockLog.id),
+      detail: `logs ${allReminderLogsAdmin.data.logs?.length || 0}`
+    });
+
+    const createRejectedDraft = await fetchJson('/api/anniversary-drafts/from-anniversary', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ memberId: phase2jMemberId, year: 2026, channel: 'web_chat' })
+    });
+    const rejectedDraft = createRejectedDraft.data.draft || {};
+    if (rejectedDraft.id) createdDraftIds.push(rejectedDraft.id);
+    if (rejectedDraft.id) {
+      await fetchJson(`/api/anniversary-drafts/${encodeURIComponent(rejectedDraft.id)}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ status: 'rejected' })
+      });
+    }
+    const rejectedSend = rejectedDraft.id ? await fetchJson(`/api/anniversary-drafts/${encodeURIComponent(rejectedDraft.id)}/send-test`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ channel: 'web_chat', recipientManual: 'admin-test' })
+    }) : { response: { ok: false, status: 0 }, data: {} };
+    results.push({
+      id: 'phase2m-rejected-draft-not-sendable',
+      passed: rejectedSend.response.status === 400,
+      detail: `HTTP ${rejectedSend.response.status}`
+    });
+
     const deleteDraft = draft.id ? await fetchJson(`/api/anniversary-drafts/${encodeURIComponent(draft.id)}`, {
       method: 'DELETE',
       headers
@@ -666,7 +778,11 @@ async function main() {
     cleanupDb.prepare('DELETE FROM extracted_anniversary_candidates WHERE id = ?').run(phase2jCandidateId);
     cleanupDb.prepare('DELETE FROM extracted_anniversary_audit_logs WHERE candidate_id = ?').run(candidateId);
     cleanupDb.prepare('DELETE FROM extracted_anniversary_audit_logs WHERE candidate_id = ?').run(phase2jCandidateId);
+    for (const logId of createdReminderLogIds) {
+      cleanupDb.prepare('DELETE FROM reminder_send_logs WHERE id = ?').run(logId);
+    }
     for (const draftId of createdDraftIds) {
+      cleanupDb.prepare('DELETE FROM reminder_send_logs WHERE draft_id = ?').run(draftId);
       cleanupDb.prepare('DELETE FROM anniversary_event_drafts WHERE id = ?').run(draftId);
     }
     cleanupDb.close();

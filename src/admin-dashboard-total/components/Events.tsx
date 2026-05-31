@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Calendar, MapPin, User, Plus, FileText, CheckCircle, Clock, AlertCircle, X, Coins, Trash2, Search } from "lucide-react";
+import { Calendar, MapPin, User, Plus, FileText, CheckCircle, Clock, AlertCircle, X, Coins, Trash2, Search, Send, History } from "lucide-react";
 import { ClanEvent, FamilyMember } from "../types";
 
 interface EventsProps {
@@ -45,6 +45,21 @@ interface AnniversaryDraft {
   updatedAt: string;
 }
 
+interface ReminderSendLog {
+  id: string;
+  draftId: string;
+  channel: string;
+  recipientType: string;
+  recipientId: string;
+  recipientName: string;
+  transport: string;
+  status: string;
+  error: string;
+  sentBy: string;
+  sentAt: string;
+  createdAt: string;
+}
+
 export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInitialPrompt, members = [] }: EventsProps) {
   const [selectedCategory, setSelectedCategory] = useState<string>("Tất cả");
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -56,6 +71,12 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
   const [anniversaryDrafts, setAnniversaryDrafts] = useState<AnniversaryDraft[]>([]);
   const [draftLoading, setDraftLoading] = useState(false);
   const [draftEditing, setDraftEditing] = useState<Record<string, string>>({});
+  const [sendDraftId, setSendDraftId] = useState("");
+  const [sendChannel, setSendChannel] = useState<"dashboard" | "zalo" | "web_chat">("zalo");
+  const [sendRecipient, setSendRecipient] = useState("admin-test");
+  const [sendLoading, setSendLoading] = useState(false);
+  const [sendResult, setSendResult] = useState("");
+  const [sendLogs, setSendLogs] = useState<ReminderSendLog[]>([]);
 
   // Form states
   const [newTitle, setNewTitle] = useState("");
@@ -151,6 +172,48 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
       return;
     }
     await loadAnniversaryDrafts();
+  };
+
+  const loadReminderSendLogs = async (draftId?: string) => {
+    const endpoint = draftId
+      ? `/api/anniversary-drafts/${encodeURIComponent(draftId)}/send-logs?limit=20`
+      : "/api/reminder-send-logs?limit=20";
+    const response = await fetch(endpoint);
+    const data = await response.json().catch(() => ({}));
+    if (Array.isArray(data.logs)) setSendLogs(data.logs);
+  };
+
+  const openSendTest = async (draft: AnniversaryDraft) => {
+    setSendDraftId(draft.id);
+    setSendChannel(draft.channel === "web_chat" ? "web_chat" : draft.channel === "zalo" ? "zalo" : "dashboard");
+    setSendResult("");
+    await loadReminderSendLogs(draft.id);
+  };
+
+  const sendDraftTest = async (draft: AnniversaryDraft) => {
+    setSendLoading(true);
+    setSendResult("");
+    try {
+      const response = await fetch(`/api/anniversary-drafts/${encodeURIComponent(draft.id)}/send-test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channel: sendChannel,
+          recipientType: "admin_test",
+          recipientManual: sendRecipient,
+          sendReal: false
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setSendResult(data.error || "Khong gui thu duoc ban nhac.");
+        return;
+      }
+      setSendResult(`Da ghi log gui thu bang ${data.log?.transport || "mock"}.`);
+      await loadReminderSendLogs(draft.id);
+    } finally {
+      setSendLoading(false);
+    }
   };
 
   const visibleAnniversaries = useMemo(() => {
@@ -566,12 +629,80 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
                     </button>
                     <button
                       type="button"
+                      disabled={!["approved", "scheduled"].includes(draft.status)}
+                      onClick={() => openSendTest(draft)}
+                      className="rounded border border-green-200 bg-green-50 px-3 py-1.5 text-[11px] font-bold text-green-800 hover:bg-green-100 disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      <Send className="mr-1 inline h-3 w-3" />
+                      Gui thu
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => deleteAnniversaryDraft(draft)}
                       className="rounded border border-red-200 bg-red-50 px-3 py-1.5 text-[11px] font-bold text-red-800 hover:bg-red-100"
                     >
                       Xóa
                     </button>
                   </div>
+                  {sendDraftId === draft.id && (
+                    <div className="rounded-lg border border-green-100 bg-green-50/40 p-3 space-y-2">
+                      <div className="flex flex-col md:flex-row md:items-end gap-2">
+                        <div className="space-y-1">
+                          <label className="block text-[10px] font-bold uppercase text-stone-500">Kenh mock</label>
+                          <select
+                            value={sendChannel}
+                            onChange={(event) => setSendChannel(event.target.value as "dashboard" | "zalo" | "web_chat")}
+                            className="rounded border border-green-200 bg-white px-2 py-1.5 text-[11px] text-stone-800"
+                          >
+                            <option value="zalo">Zalo mock</option>
+                            <option value="web_chat">Web chat mock</option>
+                            <option value="dashboard">Dashboard preview</option>
+                          </select>
+                        </div>
+                        <div className="flex-1 space-y-1">
+                          <label className="block text-[10px] font-bold uppercase text-stone-500">Nguoi nhan test</label>
+                          <input
+                            value={sendRecipient}
+                            onChange={(event) => setSendRecipient(event.target.value)}
+                            placeholder="admin-test hoac recipient test"
+                            className="w-full rounded border border-green-200 bg-white px-2 py-1.5 text-[11px] text-stone-800"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          disabled={sendLoading || !sendRecipient.trim()}
+                          onClick={() => sendDraftTest(draft)}
+                          className="rounded bg-green-800 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-green-950 disabled:cursor-not-allowed disabled:opacity-45"
+                        >
+                          Gui thu mock
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-stone-500">
+                        Phase nay chi ghi log mock, khong gui Zalo that va khong co nut gui hang loat.
+                      </p>
+                      {sendResult && (
+                        <p className="rounded border border-green-100 bg-white px-2 py-1 text-[11px] font-semibold text-green-900">
+                          {sendResult}
+                        </p>
+                      )}
+                      {sendLogs.length > 0 && (
+                        <div className="space-y-1">
+                          <p className="flex items-center gap-1 text-[10px] font-bold uppercase text-stone-500">
+                            <History className="h-3 w-3" />
+                            Lich su gui nhac viec
+                          </p>
+                          <div className="max-h-28 space-y-1 overflow-y-auto">
+                            {sendLogs.map((log) => (
+                              <div key={log.id} className="rounded border border-green-100 bg-white px-2 py-1 text-[10px] text-stone-600">
+                                <strong className="text-stone-850">{log.status}</strong> · {log.transport} · {log.recipientName || log.recipientId} · {log.sentAt || log.createdAt}
+                                {log.error ? <span className="text-red-700"> · {log.error}</span> : null}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

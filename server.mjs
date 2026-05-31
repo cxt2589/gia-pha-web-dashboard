@@ -528,6 +528,22 @@ async function getDatabase() {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS reminder_send_logs (
+      id TEXT PRIMARY KEY,
+      draft_id TEXT NOT NULL DEFAULT '',
+      channel TEXT NOT NULL DEFAULT 'dashboard',
+      recipient_type TEXT NOT NULL DEFAULT 'admin_test',
+      recipient_id TEXT NOT NULL DEFAULT '',
+      recipient_name TEXT NOT NULL DEFAULT '',
+      message TEXT NOT NULL DEFAULT '',
+      transport TEXT NOT NULL DEFAULT 'mock',
+      status TEXT NOT NULL DEFAULT 'queued',
+      error TEXT NOT NULL DEFAULT '',
+      sent_by TEXT NOT NULL DEFAULT '',
+      sent_at TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_norm ON knowledge_chunks(content_norm);
     CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm ON entity_aliases(alias_norm);
     CREATE INDEX IF NOT EXISTS idx_entity_aliases_ascii ON entity_aliases(alias_ascii);
@@ -540,6 +556,8 @@ async function getDatabase() {
     CREATE INDEX IF NOT EXISTS idx_anniversary_drafts_member ON anniversary_event_drafts(member_id);
     CREATE INDEX IF NOT EXISTS idx_anniversary_drafts_status ON anniversary_event_drafts(status);
     CREATE INDEX IF NOT EXISTS idx_anniversary_drafts_updated ON anniversary_event_drafts(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_reminder_send_logs_draft ON reminder_send_logs(draft_id);
+    CREATE INDEX IF NOT EXISTS idx_reminder_send_logs_created ON reminder_send_logs(created_at);
   `);
   ensureTableColumn(db, 'knowledge_sources', 'summary', "ALTER TABLE knowledge_sources ADD COLUMN summary TEXT NOT NULL DEFAULT ''");
   ensureTableColumn(db, 'knowledge_sources', 'tags_json', "ALTER TABLE knowledge_sources ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'");
@@ -2529,6 +2547,29 @@ app.post('/api/anniversary-drafts/from-anniversary', async (req, res) => {
   }
 });
 
+app.post('/api/anniversary-drafts/:id/send-test', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const log = await sendAnniversaryDraftTest(req.params.id, req.body || {}, admin.authUser);
+    res.status(201).json({ ok: true, log });
+  } catch (err) {
+    console.error('Failed to send anniversary draft test:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to send anniversary draft test.' });
+  }
+});
+
+app.get('/api/anniversary-drafts/:id/send-logs', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const limit = Math.max(1, Math.min(200, Number(req.query.limit || 50) || 50));
+    res.json({ ok: true, logs: await listReminderSendLogs({ draftId: req.params.id, limit }) });
+  } catch (err) {
+    console.error('Failed to list anniversary draft send logs:', err);
+    res.status(500).json({ error: 'Failed to list anniversary draft send logs.' });
+  }
+});
+
 app.patch('/api/anniversary-drafts/:id', async (req, res) => {
   try {
     if (!await requireAdmin(req, res)) return;
@@ -2552,6 +2593,17 @@ app.delete('/api/anniversary-drafts/:id', async (req, res) => {
   } catch (err) {
     console.error('Failed to delete anniversary draft:', err);
     res.status(500).json({ error: 'Failed to delete anniversary draft.' });
+  }
+});
+
+app.get('/api/reminder-send-logs', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const limit = Math.max(1, Math.min(200, Number(req.query.limit || 50) || 50));
+    res.json({ ok: true, logs: await listReminderSendLogs({ limit }) });
+  } catch (err) {
+    console.error('Failed to list reminder send logs:', err);
+    res.status(500).json({ error: 'Failed to list reminder send logs.' });
   }
 });
 
@@ -3621,6 +3673,30 @@ function normalizeAnniversaryDraftStatus(value, fallback = 'draft') {
   return ['draft', 'approved', 'scheduled', 'sent', 'rejected'].includes(status) ? status : fallback;
 }
 
+function normalizeReminderRecipientType(value) {
+  const recipientType = String(value || 'admin_test').trim().toLowerCase();
+  return ['admin_test', 'linked_user', 'group'].includes(recipientType) ? recipientType : 'admin_test';
+}
+
+function publicReminderSendLog(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    draftId: row.draft_id,
+    channel: row.channel,
+    recipientType: row.recipient_type,
+    recipientId: row.recipient_id,
+    recipientName: row.recipient_name,
+    message: row.message,
+    transport: row.transport,
+    status: row.status,
+    error: row.error,
+    sentBy: row.sent_by,
+    sentAt: row.sent_at,
+    createdAt: row.created_at
+  };
+}
+
 function publicAnniversaryDraft(row) {
   if (!row) return null;
   return {
@@ -3759,6 +3835,137 @@ async function deleteAnniversaryDraft(id) {
   const database = await getDatabase();
   const result = database.prepare('DELETE FROM anniversary_event_drafts WHERE id = ?').run(String(id || ''));
   return result.changes > 0;
+}
+
+async function sendReminderMessage({ channel, recipient, message, draftId, sendReal = false }) {
+  const normalizedChannel = normalizeAnniversaryDraftChannel(channel);
+  const wantsRealZalo = Boolean(sendReal) && normalizedChannel === 'zalo';
+  const zaloEnabled = String(process.env.ZALO_SEND_ENABLED || 'false').trim().toLowerCase() === 'true';
+  if (wantsRealZalo && !zaloEnabled) {
+    const err = new Error('Real Zalo sending is disabled. Set ZALO_SEND_ENABLED=true and confirm sendReal=true before using real transport.');
+    err.status = 400;
+    throw err;
+  }
+
+  if (wantsRealZalo) {
+    const err = new Error('Real Zalo transport is not configured in this phase.');
+    err.status = 501;
+    throw err;
+  }
+
+  const transport = normalizedChannel === 'zalo'
+    ? 'zalo_mock'
+    : normalizedChannel === 'web_chat'
+      ? 'web_chat_mock'
+      : 'mock';
+  return {
+    draftId,
+    channel: normalizedChannel,
+    recipient,
+    message,
+    transport,
+    status: 'sent',
+    error: '',
+    sentAt: new Date().toISOString()
+  };
+}
+
+async function sendAnniversaryDraftTest(id, body = {}, adminUser = {}) {
+  const database = await getDatabase();
+  const draft = database.prepare('SELECT * FROM anniversary_event_drafts WHERE id = ?').get(String(id || ''));
+  if (!draft) {
+    const err = new Error('Anniversary draft not found.');
+    err.status = 404;
+    throw err;
+  }
+  if (!['approved', 'scheduled'].includes(draft.status)) {
+    const err = new Error('Draft must be approved or scheduled before sending a test reminder.');
+    err.status = 400;
+    throw err;
+  }
+
+  const recipientId = String(body.recipientId || '').trim();
+  const recipientManual = String(body.recipientManual || '').trim();
+  if (!recipientId && !recipientManual) {
+    const err = new Error('A clear test recipient is required.');
+    err.status = 400;
+    throw err;
+  }
+
+  const channel = normalizeAnniversaryDraftChannel(body.channel || draft.channel);
+  const recipientType = normalizeReminderRecipientType(body.recipientType || (recipientManual ? 'admin_test' : 'linked_user'));
+  const recipient = {
+    type: recipientType,
+    id: recipientId || recipientManual,
+    name: String(body.recipientName || recipientManual || recipientId).trim()
+  };
+  const sentBy = adminUser?.username || adminUser?.fullName || adminUser?.id || '';
+  const logId = `reminder_log_${randomToken(12)}`;
+  let result;
+  try {
+    result = await sendReminderMessage({
+      channel,
+      recipient,
+      message: draft.message_draft,
+      draftId: draft.id,
+      sendReal: Boolean(body.sendReal)
+    });
+  } catch (err) {
+    if (err.status === 400) throw err;
+    const createdAt = new Date().toISOString();
+    database.prepare(`
+      INSERT INTO reminder_send_logs (
+        id, draft_id, channel, recipient_type, recipient_id, recipient_name, message,
+        transport, status, error, sent_by, sent_at, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?, ?)
+    `).run(
+      logId,
+      draft.id,
+      channel,
+      recipient.type,
+      recipient.id,
+      recipient.name,
+      draft.message_draft,
+      channel === 'zalo' ? 'zalo' : channel === 'web_chat' ? 'web_chat' : 'mock',
+      err.message || 'Send failed.',
+      sentBy,
+      createdAt,
+      createdAt
+    );
+    throw err;
+  }
+
+  database.prepare(`
+    INSERT INTO reminder_send_logs (
+      id, draft_id, channel, recipient_type, recipient_id, recipient_name, message,
+      transport, status, error, sent_by, sent_at, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `).run(
+    logId,
+    draft.id,
+    channel,
+    recipient.type,
+    recipient.id,
+    recipient.name,
+    draft.message_draft,
+    result.transport,
+    result.status,
+    result.error,
+    sentBy,
+    result.sentAt
+  );
+  return publicReminderSendLog(database.prepare('SELECT * FROM reminder_send_logs WHERE id = ?').get(logId));
+}
+
+async function listReminderSendLogs({ draftId = '', limit = 50 } = {}) {
+  const database = await getDatabase();
+  const safeLimit = Math.max(1, Math.min(200, Number(limit) || 50));
+  const rows = draftId
+    ? database.prepare('SELECT * FROM reminder_send_logs WHERE draft_id = ? ORDER BY created_at DESC LIMIT ?').all(String(draftId), safeLimit)
+    : database.prepare('SELECT * FROM reminder_send_logs ORDER BY created_at DESC LIMIT ?').all(safeLimit);
+  return rows.map(publicReminderSendLog);
 }
 
 async function buildLocalAIResponse(req, message) {
