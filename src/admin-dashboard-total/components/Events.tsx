@@ -55,9 +55,25 @@ interface ReminderSendLog {
   transport: string;
   status: string;
   error: string;
+  blockedReason?: string;
   sentBy: string;
   sentAt: string;
   createdAt: string;
+}
+
+interface ReminderTransportStatus {
+  zalo: {
+    enabled: boolean;
+    mode: string;
+    configured: boolean;
+    canSendReal: boolean;
+  };
+  webChat: {
+    enabled: boolean;
+    configured: boolean;
+    canSendReal?: boolean;
+  };
+  rateLimit: number;
 }
 
 export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInitialPrompt, members = [] }: EventsProps) {
@@ -77,6 +93,10 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
   const [sendLoading, setSendLoading] = useState(false);
   const [sendResult, setSendResult] = useState("");
   const [sendLogs, setSendLogs] = useState<ReminderSendLog[]>([]);
+  const [transportStatus, setTransportStatus] = useState<ReminderTransportStatus | null>(null);
+  const [transportCheckResult, setTransportCheckResult] = useState("");
+  const [sendReal, setSendReal] = useState(false);
+  const [sendConfirmText, setSendConfirmText] = useState("");
 
   // Form states
   const [newTitle, setNewTitle] = useState("");
@@ -133,6 +153,16 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
     loadAnniversaryDrafts();
   }, []);
 
+  const loadReminderTransportStatus = async () => {
+    const response = await fetch("/api/reminder-transports/status");
+    const data = await response.json().catch(() => ({}));
+    if (data.transports) setTransportStatus(data.transports);
+  };
+
+  useEffect(() => {
+    loadReminderTransportStatus();
+  }, []);
+
   const createAnniversaryDraft = async (item: VerifiedAnniversary, channel: AnniversaryDraft["channel"] = "dashboard") => {
     const response = await fetch("/api/anniversary-drafts/from-anniversary", {
       method: "POST",
@@ -186,8 +216,11 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
   const openSendTest = async (draft: AnniversaryDraft) => {
     setSendDraftId(draft.id);
     setSendChannel(draft.channel === "web_chat" ? "web_chat" : draft.channel === "zalo" ? "zalo" : "dashboard");
+    setSendReal(false);
+    setSendConfirmText("");
     setSendResult("");
     await loadReminderSendLogs(draft.id);
+    await loadReminderTransportStatus();
   };
 
   const sendDraftTest = async (draft: AnniversaryDraft) => {
@@ -199,9 +232,10 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           channel: sendChannel,
-          recipientType: "admin_test",
+          recipientType: sendReal ? "admin_test" : "admin_test",
           recipientManual: sendRecipient,
-          sendReal: false
+          sendReal,
+          confirmText: sendConfirmText
         })
       });
       const data = await response.json().catch(() => ({}));
@@ -214,6 +248,18 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
     } finally {
       setSendLoading(false);
     }
+  };
+
+  const checkReminderTransport = async (channel: "zalo" | "web_chat") => {
+    setTransportCheckResult("");
+    const response = await fetch("/api/reminder-transports/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel })
+    });
+    const data = await response.json().catch(() => ({}));
+    const check = data.check || {};
+    setTransportCheckResult(`${channel}: ${check.message || data.error || "checked"}${Array.isArray(check.missing) && check.missing.length ? `; missing ${check.missing.join(", ")}` : ""}`);
   };
 
   const visibleAnniversaries = useMemo(() => {
@@ -566,6 +612,56 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
           )}
         </div>
 
+        <div className="rounded-xl border border-emerald-100 bg-emerald-50/20 p-3 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-serif font-bold text-stone-850">Kenh gui nhac viec</h3>
+              <p className="text-[11px] text-stone-500">Gui that dang khoa mac dinh; khong gui nhom va khong tu dong gui.</p>
+            </div>
+            <button
+              type="button"
+              onClick={loadReminderTransportStatus}
+              className="self-start rounded border border-emerald-200 bg-white px-2.5 py-1 text-[11px] font-bold text-emerald-800 hover:bg-emerald-50"
+            >
+              Tai lai trang thai
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div className="rounded-lg border border-emerald-100 bg-white p-3 text-xs space-y-1">
+              <p className="font-bold text-stone-850">Zalo</p>
+              <p>enabled: <strong>{String(Boolean(transportStatus?.zalo.enabled))}</strong></p>
+              <p>mode: <strong>{transportStatus?.zalo.mode || "mock"}</strong></p>
+              <p>configured: <strong>{String(Boolean(transportStatus?.zalo.configured))}</strong></p>
+              <p>canSendReal: <strong>{String(Boolean(transportStatus?.zalo.canSendReal))}</strong></p>
+              <button
+                type="button"
+                onClick={() => checkReminderTransport("zalo")}
+                className="mt-1 rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-900 hover:bg-emerald-100"
+              >
+                Kiem tra cau hinh
+              </button>
+            </div>
+            <div className="rounded-lg border border-emerald-100 bg-white p-3 text-xs space-y-1">
+              <p className="font-bold text-stone-850">Web chat</p>
+              <p>enabled: <strong>{String(Boolean(transportStatus?.webChat.enabled))}</strong></p>
+              <p>configured: <strong>{String(Boolean(transportStatus?.webChat.configured))}</strong></p>
+              <p>rateLimit: <strong>{transportStatus?.rateLimit || 3}/minute</strong></p>
+              <button
+                type="button"
+                onClick={() => checkReminderTransport("web_chat")}
+                className="mt-1 rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-900 hover:bg-emerald-100"
+              >
+                Kiem tra cau hinh
+              </button>
+            </div>
+          </div>
+          {transportCheckResult && (
+            <p className="rounded border border-emerald-100 bg-white px-2 py-1 text-[11px] text-emerald-900">
+              {transportCheckResult}
+            </p>
+          )}
+        </div>
+
         <div className="rounded-xl border border-blue-100 bg-blue-50/20 p-3 space-y-3">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div>
@@ -648,7 +744,7 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
                     <div className="rounded-lg border border-green-100 bg-green-50/40 p-3 space-y-2">
                       <div className="flex flex-col md:flex-row md:items-end gap-2">
                         <div className="space-y-1">
-                          <label className="block text-[10px] font-bold uppercase text-stone-500">Kenh mock</label>
+                          <label className="block text-[10px] font-bold uppercase text-stone-500">Kenh gui</label>
                           <select
                             value={sendChannel}
                             onChange={(event) => setSendChannel(event.target.value as "dashboard" | "zalo" | "web_chat")}
@@ -670,15 +766,36 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
                         </div>
                         <button
                           type="button"
-                          disabled={sendLoading || !sendRecipient.trim()}
+                          disabled={sendLoading || !sendRecipient.trim() || (sendReal && sendConfirmText !== "GUI TEST THAT")}
                           onClick={() => sendDraftTest(draft)}
                           className="rounded bg-green-800 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-green-950 disabled:cursor-not-allowed disabled:opacity-45"
                         >
-                          Gui thu mock
+                          {sendReal ? "Gui that test" : "Gui thu mock"}
                         </button>
                       </div>
+                      {(transportStatus?.zalo.canSendReal || transportStatus?.webChat.canSendReal) ? (
+                        <div className="rounded border border-amber-200 bg-amber-50 px-2 py-2 space-y-2">
+                          <label className="flex items-center gap-2 text-[11px] font-bold text-amber-950">
+                            <input
+                              type="checkbox"
+                              checked={sendReal}
+                              onChange={(event) => setSendReal(event.target.checked)}
+                            />
+                            Gui that cho 1 nguoi nhan test
+                          </label>
+                          {sendReal && (
+                            <input
+                              value={sendConfirmText}
+                              onChange={(event) => setSendConfirmText(event.target.value)}
+                              placeholder="Nhap GUI TEST THAT de xac nhan"
+                              className="w-full rounded border border-amber-200 bg-white px-2 py-1.5 text-[11px] text-stone-800"
+                            />
+                          )}
+                          <p className="text-[10px] text-amber-800">Khong gui nhom. Khong gui hang loat. Khong tu dong gui khi den ngay.</p>
+                        </div>
+                      ) : null}
                       <p className="text-[10px] text-stone-500">
-                        Phase nay chi ghi log mock, khong gui Zalo that va khong co nut gui hang loat.
+                        Mac dinh chi ghi log mock. Gui that chi hien khi backend bat env va da cau hinh hop le.
                       </p>
                       {sendResult && (
                         <p className="rounded border border-green-100 bg-white px-2 py-1 text-[11px] font-semibold text-green-900">
@@ -695,6 +812,7 @@ export default function Events({ events, onAddEvent, onSetActiveTab, onSetAIInit
                             {sendLogs.map((log) => (
                               <div key={log.id} className="rounded border border-green-100 bg-white px-2 py-1 text-[10px] text-stone-600">
                                 <strong className="text-stone-850">{log.status}</strong> · {log.transport} · {log.recipientName || log.recipientId} · {log.sentAt || log.createdAt}
+                                {log.blockedReason ? <span className="text-amber-700"> · {log.blockedReason}</span> : null}
                                 {log.error ? <span className="text-red-700"> · {log.error}</span> : null}
                               </div>
                             ))}

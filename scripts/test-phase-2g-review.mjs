@@ -23,6 +23,11 @@ function putState(database, key, value) {
   `).run(key, JSON.stringify(value));
 }
 
+function ensureColumn(database, tableName, columnName, alterSql) {
+  const columns = database.prepare(`PRAGMA table_info(${tableName})`).all();
+  if (!columns.some((column) => column.name === columnName)) database.exec(alterSql);
+}
+
 function installTempAdminSession() {
   const database = new DatabaseSync(databaseFile);
   database.exec('PRAGMA busy_timeout = 5000');
@@ -228,11 +233,17 @@ function ensurePhase2GSchema(database) {
       transport TEXT NOT NULL DEFAULT 'mock',
       status TEXT NOT NULL DEFAULT 'queued',
       error TEXT NOT NULL DEFAULT '',
+      blocked_reason TEXT NOT NULL DEFAULT '',
+      request_id TEXT NOT NULL DEFAULT '',
+      response_id TEXT NOT NULL DEFAULT '',
       sent_by TEXT NOT NULL DEFAULT '',
       sent_at TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
+  ensureColumn(database, 'reminder_send_logs', 'blocked_reason', "ALTER TABLE reminder_send_logs ADD COLUMN blocked_reason TEXT NOT NULL DEFAULT ''");
+  ensureColumn(database, 'reminder_send_logs', 'request_id', "ALTER TABLE reminder_send_logs ADD COLUMN request_id TEXT NOT NULL DEFAULT ''");
+  ensureColumn(database, 'reminder_send_logs', 'response_id', "ALTER TABLE reminder_send_logs ADD COLUMN response_id TEXT NOT NULL DEFAULT ''");
 }
 
 async function main() {
@@ -601,6 +612,37 @@ async function main() {
       detail: `HTTP ${publicSendTest.response.status}`
     });
 
+    const publicTransportStatus = await fetchJson('/api/reminder-transports/status');
+    results.push({
+      id: 'phase2n-transport-status-public-403',
+      passed: publicTransportStatus.response.status === 403,
+      detail: `HTTP ${publicTransportStatus.response.status}`
+    });
+
+    const adminTransportStatus = await fetchJson('/api/reminder-transports/status', { headers: { Cookie: tempAdmin.cookie } });
+    const transportText = JSON.stringify(adminTransportStatus.data);
+    results.push({
+      id: 'phase2n-transport-status-admin-no-secret',
+      passed: adminTransportStatus.response.ok
+        && adminTransportStatus.data.transports?.zalo?.canSendReal === false
+        && Number(adminTransportStatus.data.transports?.rateLimit || 0) >= 1
+        && !/token|secret|GOCSPX|AIza|access_token/i.test(transportText),
+      detail: JSON.stringify(adminTransportStatus.data.transports || {})
+    });
+
+    const transportCheck = await fetchJson('/api/reminder-transports/check', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ channel: 'zalo' })
+    });
+    results.push({
+      id: 'phase2n-transport-check-zalo',
+      passed: transportCheck.response.ok
+        && transportCheck.data.check?.channel === 'zalo'
+        && transportCheck.data.check?.canSendReal === false,
+      detail: JSON.stringify(transportCheck.data.check || {})
+    });
+
     const missingRecipientSend = draft.id ? await fetchJson(`/api/anniversary-drafts/${encodeURIComponent(draft.id)}/send-test`, {
       method: 'POST',
       headers,
@@ -612,15 +654,45 @@ async function main() {
       detail: `HTTP ${missingRecipientSend.response.status}`
     });
 
-    const realDisabledSend = draft.id ? await fetchJson(`/api/anniversary-drafts/${encodeURIComponent(draft.id)}/send-test`, {
+    const realMissingConfirmSend = draft.id ? await fetchJson(`/api/anniversary-drafts/${encodeURIComponent(draft.id)}/send-test`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ channel: 'zalo', recipientManual: 'admin-test', sendReal: true })
     }) : { response: { ok: false, status: 0 }, data: {} };
     results.push({
+      id: 'phase2n-send-real-requires-confirm',
+      passed: realMissingConfirmSend.response.status === 400,
+      detail: `HTTP ${realMissingConfirmSend.response.status}`
+    });
+
+    const realGroupSend = draft.id ? await fetchJson(`/api/anniversary-drafts/${encodeURIComponent(draft.id)}/send-test`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ channel: 'zalo', recipientType: 'group', recipientManual: 'group-test', sendReal: true, confirmText: 'GUI TEST THAT' })
+    }) : { response: { ok: false, status: 0 }, data: {} };
+    results.push({
+      id: 'phase2n-send-real-blocks-group',
+      passed: realGroupSend.response.status === 400,
+      detail: `HTTP ${realGroupSend.response.status}`
+    });
+
+    const realDisabledSend = draft.id ? await fetchJson(`/api/anniversary-drafts/${encodeURIComponent(draft.id)}/send-test`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ channel: 'zalo', recipientManual: 'admin-test', sendReal: true, confirmText: 'GUI TEST THAT' })
+    }) : { response: { ok: false, status: 0 }, data: {} };
+    results.push({
       id: 'phase2m-send-real-disabled-400',
       passed: realDisabledSend.response.status === 400,
       detail: `HTTP ${realDisabledSend.response.status}`
+    });
+
+    const blockedLogs = await fetchJson('/api/reminder-send-logs?status=blocked&transport=zalo_real&limit=20', { headers: { Cookie: tempAdmin.cookie } });
+    const hasBlockedRealLog = Array.isArray(blockedLogs.data.logs) && blockedLogs.data.logs.some((log) => log.draftId === draft.id && log.status === 'blocked' && log.transport === 'zalo_real');
+    results.push({
+      id: 'phase2n-blocked-real-send-logs',
+      passed: blockedLogs.response.ok && hasBlockedRealLog,
+      detail: `logs ${blockedLogs.data.logs?.length || 0}`
     });
 
     const mockSend = draft.id ? await fetchJson(`/api/anniversary-drafts/${encodeURIComponent(draft.id)}/send-test`, {
