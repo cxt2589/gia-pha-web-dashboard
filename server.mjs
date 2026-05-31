@@ -546,6 +546,40 @@ async function getDatabase() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS zalo_bot_events (
+      id TEXT PRIMARY KEY,
+      event_id TEXT NOT NULL DEFAULT '',
+      channel TEXT NOT NULL DEFAULT 'mock',
+      event_type TEXT NOT NULL DEFAULT 'message',
+      sender_id TEXT NOT NULL DEFAULT '',
+      sender_name TEXT NOT NULL DEFAULT '',
+      group_id TEXT NOT NULL DEFAULT '',
+      message_text TEXT NOT NULL DEFAULT '',
+      normalized_text TEXT NOT NULL DEFAULT '',
+      intent TEXT NOT NULL DEFAULT 'fallback',
+      status TEXT NOT NULL DEFAULT 'received',
+      error TEXT NOT NULL DEFAULT '',
+      raw_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS zalo_bot_replies (
+      id TEXT PRIMARY KEY,
+      event_id TEXT NOT NULL DEFAULT '',
+      channel TEXT NOT NULL DEFAULT 'mock',
+      sender_id TEXT NOT NULL DEFAULT '',
+      sender_name TEXT NOT NULL DEFAULT '',
+      group_id TEXT NOT NULL DEFAULT '',
+      message_text TEXT NOT NULL DEFAULT '',
+      normalized_text TEXT NOT NULL DEFAULT '',
+      intent TEXT NOT NULL DEFAULT 'fallback',
+      reply_text TEXT NOT NULL DEFAULT '',
+      transport TEXT NOT NULL DEFAULT 'zalo_mock',
+      status TEXT NOT NULL DEFAULT 'mock',
+      error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_norm ON knowledge_chunks(content_norm);
     CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm ON entity_aliases(alias_norm);
     CREATE INDEX IF NOT EXISTS idx_entity_aliases_ascii ON entity_aliases(alias_ascii);
@@ -560,6 +594,8 @@ async function getDatabase() {
     CREATE INDEX IF NOT EXISTS idx_anniversary_drafts_updated ON anniversary_event_drafts(updated_at);
     CREATE INDEX IF NOT EXISTS idx_reminder_send_logs_draft ON reminder_send_logs(draft_id);
     CREATE INDEX IF NOT EXISTS idx_reminder_send_logs_created ON reminder_send_logs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_zalo_bot_events_created ON zalo_bot_events(created_at);
+    CREATE INDEX IF NOT EXISTS idx_zalo_bot_replies_created ON zalo_bot_replies(created_at);
   `);
   ensureTableColumn(db, 'knowledge_sources', 'summary', "ALTER TABLE knowledge_sources ADD COLUMN summary TEXT NOT NULL DEFAULT ''");
   ensureTableColumn(db, 'knowledge_sources', 'tags_json', "ALTER TABLE knowledge_sources ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'");
@@ -2606,6 +2642,71 @@ app.get('/api/reminder-test-recipients', async (req, res) => {
   }
 });
 
+app.post('/api/zalo/webhook', async (req, res) => {
+  try {
+    const verification = verifyZaloWebhookRequest(req);
+    if (!verification.ok) {
+      res.status(401).json({ ok: false, error: verification.reason });
+      return;
+    }
+    const result = await processZaloBotEvent(req.body || {}, { source: 'webhook' });
+    res.json({ ok: true, productionReady: verification.productionReady, ...result });
+  } catch (err) {
+    console.error('Failed to process Zalo webhook:', err);
+    res.status(500).json({ ok: false, error: err.message || 'Failed to process Zalo webhook.' });
+  }
+});
+
+app.get('/api/zalo-bot/status', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json(await getZaloBotStatus());
+  } catch (err) {
+    console.error('Failed to read Zalo bot status:', err);
+    res.status(500).json({ error: 'Failed to read Zalo bot status.' });
+  }
+});
+
+app.get('/api/zalo-bot/events', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json({ ok: true, events: await listZaloBotEvents({ limit: req.query.limit }) });
+  } catch (err) {
+    console.error('Failed to list Zalo bot events:', err);
+    res.status(500).json({ error: 'Failed to list Zalo bot events.' });
+  }
+});
+
+app.get('/api/zalo-bot/replies', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json({ ok: true, replies: await listZaloBotReplies({ limit: req.query.limit }) });
+  } catch (err) {
+    console.error('Failed to list Zalo bot replies:', err);
+    res.status(500).json({ error: 'Failed to list Zalo bot replies.' });
+  }
+});
+
+app.post('/api/zalo-bot/mock-message', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const channel = String(req.body?.channel || 'personal').trim().toLowerCase();
+    const payload = {
+      eventId: req.body?.eventId || `mock_${randomToken(8)}`,
+      senderId: req.body?.senderId || 'mock-zalo-user',
+      senderName: req.body?.senderName || 'Mock Zalo User',
+      groupId: channel === 'group' ? String(req.body?.groupId || 'mock-group').trim() : '',
+      messageText: req.body?.messageText || req.body?.text || ''
+    };
+    const result = await processZaloBotEvent(payload, { source: 'mock', adminUser: admin.authUser });
+    res.status(201).json({ ok: true, ...result });
+  } catch (err) {
+    console.error('Failed to process Zalo bot mock message:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to process Zalo bot mock message.' });
+  }
+});
+
 app.patch('/api/anniversary-drafts/:id', async (req, res) => {
   try {
     if (!await requireAdmin(req, res)) return;
@@ -4427,6 +4528,306 @@ async function listReminderSendLogs({ draftId = '', limit = 50, transport = '', 
   sql += ' ORDER BY created_at DESC LIMIT ?';
   params.push(safeLimit);
   return database.prepare(sql).all(...params).map(publicReminderSendLog);
+}
+
+function readZaloBotConfig() {
+  const webhookSecret = String(process.env.ZALO_WEBHOOK_SECRET || '').trim();
+  const sendConfig = readReminderTransportConfig();
+  return {
+    webhookConfigured: Boolean(webhookSecret),
+    allowMockWithoutSecret: !webhookSecret,
+    sendEnabled: sendConfig.zalo.enabled,
+    sendMode: sendConfig.zalo.mode,
+    canReplyReal: false
+  };
+}
+
+function verifyZaloWebhookRequest(req) {
+  const secret = String(process.env.ZALO_WEBHOOK_SECRET || '').trim();
+  if (!secret) return { ok: true, productionReady: false, reason: 'missing_secret_mock_only' };
+  const signature = String(req.headers['x-zalo-signature'] || req.headers['x-hub-signature-256'] || req.headers['x-signature'] || '').trim();
+  if (!signature) return { ok: false, productionReady: true, reason: 'missing_signature' };
+  const payload = JSON.stringify(req.body || {});
+  const digest = crypto.createHmac('sha256', secret).update(payload).digest('hex');
+  const normalizedSignature = signature.replace(/^sha256=/i, '');
+  const expected = Buffer.from(digest, 'hex');
+  const actual = Buffer.from(normalizedSignature, 'hex');
+  if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
+    return { ok: false, productionReady: true, reason: 'invalid_signature' };
+  }
+  return { ok: true, productionReady: true, reason: 'signature_ok' };
+}
+
+function normalizeZaloBotEvent(payload = {}, { source = 'webhook' } = {}) {
+  const eventId = String(payload.eventId || payload.event_id || payload.message_id || payload.msg_id || payload.id || `zalo_evt_${randomToken(10)}`).trim();
+  const eventName = String(payload.eventName || payload.event_name || payload.event || payload.type || '').trim().toLowerCase();
+  const message = payload.message && typeof payload.message === 'object' ? payload.message : {};
+  const sender = payload.sender && typeof payload.sender === 'object' ? payload.sender : payload.user && typeof payload.user === 'object' ? payload.user : {};
+  const recipient = payload.recipient && typeof payload.recipient === 'object' ? payload.recipient : {};
+  const group = payload.group && typeof payload.group === 'object' ? payload.group : {};
+  const text = String(payload.messageText || payload.message_text || payload.text || message.text || payload.content || '').trim();
+  const groupId = String(payload.groupId || payload.group_id || group.id || group.group_id || recipient.group_id || '').trim();
+  const senderId = String(payload.senderId || payload.sender_id || sender.id || sender.user_id || sender.uid || payload.user_id || '').trim();
+  const senderName = String(payload.senderName || payload.sender_name || sender.name || payload.user_name || '').trim();
+  const eventType = /follow/.test(eventName)
+    ? (eventName.includes('unfollow') ? 'unfollow' : 'follow')
+    : text ? 'message' : 'unknown';
+  return {
+    eventId,
+    channel: groupId ? 'group' : source === 'mock' ? 'mock' : 'oa',
+    eventType,
+    senderId,
+    senderName,
+    groupId,
+    messageText: text,
+    normalizedText: normalizeKnowledgeText(text),
+    raw: payload
+  };
+}
+
+function isZaloGroupMessageEligible(event) {
+  if (!event.groupId) return true;
+  const text = String(event.messageText || '').trim();
+  if (/^\/(giapha|gio|tim|ai)(\s|$)/i.test(text)) return true;
+  const mentions = Array.isArray(event.raw?.mentions) ? event.raw.mentions : Array.isArray(event.raw?.message?.mentions) ? event.raw.message.mentions : [];
+  return mentions.some((mention) => /bot|giapha|gia pha|họ cao|ho cao/i.test(String(mention?.name || mention?.text || mention || '')));
+}
+
+function stripZaloBotCommand(text) {
+  return String(text || '').trim().replace(/^\/(giapha|gio|tim|ai)\s*/i, '').trim();
+}
+
+function classifyZaloBotIntent(text) {
+  const norm = normalizeKnowledgeText(text);
+  if (/(kyc|dang nhap|login|xac minh|duyet tai khoan)/.test(norm)) return 'kyc_help';
+  if (/(ngay gio|lich gio|gio cu|gio to|ky nhat|ngay mat|ta the)/.test(norm)) return 'anniversary_lookup';
+  if (/(cao to|thuy to|cu lang|pha he|doi thu|cha me|que quan|mo chi|tim)/.test(norm)) return 'genealogy_lookup';
+  if (/(han nom|kiem chung|tai lieu|nguon goc|lich su|dia danh)/.test(norm)) return 'knowledge_question';
+  return 'fallback';
+}
+
+function isZaloPrivateDetailQuestion(text) {
+  const norm = normalizeKnowledgeText(text);
+  return /(ngay sinh|que quan|mo chi|cha me|vo chong|con cai|dia chi|so dien thoai|thong tin chi tiet|ho so)/.test(norm);
+}
+
+async function getZaloSenderAuthScope(senderId) {
+  const users = await readAuthUsers();
+  const sender = String(senderId || '').trim();
+  const user = users.find((item) => getZaloRecipientIdsFromUser(item).includes(sender));
+  return {
+    user,
+    authScope: getAuthScope(user ? { provider: 'zalo', id: sender, account: `zalo_${sender}` } : null, user)
+  };
+}
+
+function publicZaloBotEvent(row) {
+  return {
+    id: row.id,
+    eventId: row.event_id,
+    channel: row.channel,
+    eventType: row.event_type,
+    senderId: row.sender_id,
+    senderName: row.sender_name,
+    groupId: row.group_id,
+    messageText: row.message_text,
+    normalizedText: row.normalized_text,
+    intent: row.intent,
+    status: row.status,
+    error: row.error,
+    createdAt: row.created_at
+  };
+}
+
+function publicZaloBotReply(row) {
+  return {
+    id: row.id,
+    eventId: row.event_id,
+    channel: row.channel,
+    senderId: row.sender_id,
+    senderName: row.sender_name,
+    groupId: row.group_id,
+    messageText: row.message_text,
+    normalizedText: row.normalized_text,
+    intent: row.intent,
+    replyText: row.reply_text,
+    transport: row.transport,
+    status: row.status,
+    error: row.error,
+    createdAt: row.created_at
+  };
+}
+
+async function insertZaloBotEvent(database, event, { intent = 'fallback', status = 'received', error = '' } = {}) {
+  const id = `zalo_event_${randomToken(12)}`;
+  database.prepare(`
+    INSERT INTO zalo_bot_events (
+      id, event_id, channel, event_type, sender_id, sender_name, group_id,
+      message_text, normalized_text, intent, status, error, raw_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    event.eventId,
+    event.channel,
+    event.eventType,
+    event.senderId,
+    event.senderName,
+    event.groupId,
+    event.messageText,
+    event.normalizedText,
+    intent,
+    status,
+    error,
+    JSON.stringify(event.raw || {}),
+    new Date().toISOString()
+  );
+  return id;
+}
+
+async function insertZaloBotReply(database, event, { eventRowId, intent, replyText = '', transport = 'zalo_mock', status = 'mock', error = '' }) {
+  const id = `zalo_reply_${randomToken(12)}`;
+  database.prepare(`
+    INSERT INTO zalo_bot_replies (
+      id, event_id, channel, sender_id, sender_name, group_id, message_text,
+      normalized_text, intent, reply_text, transport, status, error, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    eventRowId,
+    event.channel,
+    event.senderId,
+    event.senderName,
+    event.groupId,
+    event.messageText,
+    event.normalizedText,
+    intent,
+    replyText,
+    transport,
+    status,
+    error,
+    new Date().toISOString()
+  );
+  return publicZaloBotReply(database.prepare('SELECT * FROM zalo_bot_replies WHERE id = ?').get(id));
+}
+
+function kycHelpText() {
+  return `Thong tin chi tiet can dang nhap va KYC. Vui long mo ${APP_URL}/?auth=zalo de dang nhap, sau do cho admin duyet KYC.`;
+}
+
+async function buildZaloBotAIReply(event, intent, authScope) {
+  if (intent === 'kyc_help') return kycHelpText();
+  if (authScope !== 'kyc_verified' && authScope !== 'admin' && isZaloPrivateDetailQuestion(event.messageText)) {
+    return kycHelpText();
+  }
+  const query = stripZaloBotCommand(event.messageText);
+  const response = await fetch(`http://${HOST}:${PORT}/api/ai/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message: query,
+      type: 'chat',
+      botType: 'zalo_bot',
+      intent,
+      engine: 'local'
+    }),
+    signal: AbortSignal.timeout(12_000)
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `AI gateway failed with HTTP ${response.status}`);
+  return String(data.text || '').trim() || 'Toi chua co du du lieu de tra loi chinh xac.';
+}
+
+async function processZaloBotEvent(payload = {}, { source = 'webhook', adminUser = null } = {}) {
+  const database = await getDatabase();
+  const event = normalizeZaloBotEvent(payload, { source });
+  let intent = classifyZaloBotIntent(stripZaloBotCommand(event.messageText));
+  let eventStatus = 'received';
+  let eventError = '';
+
+  if (event.eventType !== 'message') {
+    eventStatus = 'ignored';
+    eventError = 'non_message_event';
+    const eventRowId = await insertZaloBotEvent(database, event, { intent, status: eventStatus, error: eventError });
+    return { event: publicZaloBotEvent(database.prepare('SELECT * FROM zalo_bot_events WHERE id = ?').get(eventRowId)), reply: null };
+  }
+  if (!event.messageText) {
+    eventStatus = 'ignored';
+    eventError = 'empty_message';
+    const eventRowId = await insertZaloBotEvent(database, event, { intent, status: eventStatus, error: eventError });
+    return { event: publicZaloBotEvent(database.prepare('SELECT * FROM zalo_bot_events WHERE id = ?').get(eventRowId)), reply: null };
+  }
+  if (!isZaloGroupMessageEligible(event)) {
+    eventStatus = 'ignored';
+    eventError = 'group_without_command_or_mention';
+    const eventRowId = await insertZaloBotEvent(database, event, { intent, status: eventStatus, error: eventError });
+    return { event: publicZaloBotEvent(database.prepare('SELECT * FROM zalo_bot_events WHERE id = ?').get(eventRowId)), reply: null };
+  }
+
+  const eventRowId = await insertZaloBotEvent(database, event, { intent, status: 'processing' });
+  try {
+    const { authScope } = await getZaloSenderAuthScope(event.senderId);
+    const replyText = await buildZaloBotAIReply(event, intent, authScope);
+    const config = readZaloBotConfig();
+    const reply = await insertZaloBotReply(database, event, {
+      eventRowId,
+      intent,
+      replyText,
+      transport: config.sendEnabled && config.sendMode === 'real' && config.canReplyReal ? 'zalo_real' : 'zalo_mock',
+      status: config.sendEnabled && config.sendMode === 'real' && config.canReplyReal ? 'blocked' : 'mock',
+      error: config.sendEnabled && config.sendMode === 'real' && config.canReplyReal ? 'real_reply_locked_phase_2p' : ''
+    });
+    database.prepare('UPDATE zalo_bot_events SET status = ?, intent = ? WHERE id = ?').run('replied', intent, eventRowId);
+    return { event: publicZaloBotEvent(database.prepare('SELECT * FROM zalo_bot_events WHERE id = ?').get(eventRowId)), reply };
+  } catch (err) {
+    database.prepare('UPDATE zalo_bot_events SET status = ?, error = ? WHERE id = ?').run('error', err.message || 'zalo_bot_error', eventRowId);
+    const reply = await insertZaloBotReply(database, event, {
+      eventRowId,
+      intent,
+      replyText: '',
+      transport: 'zalo_mock',
+      status: 'error',
+      error: err.message || 'zalo_bot_error'
+    });
+    return { event: publicZaloBotEvent(database.prepare('SELECT * FROM zalo_bot_events WHERE id = ?').get(eventRowId)), reply };
+  }
+}
+
+async function getZaloBotStatus() {
+  const database = await getDatabase();
+  const config = readZaloBotConfig();
+  const counts = database.prepare(`
+    SELECT
+      COUNT(*) AS totalEvents,
+      SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END) AS ignoredCount,
+      SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errorCount,
+      MAX(created_at) AS lastEventAt
+    FROM zalo_bot_events
+  `).get();
+  const replies = database.prepare('SELECT COUNT(*) AS totalReplies FROM zalo_bot_replies').get();
+  return {
+    ok: true,
+    webhookConfigured: config.webhookConfigured,
+    sendEnabled: config.sendEnabled,
+    sendMode: config.sendMode,
+    canReplyReal: false,
+    totalEvents: Number(counts?.totalEvents || 0),
+    totalReplies: Number(replies?.totalReplies || 0),
+    ignoredCount: Number(counts?.ignoredCount || 0),
+    errorCount: Number(counts?.errorCount || 0),
+    lastEventAt: counts?.lastEventAt || ''
+  };
+}
+
+async function listZaloBotEvents({ limit = 50 } = {}) {
+  const database = await getDatabase();
+  const safeLimit = Math.max(1, Math.min(200, Number(limit) || 50));
+  return database.prepare('SELECT * FROM zalo_bot_events ORDER BY created_at DESC LIMIT ?').all(safeLimit).map(publicZaloBotEvent);
+}
+
+async function listZaloBotReplies({ limit = 50 } = {}) {
+  const database = await getDatabase();
+  const safeLimit = Math.max(1, Math.min(200, Number(limit) || 50));
+  return database.prepare('SELECT * FROM zalo_bot_replies ORDER BY created_at DESC LIMIT ?').all(safeLimit).map(publicZaloBotReply);
 }
 
 async function buildLocalAIResponse(req, message) {

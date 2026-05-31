@@ -130,6 +130,50 @@ type AIRequestLogSummary = {
   estimatedTokens: number;
 };
 
+type ZaloBotStatus = {
+  ok?: boolean;
+  webhookConfigured: boolean;
+  sendEnabled: boolean;
+  sendMode: string;
+  canReplyReal: boolean;
+  totalEvents: number;
+  totalReplies: number;
+  ignoredCount: number;
+  errorCount: number;
+  lastEventAt?: string;
+};
+
+type ZaloBotEvent = {
+  id: string;
+  eventId: string;
+  channel: string;
+  eventType: string;
+  senderId: string;
+  senderName: string;
+  groupId: string;
+  messageText: string;
+  intent: string;
+  status: string;
+  error?: string;
+  createdAt: string;
+};
+
+type ZaloBotReply = {
+  id: string;
+  eventId: string;
+  channel: string;
+  senderId: string;
+  senderName: string;
+  groupId: string;
+  messageText: string;
+  intent: string;
+  replyText: string;
+  transport: string;
+  status: string;
+  error?: string;
+  createdAt: string;
+};
+
 type AIEvalCase = {
   id: string;
   question: string;
@@ -387,6 +431,15 @@ export default function AIGovernor({
   const [appliedExtractionNote, setAppliedExtractionNote] = useState("");
   const [appliedExtractionFilter, setAppliedExtractionFilter] = useState("");
   const [appliedExtractionFieldFilter, setAppliedExtractionFieldFilter] = useState("");
+  const [zaloBotStatus, setZaloBotStatus] = useState<ZaloBotStatus | null>(null);
+  const [zaloBotEvents, setZaloBotEvents] = useState<ZaloBotEvent[]>([]);
+  const [zaloBotReplies, setZaloBotReplies] = useState<ZaloBotReply[]>([]);
+  const [zaloBotNote, setZaloBotNote] = useState("");
+  const [isZaloBotLoading, setIsZaloBotLoading] = useState(false);
+  const [zaloMockChannel, setZaloMockChannel] = useState<"personal" | "group">("personal");
+  const [zaloMockSenderId, setZaloMockSenderId] = useState("admin-test");
+  const [zaloMockGroupId, setZaloMockGroupId] = useState("group-test");
+  const [zaloMockMessage, setZaloMockMessage] = useState("Cao Tổ là ai?");
 
   const auditItems = useMemo<AuditItem[]>(() => {
     const items: AuditItem[] = [];
@@ -844,12 +897,67 @@ export default function AIGovernor({
     }
   };
 
+  const loadZaloBotPanel = async () => {
+    setIsZaloBotLoading(true);
+    try {
+      const [statusResponse, eventsResponse, repliesResponse] = await Promise.all([
+        fetch("/api/zalo-bot/status"),
+        fetch("/api/zalo-bot/events?limit=12"),
+        fetch("/api/zalo-bot/replies?limit=12")
+      ]);
+      if (statusResponse.ok) setZaloBotStatus(await statusResponse.json());
+      if (eventsResponse.ok) {
+        const data = await eventsResponse.json();
+        setZaloBotEvents(Array.isArray(data.events) ? data.events : []);
+      }
+      if (repliesResponse.ok) {
+        const data = await repliesResponse.json();
+        setZaloBotReplies(Array.isArray(data.replies) ? data.replies : []);
+      }
+      if (!statusResponse.ok || !eventsResponse.ok || !repliesResponse.ok) {
+        setZaloBotNote("Chua doc duoc Zalo Bot. Tai khoan hien tai co the chua co quyen admin.");
+      } else {
+        setZaloBotNote("");
+      }
+    } catch (err: any) {
+      setZaloBotNote(`Khong doc duoc Zalo Bot: ${err?.message || "loi khong xac dinh"}`);
+    } finally {
+      setIsZaloBotLoading(false);
+    }
+  };
+
+  const sendZaloMockMessage = async () => {
+    setIsZaloBotLoading(true);
+    setZaloBotNote("");
+    try {
+      const response = await fetch("/api/zalo-bot/mock-message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channel: zaloMockChannel,
+          senderId: zaloMockSenderId,
+          groupId: zaloMockGroupId,
+          messageText: zaloMockMessage
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Khong gui duoc mock message.");
+      setZaloBotNote(data.reply?.replyText ? `Mock reply: ${data.reply.replyText.slice(0, 180)}` : `Mock event ${data.event?.status || "received"}.`);
+      await loadZaloBotPanel();
+    } catch (err: any) {
+      setZaloBotNote(`Loi mock Zalo Bot: ${err?.message || "khong xac dinh"}`);
+    } finally {
+      setIsZaloBotLoading(false);
+    }
+  };
+
   useEffect(() => {
     void loadKnowledgeBackend();
     void loadExtractedCandidates();
     void loadAppliedExtractions();
     void loadAIRequestLogs();
     void loadAIEvalCases();
+    void loadZaloBotPanel();
   }, []);
 
   const handleScanWholeSystem = async () => {
@@ -2026,6 +2134,121 @@ export default function AIGovernor({
 
       {activeMode === "channels" && (
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+          <section className="xl:col-span-12 rounded-xl border border-emerald-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <h3 className="flex items-center gap-2 font-serif text-lg font-bold text-red-950">
+                  <MessageSquare className="h-5 w-5 text-emerald-700" />
+                  Zalo Bot an toan
+                </h3>
+                <p className="mt-1 text-xs leading-relaxed text-stone-500">
+                  Chi phan hoi khi co tuong tac hop le. Khong broadcast, khong gui lich tu dong, khong goi Zalo real khi send mode dang khoa.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void loadZaloBotPanel()}
+                disabled={isZaloBotLoading}
+                className="inline-flex items-center gap-2 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-900 hover:bg-emerald-100 disabled:opacity-60"
+              >
+                <RefreshCw className={`h-4 w-4 ${isZaloBotLoading ? "animate-spin" : ""}`} />
+                Tai lai Zalo Bot
+              </button>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8">
+              {[
+                ["Webhook", zaloBotStatus?.webhookConfigured ? "configured" : "mock/dev"],
+                ["Send", `${zaloBotStatus?.sendMode || "mock"}`],
+                ["Real reply", String(Boolean(zaloBotStatus?.canReplyReal))],
+                ["Events", formatNumber(zaloBotStatus?.totalEvents || 0)],
+                ["Replies", formatNumber(zaloBotStatus?.totalReplies || 0)],
+                ["Ignored", formatNumber(zaloBotStatus?.ignoredCount || 0)],
+                ["Errors", formatNumber(zaloBotStatus?.errorCount || 0)],
+                ["Last", zaloBotStatus?.lastEventAt ? new Date(zaloBotStatus.lastEventAt).toLocaleString("vi-VN") : "-"]
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-lg border border-stone-200 bg-stone-50 px-3 py-2">
+                  <p className="text-[10px] font-bold uppercase text-stone-500">{label}</p>
+                  <p className="mt-1 break-words text-xs font-bold text-stone-850">{value}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-12">
+              <div className="xl:col-span-4 rounded-lg border border-stone-200 bg-[#fbfaf6] p-3">
+                <p className="text-xs font-bold text-stone-850">Test mock message</p>
+                <div className="mt-2 grid grid-cols-1 gap-2 text-xs">
+                  <select
+                    value={zaloMockChannel}
+                    onChange={(event) => setZaloMockChannel(event.target.value as "personal" | "group")}
+                    className="rounded border border-stone-200 bg-white px-2 py-1.5"
+                  >
+                    <option value="personal">personal</option>
+                    <option value="group">group</option>
+                  </select>
+                  <input
+                    value={zaloMockSenderId}
+                    onChange={(event) => setZaloMockSenderId(event.target.value)}
+                    className="rounded border border-stone-200 bg-white px-2 py-1.5"
+                    placeholder="senderId"
+                  />
+                  {zaloMockChannel === "group" && (
+                    <input
+                      value={zaloMockGroupId}
+                      onChange={(event) => setZaloMockGroupId(event.target.value)}
+                      className="rounded border border-stone-200 bg-white px-2 py-1.5"
+                      placeholder="groupId"
+                    />
+                  )}
+                  <textarea
+                    value={zaloMockMessage}
+                    onChange={(event) => setZaloMockMessage(event.target.value)}
+                    rows={4}
+                    className="rounded border border-stone-200 bg-white px-2 py-1.5"
+                    placeholder="/giapha Cao To la ai"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void sendZaloMockMessage()}
+                    disabled={isZaloBotLoading || !zaloMockMessage.trim()}
+                    className="inline-flex items-center justify-center gap-2 rounded bg-red-900 px-3 py-2 text-xs font-bold text-white hover:bg-red-950 disabled:opacity-60"
+                  >
+                    <Send className="h-4 w-4" />
+                    Gui mock
+                  </button>
+                </div>
+                {zaloBotNote && <p className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">{zaloBotNote}</p>}
+              </div>
+
+              <div className="xl:col-span-4 rounded-lg border border-stone-200 bg-white p-3">
+                <p className="text-xs font-bold text-stone-850">Event gan day</p>
+                <div className="mt-2 max-h-64 space-y-2 overflow-y-auto">
+                  {zaloBotEvents.map((event) => (
+                    <div key={event.id} className="rounded border border-stone-100 bg-stone-50 px-2 py-1.5 text-[11px] text-stone-700">
+                      <p><strong>{event.status}</strong> · {event.channel} · {event.intent}</p>
+                      <p className="truncate">{event.senderName || event.senderId}: {event.messageText || event.eventType}</p>
+                      {event.error ? <p className="text-amber-700">{event.error}</p> : null}
+                    </div>
+                  ))}
+                  {!zaloBotEvents.length && <p className="text-xs text-stone-500">Chua co event.</p>}
+                </div>
+              </div>
+
+              <div className="xl:col-span-4 rounded-lg border border-stone-200 bg-white p-3">
+                <p className="text-xs font-bold text-stone-850">Reply gan day</p>
+                <div className="mt-2 max-h-64 space-y-2 overflow-y-auto">
+                  {zaloBotReplies.map((reply) => (
+                    <div key={reply.id} className="rounded border border-stone-100 bg-stone-50 px-2 py-1.5 text-[11px] text-stone-700">
+                      <p><strong>{reply.status}</strong> · {reply.transport} · {reply.intent}</p>
+                      <p className="line-clamp-3">{reply.replyText || reply.error || "No reply text"}</p>
+                    </div>
+                  ))}
+                  {!zaloBotReplies.length && <p className="text-xs text-stone-500">Chua co reply.</p>}
+                </div>
+              </div>
+            </div>
+          </section>
+
           <section className="xl:col-span-5 rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
             <h3 className="mb-3 flex items-center gap-2 font-serif text-lg font-bold text-red-950">
               <MessageSquare className="h-5 w-5 text-amber-700" />

@@ -17,6 +17,7 @@
     "test:ai-quality": "node scripts/run-ai-quality-checks.mjs",
     "test:ai-quality:phase2e": "node scripts/ai-quality-check-phase-2e.mjs",
     "test:phase2g-review": "node scripts/test-phase-2g-review.mjs",
+    "test:phase2p-zalo-bot": "node scripts/test-phase-2p-zalo-bot.mjs",
     "import:cao-toc-txt": "node scripts/import-cao-toc-txt-knowledge.mjs",
     "import:cao-toc-04": "node scripts/import-cao-toc-04-anniversaries.mjs",
     "test:lineage-display": "tsx scripts/test-lineage-display.ts",
