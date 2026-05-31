@@ -502,6 +502,8 @@ export default function AIGovernor({
   const [isAiBotConfigsLoading, setIsAiBotConfigsLoading] = useState(false);
   const [aiBotConfigNote, setAiBotConfigNote] = useState("");
   const [selectedOperationNodeId, setSelectedOperationNodeId] = useState("ai_gateway");
+  const [isOperationDetailOpen, setIsOperationDetailOpen] = useState(false);
+  const [isOperationGraphExpanded, setIsOperationGraphExpanded] = useState(false);
   const [zaloBotStatus, setZaloBotStatus] = useState<ZaloBotStatus | null>(null);
   const [zaloWebhookStatus, setZaloWebhookStatus] = useState<ZaloWebhookStatus | null>(null);
   const [zaloBotEvents, setZaloBotEvents] = useState<ZaloBotEvent[]>([]);
@@ -1516,10 +1518,6 @@ export default function AIGovernor({
 
   const selectedOperationNode =
     aiOperationGraph.nodes.find((node) => node.id === selectedOperationNodeId) || aiOperationGraph.nodes[0];
-  const operationColumns = [1, 2, 3, 4, 5, 6].map((column) => ({
-    column,
-    nodes: aiOperationGraph.nodes.filter((node) => node.column === column).sort((a, b) => a.row - b.row)
-  }));
   const statusLabel: Record<AIOperationGraphNodeStatus, string> = {
     active: "Đang chạy",
     paused: "Tạm dừng",
@@ -1542,6 +1540,40 @@ export default function AIGovernor({
     guard: "Guard",
     logs: "Log"
   };
+  const graphCanvas = { width: 1360, height: 560, nodeWidth: 172, nodeHeight: 76 };
+  const getOperationNodePosition = (node: AIOperationGraphNode) => ({
+    x: 32 + (node.column - 1) * 220,
+    y: 24 + (node.row - 1) * 80
+  });
+  const operationGraphEdges = aiOperationGraph.edges.map((edge) => {
+    const fromNode = aiOperationGraph.nodes.find((node) => node.id === edge.from);
+    const toNode = aiOperationGraph.nodes.find((node) => node.id === edge.to);
+    if (!fromNode || !toNode) return null;
+    const from = getOperationNodePosition(fromNode);
+    const to = getOperationNodePosition(toNode);
+    const startX = from.x + graphCanvas.nodeWidth;
+    const startY = from.y + graphCanvas.nodeHeight / 2;
+    const endX = to.x;
+    const endY = to.y + graphCanvas.nodeHeight / 2;
+    const middle = Math.max(42, Math.abs(endX - startX) * 0.48);
+    return {
+      ...edge,
+      fromNode,
+      toNode,
+      path: `M ${startX} ${startY} C ${startX + middle} ${startY}, ${endX - middle} ${endY}, ${endX - 8} ${endY}`,
+      labelX: (startX + endX) / 2,
+      labelY: (startY + endY) / 2
+    };
+  }).filter(Boolean) as Array<AIOperationGraphEdge & {
+    fromNode: AIOperationGraphNode;
+    toNode: AIOperationGraphNode;
+    path: string;
+    labelX: number;
+    labelY: number;
+  }>;
+  const operationShellClass = isOperationGraphExpanded
+    ? "fixed inset-4 z-50 overflow-hidden rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl"
+    : "rounded-xl border border-stone-200 bg-white p-5 shadow-sm";
 
   return (
     <div className="space-y-5 text-stone-850">
@@ -1844,8 +1876,8 @@ export default function AIGovernor({
       )}
 
       {activeMode === "operations" && (
-        <div className="space-y-5">
-          <section className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
+        <div className={isOperationGraphExpanded ? "fixed inset-0 z-40 bg-stone-950/30 p-4" : "space-y-5"}>
+          <section className={operationShellClass}>
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <h3 className="flex items-center gap-2 font-serif text-xl font-bold text-red-950">
@@ -1862,58 +1894,175 @@ export default function AIGovernor({
                     {label}
                   </span>
                 ))}
+                <button
+                  type="button"
+                  onClick={() => setIsOperationGraphExpanded((value) => !value)}
+                  className="rounded-full border border-red-200 bg-red-50 px-3 py-1 font-bold text-red-950 hover:bg-red-100"
+                >
+                  {isOperationGraphExpanded ? "Thu gọn" : "Mở rộng ngang"}
+                </button>
               </div>
             </div>
 
-            <div className="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
-              <div className="overflow-x-auto rounded-xl border border-stone-200 bg-[#fbfaf6] p-4">
-                <div className="grid min-w-[1080px] grid-cols-[1.35fr_1fr_1fr_1.2fr_0.9fr_1fr] gap-3">
-                  {operationColumns.map((column, columnIndex) => (
-                    <div key={column.column} className="relative space-y-3">
-                      {columnIndex > 0 && (
-                        <div className="absolute -left-3 top-1/2 hidden h-px w-3 bg-amber-300 xl:block" />
-                      )}
-                      {column.nodes.map((node) => {
-                        const isSelected = selectedOperationNode.id === node.id;
-                        return (
-                          <button
-                            key={node.id}
-                            type="button"
-                            onClick={() => setSelectedOperationNodeId(node.id)}
-                            className={`w-full rounded-xl border p-3 text-left text-xs shadow-sm transition hover:-translate-y-0.5 hover:border-amber-300 hover:shadow-md ${
-                              isSelected ? "border-red-300 bg-white ring-2 ring-red-100" : "border-stone-200 bg-white"
-                            }`}
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <div>
-                                <span className="block text-[10px] font-black uppercase tracking-wide text-amber-700">
-                                  {nodeTypeLabel[node.type]}
-                                </span>
-                                <strong className="mt-1 block text-sm text-red-950">{node.label}</strong>
-                              </div>
-                              <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-bold ${statusClass[node.status]}`}>
-                                {statusLabel[node.status]}
-                              </span>
-                            </div>
-                            <p className="mt-2 line-clamp-3 leading-relaxed text-stone-500">{node.description}</p>
-                            {node.metrics && (
-                              <div className="mt-3 flex flex-wrap gap-1.5">
-                                {Object.entries(node.metrics).slice(0, 3).map(([key, value]) => (
-                                  <span key={key} className="rounded bg-stone-100 px-2 py-1 text-[10px] font-semibold text-stone-600">
-                                    {key}: {String(value)}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ))}
+            <div className="mt-5">
+              <div className={`rounded-xl border border-stone-200 bg-[#fbfaf6] ${isOperationGraphExpanded ? "h-[calc(100vh-180px)]" : "max-h-[680px]"} overflow-auto p-3`}>
+                <div
+                  className="relative"
+                  style={{ width: graphCanvas.width, height: graphCanvas.height }}
+                >
+                  <svg
+                    className="pointer-events-none absolute inset-0"
+                    width={graphCanvas.width}
+                    height={graphCanvas.height}
+                    viewBox={`0 0 ${graphCanvas.width} ${graphCanvas.height}`}
+                    aria-hidden="true"
+                  >
+                    <defs>
+                      <marker id="ai-flow-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+                        <path d="M 0 0 L 10 5 L 0 10 z" fill="#b45309" />
+                      </marker>
+                    </defs>
+                    {operationGraphEdges.map((edge) => {
+                      const isRelated = edge.from === selectedOperationNode.id || edge.to === selectedOperationNode.id;
+                      return (
+                        <g key={`${edge.from}-${edge.to}-${edge.label || ""}`}>
+                          <path
+                            d={edge.path}
+                            fill="none"
+                            stroke={isRelated ? "#991b1b" : "#d6a646"}
+                            strokeWidth={isRelated ? 2.6 : 1.6}
+                            strokeDasharray={edge.from === "zalo_bot" ? "5 5" : undefined}
+                            markerEnd="url(#ai-flow-arrow)"
+                          />
+                          {edge.label && (
+                            <text
+                              x={edge.labelX}
+                              y={edge.labelY - 6}
+                              textAnchor="middle"
+                              className="fill-stone-500 text-[10px] font-bold"
+                            >
+                              {edge.label}
+                            </text>
+                          )}
+                        </g>
+                      );
+                    })}
+                  </svg>
+
+                  {aiOperationGraph.nodes.map((node) => {
+                    const pos = getOperationNodePosition(node);
+                    const isSelected = selectedOperationNode.id === node.id;
+                    const primaryMetric = node.metrics ? Object.entries(node.metrics)[0] : null;
+                    return (
+                      <button
+                        key={node.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedOperationNodeId(node.id);
+                          setIsOperationDetailOpen(true);
+                        }}
+                        className={`absolute rounded-xl border bg-white p-3 text-left text-xs shadow-sm transition hover:-translate-y-0.5 hover:border-amber-300 hover:shadow-md ${
+                          isSelected ? "border-red-300 ring-2 ring-red-100" : "border-stone-200"
+                        }`}
+                        style={{
+                          left: pos.x,
+                          top: pos.y,
+                          width: graphCanvas.nodeWidth,
+                          height: graphCanvas.nodeHeight
+                        }}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <span className="text-[9px] font-black uppercase tracking-wide text-amber-700">{nodeTypeLabel[node.type]}</span>
+                          <span className={`h-2.5 w-2.5 shrink-0 rounded-full border ${
+                            node.status === "active" ? "border-emerald-500 bg-emerald-400" :
+                            node.status === "paused" ? "border-amber-500 bg-amber-400" :
+                            node.status === "error" ? "border-red-500 bg-red-400" :
+                            "border-stone-400 bg-stone-300"
+                          }`} />
+                        </div>
+                        <strong className="mt-1 block line-clamp-2 text-[13px] leading-snug text-red-950">{node.label}</strong>
+                        {primaryMetric && (
+                          <span className="mt-2 inline-flex max-w-full rounded bg-stone-100 px-2 py-1 text-[10px] font-semibold text-stone-600">
+                            <span className="truncate">{primaryMetric[0]}: {String(primaryMetric[1])}</span>
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
-              <aside className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
+              {isOperationDetailOpen && (
+                <div
+                  className="fixed inset-0 z-[70] flex items-center justify-center bg-stone-950/40 p-4"
+                  role="dialog"
+                  aria-modal="true"
+                  onClick={() => setIsOperationDetailOpen(false)}
+                >
+                  <div
+                    className="max-h-[88vh] w-full max-w-2xl overflow-auto rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <span className="text-[10px] font-black uppercase tracking-wide text-amber-700">
+                          {nodeTypeLabel[selectedOperationNode.type]}
+                        </span>
+                        <h4 className="mt-1 font-serif text-2xl font-bold text-red-950">{selectedOperationNode.label}</h4>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsOperationDetailOpen(false)}
+                        className="rounded-full border border-stone-200 px-3 py-1 text-xs font-bold text-stone-600 hover:bg-stone-50"
+                      >
+                        Đóng
+                      </button>
+                    </div>
+                    <span className={`mt-3 inline-flex rounded-full border px-2.5 py-1 text-[11px] font-bold ${statusClass[selectedOperationNode.status]}`}>
+                      {statusLabel[selectedOperationNode.status]}
+                    </span>
+                    <p className="mt-4 text-sm leading-relaxed text-stone-600">{selectedOperationNode.description}</p>
+
+                    {selectedOperationNode.metrics && (
+                      <div className="mt-4 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+                        {Object.entries(selectedOperationNode.metrics).map(([key, value]) => (
+                          <p key={key} className="rounded-lg bg-stone-50 p-3">
+                            <span className="block text-[10px] font-bold uppercase text-stone-400">{key}</span>
+                            <strong className="mt-1 block break-words text-red-950">{String(value)}</strong>
+                          </p>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="mt-5 border-t border-stone-100 pt-4">
+                      <p className="text-[10px] font-black uppercase tracking-wide text-stone-400">Đường nối liên quan</p>
+                      <div className="mt-2 space-y-2 text-xs">
+                        {aiOperationGraph.edges
+                          .filter((edge) => edge.from === selectedOperationNode.id || edge.to === selectedOperationNode.id)
+                          .map((edge) => {
+                            const fromNode = aiOperationGraph.nodes.find((node) => node.id === edge.from);
+                            const toNode = aiOperationGraph.nodes.find((node) => node.id === edge.to);
+                            return (
+                              <button
+                                key={`${edge.from}-${edge.to}-${edge.label || ""}`}
+                                type="button"
+                                onClick={() => setSelectedOperationNodeId(edge.to === selectedOperationNode.id ? edge.from : edge.to)}
+                                className="w-full rounded-lg border border-stone-200 bg-[#fbfaf6] px-3 py-2 text-left hover:border-amber-300 hover:bg-amber-50"
+                              >
+                                <span className="font-bold text-red-950">{fromNode?.label || edge.from}</span>
+                                <span className="px-2 text-amber-700">→</span>
+                                <span className="font-bold text-red-950">{toNode?.label || edge.to}</span>
+                                {edge.label && <span className="ml-2 text-stone-500">({edge.label})</span>}
+                              </button>
+                            );
+                          })}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <aside className="hidden">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <span className="text-[10px] font-black uppercase tracking-wide text-amber-700">
