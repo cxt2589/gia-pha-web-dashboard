@@ -136,8 +136,8 @@ function insertTempCandidate(database, candidateId, memberId) {
     'Cao Đình Kiểm Thử Phase 2G',
     'cao dinh kiem thu phase 2g',
     'test',
-    '',
-    '',
+    '01/02/1901',
+    '03/04/1970',
     '',
     'Ngay mung 9 thang Chin',
     'Que quan test',
@@ -268,16 +268,62 @@ async function main() {
     const apply = await fetchJson(`/api/knowledge/extracted-anniversaries/${candidateId}/apply`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ memberId, fieldTypes: ['lunar_anniversary'] })
+      body: JSON.stringify({ memberId })
     });
     const checkDb = new DatabaseSync(databaseFile);
     const appliedTree = getState(checkDb, 'lineage-tree', null);
     const appliedText = JSON.stringify(appliedTree);
     checkDb.close();
+    const appliedFields = Array.isArray(apply.data.changes) ? apply.data.changes.map((item) => item.lineageField) : [];
     results.push({
       id: 'apply-writes-member',
-      passed: apply.response.ok && appliedText.includes('Ngay mung 9 thang Chin'),
+      passed: apply.response.ok
+        && appliedText.includes('Ngay mung 9 thang Chin')
+        && appliedFields.includes('deathAnniversaryLunar')
+        && (appliedFields.includes('solarBirthDate') || appliedFields.includes('birthYear'))
+        && (appliedFields.includes('graveLocation') || appliedFields.includes('burialPlace')),
       detail: `HTTP ${apply.response.status}`
+    });
+
+    const treeProfile = await fetchJson('/api/tree');
+    const treeText = JSON.stringify(treeProfile.data || {});
+    results.push({
+      id: 'tree-profile-has-applied-fields',
+      passed: treeProfile.response.ok
+        && treeText.includes('solarBirthDate')
+        && treeText.includes('solarDeathDate')
+        && treeText.includes('burialPlace')
+        && treeText.includes('Mo chi test'),
+      detail: `HTTP ${treeProfile.response.status}`
+    });
+
+    const appliedPublic = await fetchJson('/api/knowledge/applied-extractions?limit=5');
+    results.push({
+      id: 'applied-extractions-public-403',
+      passed: appliedPublic.response.status === 403,
+      detail: `HTTP ${appliedPublic.response.status}`
+    });
+
+    const appliedList = await fetchJson('/api/knowledge/applied-extractions?q=Kiem%20Thu&limit=20', { headers: { Cookie: tempAdmin.cookie } });
+    const appliedItems = Array.isArray(appliedList.data.appliedExtractions) ? appliedList.data.appliedExtractions : [];
+    const anniversaryAudit = appliedItems.find((item) => item.candidateId === candidateId && item.field === 'deathAnniversaryLunar');
+    results.push({
+      id: 'applied-extractions-admin-list',
+      passed: appliedList.response.ok && Boolean(anniversaryAudit) && anniversaryAudit.newValue === 'Ngay mung 9 thang Chin',
+      detail: `items ${appliedItems.length}`
+    });
+
+    const appliedDetail = anniversaryAudit
+      ? await fetchJson(`/api/knowledge/applied-extractions/${encodeURIComponent(anniversaryAudit.id)}`, { headers: { Cookie: tempAdmin.cookie } })
+      : { response: { ok: false, status: 0 }, data: {} };
+    results.push({
+      id: 'applied-extraction-detail-audit',
+      passed: appliedDetail.response.ok
+        && appliedDetail.data.appliedExtraction?.oldValue === ''
+        && appliedDetail.data.appliedExtraction?.newValue === 'Ngay mung 9 thang Chin'
+        && appliedDetail.data.appliedExtraction?.sourceId === 'source_phase2g_test'
+        && appliedDetail.data.appliedExtraction?.chunkId === 'chunk_phase2g_test',
+      detail: `HTTP ${appliedDetail.response.status}`
     });
 
     const appliedQuestion = await fetchJson('/api/ai/chat', {

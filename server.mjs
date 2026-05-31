@@ -515,6 +515,7 @@ async function getDatabase() {
     CREATE INDEX IF NOT EXISTS idx_extracted_ann_source ON extracted_anniversary_candidates(source_id);
     CREATE INDEX IF NOT EXISTS idx_extracted_ann_status ON extracted_anniversary_candidates(status);
     CREATE INDEX IF NOT EXISTS idx_extracted_ann_audit_candidate ON extracted_anniversary_audit_logs(candidate_id);
+    CREATE INDEX IF NOT EXISTS idx_extracted_ann_audit_created ON extracted_anniversary_audit_logs(created_at);
   `);
   ensureTableColumn(db, 'knowledge_sources', 'summary', "ALTER TABLE knowledge_sources ADD COLUMN summary TEXT NOT NULL DEFAULT ''");
   ensureTableColumn(db, 'knowledge_sources', 'tags_json', "ALTER TABLE knowledge_sources ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'");
@@ -1339,11 +1340,11 @@ function publicLineageMemberSearchResult(member, score = 0, confidence = 'none',
     score,
     reason,
     currentValues: {
-      birth: member.birthYear || member.solarBirthDate || '',
-      death: member.deathYear || member.solarDeathDate || '',
-      lunar_anniversary: member.deathAnniversaryLunar || '',
+      birth: member.solarBirthDate || member.birthYear || '',
+      death: member.solarDeathDate || member.deathYear || '',
+      lunar_anniversary: member.deathAnniversaryLunar || member.lunarAnniversary || '',
       hometown: member.birthPlace || member.residence || '',
-      grave: member.graveLocation || ''
+      grave: member.graveLocation || member.burialPlace || ''
     }
   };
 }
@@ -1590,9 +1591,9 @@ function getLineageNodeById(node, memberId) {
 function mapExtractedFieldToLineageFields(fieldType) {
   switch (fieldType) {
     case 'birth':
-      return ['birthYear'];
+      return ['solarBirthDate', 'birthYear'];
     case 'death':
-      return ['deathYear'];
+      return ['solarDeathDate', 'deathYear'];
     case 'lunar_anniversary':
     case 'anniversary':
       return ['deathAnniversaryLunar', 'lunarAnniversary'];
@@ -1600,7 +1601,50 @@ function mapExtractedFieldToLineageFields(fieldType) {
       return ['birthPlace'];
     case 'grave':
     case 'tomb_note':
-      return ['graveLocation'];
+      return ['graveLocation', 'burialPlace'];
+    default:
+      return [];
+  }
+}
+
+function extractYearFromText(value) {
+  const match = String(value || '').match(/\b(1[5-9]\d{2}|20\d{2}|21\d{2})\b/);
+  return match ? match[1] : '';
+}
+
+function isFullSolarDate(value) {
+  return /\b\d{1,2}[/-]\d{1,2}[/-]\d{3,4}\b/.test(String(value || ''));
+}
+
+function buildLineageFieldUpdates(fieldType, value) {
+  const text = String(value || '').trim();
+  if (!text) return [];
+  const year = extractYearFromText(text);
+  switch (fieldType) {
+    case 'birth':
+      return [
+        ...(isFullSolarDate(text) ? [{ field: 'solarBirthDate', value: text }] : []),
+        { field: 'birthYear', value: year || text }
+      ];
+    case 'death':
+      return [
+        ...(isFullSolarDate(text) ? [{ field: 'solarDeathDate', value: text }] : []),
+        { field: 'deathYear', value: year || text }
+      ];
+    case 'lunar_anniversary':
+    case 'anniversary':
+      return [
+        { field: 'deathAnniversaryLunar', value: text },
+        { field: 'lunarAnniversary', value: text }
+      ];
+    case 'hometown':
+      return [{ field: 'birthPlace', value: text }];
+    case 'grave':
+    case 'tomb_note':
+      return [
+        { field: 'graveLocation', value: text },
+        { field: 'burialPlace', value: text }
+      ];
     default:
       return [];
   }
@@ -1644,28 +1688,30 @@ async function applyExtractedAnniversaryCandidate(id, body = {}, adminUser = {})
   const requestedTypes = Array.isArray(body.fieldTypes) && body.fieldTypes.length
     ? body.fieldTypes.map((item) => String(item))
     : getExtractedAnniversaryFields(row).map((field) => field.type);
-  const force = body.force === true;
+  const force = body.force === true || body.confirmOverwrite === true;
   const changes = [];
   const conflicts = [];
 
   for (const fieldType of requestedTypes) {
     const value = getCandidateValueForField(row, fieldType);
     if (!value) continue;
-    const lineageFields = mapExtractedFieldToLineageFields(fieldType);
-    for (const lineageField of lineageFields) {
+    const lineageUpdates = buildLineageFieldUpdates(fieldType, value);
+    for (const update of lineageUpdates) {
+      const lineageField = update.field;
+      const nextValue = update.value;
       const oldValue = String(target[lineageField] || '').trim();
-      if (oldValue && oldValue !== value && !force) {
-        conflicts.push({ fieldType, lineageField, oldValue, newValue: value });
+      if (oldValue && oldValue !== nextValue && !force) {
+        conflicts.push({ fieldType, lineageField, oldValue, newValue: nextValue });
         continue;
       }
-      if (oldValue === value) continue;
-      target[lineageField] = value;
-      changes.push({ fieldType, lineageField, oldValue, newValue: value });
+      if (oldValue === nextValue) continue;
+      target[lineageField] = nextValue;
+      changes.push({ fieldType, lineageField, oldValue, newValue: nextValue });
     }
   }
 
   if (conflicts.length && !changes.length) {
-    const err = new Error('Existing lineage fields are not empty. Confirm overwrite with force=true.');
+    const err = new Error('Existing lineage fields are not empty. Confirm overwrite with confirmOverwrite=true.');
     err.status = 409;
     err.conflicts = conflicts;
     throw err;
@@ -1748,7 +1794,8 @@ async function bulkUpdateExtractedAnniversaryCandidates(body = {}, adminUser = {
         }
         const applied = await applyExtractedAnniversaryCandidate(id, {
           fieldTypes: body.fieldTypes,
-          force: body.force === true
+          force: body.force === true,
+          confirmOverwrite: body.confirmOverwrite === true
         }, adminUser);
         results.push({ id, ok: true, status: 'applied', changes: applied.changes, conflicts: applied.conflicts });
       }
@@ -1787,6 +1834,85 @@ async function bulkUpdateExtractedAnniversaryCandidates(body = {}, adminUser = {
     auditId,
     results
   };
+}
+
+function flattenAppliedExtractionAuditRow(row) {
+  const payload = safeJsonParse(row.field_changes_json, {});
+  const changes = Array.isArray(payload?.changes) ? payload.changes : [];
+  const conflicts = Array.isArray(payload?.conflicts) ? payload.conflicts : [];
+  return changes.map((change, index) => ({
+    id: `${row.id}:${index}`,
+    auditId: row.id,
+    candidateId: row.candidate_id,
+    memberId: row.member_id,
+    memberName: row.matched_member_name || row.person_name || '',
+    field: change.lineageField || change.fieldType || '',
+    fieldType: change.fieldType || '',
+    oldValue: change.oldValue || '',
+    newValue: change.newValue || '',
+    sourceId: row.source_id,
+    sourceTitle: row.source_title || '',
+    chunkId: row.chunk_id,
+    headingPath: row.heading_path || row.chunk_heading_path || '',
+    sourceQuote: row.source_quote || '',
+    appliedBy: row.admin_user || '',
+    appliedAt: row.created_at,
+    action: row.action,
+    conflicts
+  }));
+}
+
+async function listAppliedExtractions({ q = '', field = '', limit = 80 } = {}) {
+  const database = await getDatabase();
+  const rows = database.prepare(`
+    SELECT a.*, c.person_name, c.matched_member_name, c.source_quote, c.heading_path,
+           s.title AS source_title, k.heading_path AS chunk_heading_path
+    FROM extracted_anniversary_audit_logs a
+    LEFT JOIN extracted_anniversary_candidates c ON c.id = a.candidate_id
+    LEFT JOIN knowledge_sources s ON s.id = a.source_id
+    LEFT JOIN knowledge_chunks k ON k.id = a.chunk_id
+    WHERE a.action IN ('apply', 'apply_noop')
+    ORDER BY a.created_at DESC
+    LIMIT ?
+  `).all(Math.max(1, Math.min(500, Number(limit) || 80)));
+  const queryNorm = normalizeKnowledgeText(q);
+  const fieldNorm = normalizeKnowledgeText(field);
+  return rows
+    .flatMap(flattenAppliedExtractionAuditRow)
+    .filter((item) => {
+      if (fieldNorm && normalizeKnowledgeText([item.field, item.fieldType].join(' ')) !== fieldNorm && !normalizeKnowledgeText([item.field, item.fieldType].join(' ')).includes(fieldNorm)) return false;
+      if (!queryNorm) return true;
+      return normalizeKnowledgeText([
+        item.memberName,
+        item.memberId,
+        item.field,
+        item.fieldType,
+        item.oldValue,
+        item.newValue,
+        item.sourceTitle,
+        item.headingPath
+      ].join(' ')).includes(queryNorm);
+    })
+    .slice(0, Math.max(1, Math.min(500, Number(limit) || 80)));
+}
+
+async function getAppliedExtractionById(id) {
+  const [auditId, indexText] = String(id || '').split(':');
+  if (!auditId) return null;
+  const database = await getDatabase();
+  const row = database.prepare(`
+    SELECT a.*, c.person_name, c.matched_member_name, c.source_quote, c.heading_path,
+           s.title AS source_title, k.heading_path AS chunk_heading_path
+    FROM extracted_anniversary_audit_logs a
+    LEFT JOIN extracted_anniversary_candidates c ON c.id = a.candidate_id
+    LEFT JOIN knowledge_sources s ON s.id = a.source_id
+    LEFT JOIN knowledge_chunks k ON k.id = a.chunk_id
+    WHERE a.id = ?
+  `).get(auditId);
+  if (!row) return null;
+  const items = flattenAppliedExtractionAuditRow(row);
+  if (indexText === undefined) return items[0] || null;
+  return items[Number(indexText)] || null;
 }
 
 function isVitalRecordQuestion(query) {
@@ -2355,6 +2481,34 @@ app.get('/api/knowledge/extracted-anniversaries', async (req, res) => {
   } catch (err) {
     console.error('Failed to list extracted anniversary candidates:', err);
     res.status(500).json({ error: 'Failed to list extracted anniversary candidates.' });
+  }
+});
+
+app.get('/api/knowledge/applied-extractions', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const q = String(req.query.q || '').trim();
+    const field = String(req.query.field || '').trim();
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit || 80) || 80));
+    res.json({ appliedExtractions: await listAppliedExtractions({ q, field, limit }) });
+  } catch (err) {
+    console.error('Failed to list applied extractions:', err);
+    res.status(500).json({ error: 'Failed to list applied extractions.' });
+  }
+});
+
+app.get('/api/knowledge/applied-extractions/:id', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const item = await getAppliedExtractionById(String(req.params.id || ''));
+    if (!item) {
+      res.status(404).json({ error: 'Applied extraction not found.' });
+      return;
+    }
+    res.json({ appliedExtraction: item });
+  } catch (err) {
+    console.error('Failed to read applied extraction:', err);
+    res.status(500).json({ error: 'Failed to read applied extraction.' });
   }
 });
 
@@ -3192,9 +3346,11 @@ function flattenLineageTree(node, parent = null, output = []) {
     solarBirthDate: String(node.solarBirthDate || '').trim(),
     solarDeathDate: String(node.solarDeathDate || '').trim(),
     deathAnniversaryLunar: String(node.deathAnniversaryLunar || node.lunarAnniversary || '').trim(),
+    lunarAnniversary: String(node.lunarAnniversary || node.deathAnniversaryLunar || '').trim(),
     birthPlace: String(node.birthPlace || '').trim(),
     deathPlace: String(node.deathPlace || '').trim(),
-    graveLocation: String(node.graveLocation || '').trim(),
+    graveLocation: String(node.graveLocation || node.burialPlace || '').trim(),
+    burialPlace: String(node.burialPlace || node.graveLocation || '').trim(),
     fatherName: String(node.fatherName || parent?.name || '').trim(),
     motherName: String(node.motherName || '').trim(),
     spouse: String(node.spouse || '').trim(),

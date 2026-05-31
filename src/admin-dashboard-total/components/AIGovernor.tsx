@@ -198,6 +198,26 @@ type SourceChunkDetail = {
   visibility?: string;
 };
 
+type AppliedExtraction = {
+  id: string;
+  auditId: string;
+  candidateId: string;
+  memberId: string;
+  memberName: string;
+  field: string;
+  fieldType?: string;
+  oldValue?: string;
+  newValue: string;
+  sourceId?: string;
+  sourceTitle?: string;
+  chunkId?: string;
+  headingPath?: string;
+  sourceQuote?: string;
+  appliedBy?: string;
+  appliedAt?: string;
+  action?: string;
+};
+
 const DEFAULT_ZALO_RULES: ZaloAutoReply[] = [
   {
     id: "r1",
@@ -362,6 +382,11 @@ export default function AIGovernor({
   const [memberSearchResults, setMemberSearchResults] = useState<LineageMemberMatch[]>([]);
   const [sourceChunkDetail, setSourceChunkDetail] = useState<SourceChunkDetail | null>(null);
   const [isSourceChunkOpen, setIsSourceChunkOpen] = useState(false);
+  const [appliedExtractions, setAppliedExtractions] = useState<AppliedExtraction[]>([]);
+  const [isAppliedExtractionsLoading, setIsAppliedExtractionsLoading] = useState(false);
+  const [appliedExtractionNote, setAppliedExtractionNote] = useState("");
+  const [appliedExtractionFilter, setAppliedExtractionFilter] = useState("");
+  const [appliedExtractionFieldFilter, setAppliedExtractionFieldFilter] = useState("");
 
   const auditItems = useMemo<AuditItem[]>(() => {
     const items: AuditItem[] = [];
@@ -583,6 +608,25 @@ export default function AIGovernor({
     }
   };
 
+  const loadAppliedExtractions = async () => {
+    setIsAppliedExtractionsLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("limit", "80");
+      if (appliedExtractionFilter.trim()) params.set("q", appliedExtractionFilter.trim());
+      if (appliedExtractionFieldFilter.trim()) params.set("field", appliedExtractionFieldFilter.trim());
+      const response = await fetch(`/api/knowledge/applied-extractions?${params.toString()}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không đọc được dữ liệu đã áp dụng.");
+      setAppliedExtractions(Array.isArray(data.appliedExtractions) ? data.appliedExtractions : []);
+      setAppliedExtractionNote("");
+    } catch (err: any) {
+      setAppliedExtractionNote(`Không đọc được dữ liệu đã áp dụng: ${err?.message || "lỗi không xác định"}`);
+    } finally {
+      setIsAppliedExtractionsLoading(false);
+    }
+  };
+
   const patchExtractedCandidate = async (candidateId: string, payload: Record<string, unknown>, successNote: string) => {
     const response = await fetch(`/api/knowledge/extracted-anniversaries/${encodeURIComponent(candidateId)}`, {
       method: "PATCH",
@@ -651,6 +695,7 @@ export default function AIGovernor({
     setExtractedNote(`Bulk ${action}: ${data.total} mục, applied ${data.applied || 0}, approved ${data.approved || 0}, rejected ${data.rejected || 0}, skipped ${data.skipped || 0}, failed ${data.failed || 0}.`);
     setSelectedCandidateIds([]);
     await loadExtractedCandidates();
+    if (action === "apply") await loadAppliedExtractions();
   };
 
   const openSourceChunk = async (candidate: ExtractedAnniversaryCandidate) => {
@@ -709,6 +754,7 @@ export default function AIGovernor({
     }
     setExtractedNote(`Đã áp dụng ${data.changes?.length ?? 0} trường vào cây phả và ghi audit log.`);
     await loadExtractedCandidates();
+    await loadAppliedExtractions();
   };
 
   const handleKnowledgeSearch = async () => {
@@ -801,6 +847,7 @@ export default function AIGovernor({
   useEffect(() => {
     void loadKnowledgeBackend();
     void loadExtractedCandidates();
+    void loadAppliedExtractions();
     void loadAIRequestLogs();
     void loadAIEvalCases();
   }, []);
@@ -1359,6 +1406,93 @@ export default function AIGovernor({
                     Chưa đọc được danh sách source backend hoặc kho tri thức chưa có tài liệu upload thêm.
                   </p>
                 )}
+              </div>
+            </div>
+            <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50/40 p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <h4 className="flex items-center gap-2 font-bold text-stone-850">
+                    <ClipboardList className="h-4 w-4 text-emerald-700" />
+                    Dữ liệu đã áp dụng gần đây
+                  </h4>
+                  <p className="mt-1 text-xs leading-relaxed text-stone-500">
+                    Lịch sử các giá trị đã được ghi vào cây phả từ candidate đã duyệt, dùng để kiểm tra nguồn trước khi đưa vào webview, dashboard và AI.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadAppliedExtractions()}
+                  disabled={isAppliedExtractionsLoading}
+                  className="inline-flex items-center justify-center gap-2 rounded border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-60"
+                >
+                  <RefreshCw className={`h-4 w-4 ${isAppliedExtractionsLoading ? "animate-spin" : ""}`} />
+                  Tải lịch sử
+                </button>
+              </div>
+              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-[1fr_180px_auto]">
+                <input
+                  value={appliedExtractionFilter}
+                  onChange={(event) => setAppliedExtractionFilter(event.target.value)}
+                  className="rounded border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:border-emerald-500"
+                  placeholder="Lọc theo tên, nguồn, giá trị"
+                />
+                <select
+                  value={appliedExtractionFieldFilter}
+                  onChange={(event) => setAppliedExtractionFieldFilter(event.target.value)}
+                  className="rounded border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:border-emerald-500"
+                >
+                  <option value="">Tất cả field</option>
+                  <option value="birthYear">Năm/ngày sinh</option>
+                  <option value="solarBirthDate">Ngày sinh dương lịch</option>
+                  <option value="deathYear">Năm/ngày mất</option>
+                  <option value="solarDeathDate">Ngày mất dương lịch</option>
+                  <option value="deathAnniversaryLunar">Ngày giỗ âm lịch</option>
+                  <option value="birthPlace">Quê quán</option>
+                  <option value="graveLocation">Mộ chí</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => void loadAppliedExtractions()}
+                  disabled={isAppliedExtractionsLoading}
+                  className="inline-flex items-center justify-center gap-2 rounded bg-emerald-700 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-800 disabled:opacity-60"
+                >
+                  <Search className="h-4 w-4" />
+                  Lọc
+                </button>
+              </div>
+              {appliedExtractionNote && <p className="mt-2 rounded bg-white p-2 text-[11px] leading-relaxed text-stone-700">{appliedExtractionNote}</p>}
+              <div className="mt-3 max-h-72 overflow-y-auto rounded border border-emerald-100 bg-white">
+                <table className="min-w-full text-left text-[11px]">
+                  <thead className="sticky top-0 bg-emerald-50 text-stone-600">
+                    <tr>
+                      <th className="px-2 py-2">Nhân vật</th>
+                      <th className="px-2 py-2">Field</th>
+                      <th className="px-2 py-2">Giá trị cũ</th>
+                      <th className="px-2 py-2">Giá trị mới</th>
+                      <th className="px-2 py-2">Nguồn/chunk</th>
+                      <th className="px-2 py-2">Admin/time</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {appliedExtractions.map((item) => (
+                      <tr key={item.id} className="border-t border-stone-100 align-top">
+                        <td className="px-2 py-2 font-bold text-stone-800">{item.memberName || item.memberId}</td>
+                        <td className="px-2 py-2 text-emerald-700">{item.field}</td>
+                        <td className="px-2 py-2 text-stone-500">{item.oldValue || "Trống"}</td>
+                        <td className="px-2 py-2 text-stone-800">{item.newValue}</td>
+                        <td className="px-2 py-2 text-stone-500">{truncateText(item.headingPath || item.sourceTitle || item.chunkId || item.sourceId || "-", 90)}</td>
+                        <td className="px-2 py-2 text-stone-500">{item.appliedBy || "-"}<br />{item.appliedAt || "-"}</td>
+                      </tr>
+                    ))}
+                    {!appliedExtractions.length && (
+                      <tr>
+                        <td colSpan={6} className="px-3 py-4 text-center text-xs text-stone-500">
+                          Chưa có dữ liệu đã áp dụng phù hợp bộ lọc.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
             <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50/40 p-4">
