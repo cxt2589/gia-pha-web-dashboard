@@ -49,6 +49,8 @@ export interface AncestorNode {
   birthPlace?: string; // Nơi sinh chi tiết
   deathPlace?: string; // Nơi mất chi tiết
   description?: string;
+  bio?: string;
+  achievements?: string[];
   spouse?: string; // Standard or multi-spouse comma separated
   spouseList?: string[]; // Structured spouse array for better selection dropdowns
   spouseDetails?: SpouseDetail[]; // Rich detailed spouses

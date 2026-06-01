@@ -396,6 +396,28 @@ type ExtractedAnniversaryCandidate = {
   updatedAt?: string;
 };
 
+type ExtractedProfileCandidate = {
+  id: string;
+  candidateType: string;
+  personName: string;
+  matchedMemberId?: string;
+  matchedMemberName?: string;
+  matchConfidence?: string;
+  targetField: "description" | "bio" | "achievements";
+  extractedText: string;
+  reviewedText?: string;
+  effectiveText?: string;
+  sourceQuote?: string;
+  sourceId?: string;
+  chunkId?: string;
+  knowledgeTitle?: string;
+  visibility?: string;
+  status: "pending" | "approved" | "rejected" | "applied";
+  currentValues?: Record<string, string>;
+  candidateMatches?: LineageMemberMatch[];
+  updatedAt?: string;
+};
+
 type SourceChunkDetail = {
   chunkId: string;
   title: string;
@@ -584,6 +606,16 @@ export default function AIGovernor({
   const [editingValue, setEditingValue] = useState("");
   const [editingMemberId, setEditingMemberId] = useState("");
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
+  const [profileCandidates, setProfileCandidates] = useState<ExtractedProfileCandidate[]>([]);
+  const [isProfileCandidatesLoading, setIsProfileCandidatesLoading] = useState(false);
+  const [profileCandidateNote, setProfileCandidateNote] = useState("");
+  const [profileStatusFilter, setProfileStatusFilter] = useState("pending");
+  const [profileTypeFilter, setProfileTypeFilter] = useState("");
+  const [profileNameFilter, setProfileNameFilter] = useState("");
+  const [selectedProfileCandidateIds, setSelectedProfileCandidateIds] = useState<string[]>([]);
+  const [editingProfileCandidateId, setEditingProfileCandidateId] = useState("");
+  const [editingProfileText, setEditingProfileText] = useState("");
+  const [editingProfileTargetField, setEditingProfileTargetField] = useState<"description" | "bio" | "achievements">("description");
   const [memberSearchQuery, setMemberSearchQuery] = useState("");
   const [memberSearchResults, setMemberSearchResults] = useState<LineageMemberMatch[]>([]);
   const [sourceChunkDetail, setSourceChunkDetail] = useState<SourceChunkDetail | null>(null);
@@ -736,9 +768,24 @@ export default function AIGovernor({
       || candidate.candidateMatches?.[0]
       || null
   );
+  const getProfileCandidateCurrentValue = (candidate: ExtractedProfileCandidate) => (
+    candidate.currentValues?.[candidate.targetField] || ""
+  );
+  const getProfileCandidateMatchedInfo = (candidate: ExtractedProfileCandidate) => (
+    candidate.candidateMatches?.find((match) => match.memberId === candidate.matchedMemberId)
+      || candidate.candidateMatches?.[0]
+      || null
+  );
 
   const toggleCandidateSelection = (candidateId: string) => {
     setSelectedCandidateIds((current) => (
+      current.includes(candidateId)
+        ? current.filter((id) => id !== candidateId)
+        : [...current, candidateId]
+    ));
+  };
+  const toggleProfileCandidateSelection = (candidateId: string) => {
+    setSelectedProfileCandidateIds((current) => (
       current.includes(candidateId)
         ? current.filter((id) => id !== candidateId)
         : [...current, candidateId]
@@ -969,9 +1016,9 @@ export default function AIGovernor({
     if (action === "apply") await loadAppliedExtractions();
   };
 
-  const openSourceChunk = async (candidate: ExtractedAnniversaryCandidate) => {
+  const openSourceChunk = async (candidate: { chunkId?: string }, setNote: (value: string) => void = setExtractedNote) => {
     if (!candidate.chunkId) {
-      setExtractedNote("Candidate chưa có chunkId nguồn.");
+      setNote("Candidate chưa có chunkId nguồn.");
       return;
     }
     try {
@@ -981,7 +1028,7 @@ export default function AIGovernor({
       setSourceChunkDetail(data.chunk || null);
       setIsSourceChunkOpen(true);
     } catch (err: any) {
-      setExtractedNote(`Không mở được nguồn: ${err?.message || "lỗi không xác định"}`);
+      setNote(`Không mở được nguồn: ${err?.message || "lỗi không xác định"}`);
     }
   };
 
@@ -1026,6 +1073,138 @@ export default function AIGovernor({
     setExtractedNote(`Đã áp dụng ${data.changes?.length ?? 0} trường vào cây phả và ghi audit log.`);
     await loadExtractedCandidates();
     await loadAppliedExtractions();
+  };
+
+  const loadProfileCandidates = async () => {
+    setIsProfileCandidatesLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("limit", "160");
+      if (profileNameFilter.trim()) params.set("q", profileNameFilter.trim());
+      if (profileStatusFilter) params.set("status", profileStatusFilter);
+      if (profileTypeFilter) params.set("type", profileTypeFilter);
+      const response = await fetch(`/api/knowledge/profile-candidates?${params.toString()}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không đọc được candidate hành trạng.");
+      setProfileCandidates(Array.isArray(data.candidates) ? data.candidates : []);
+      setProfileCandidateNote("");
+    } catch (err: any) {
+      setProfileCandidateNote(`Không đọc được candidate hành trạng: ${err?.message || "lỗi không xác định"}`);
+    } finally {
+      setIsProfileCandidatesLoading(false);
+    }
+  };
+
+  const scanProfileCandidates = async () => {
+    setIsProfileCandidatesLoading(true);
+    try {
+      const response = await fetch("/api/knowledge/profile-candidates/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limit: 800 })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không quét được kho tri thức.");
+      setProfileCandidateNote(`Đã quét ${data.scanned || 0} chunk, tạo mới ${data.created || 0} candidate, bỏ qua ${data.skipped || 0}.`);
+      await loadProfileCandidates();
+    } catch (err: any) {
+      setProfileCandidateNote(`Không quét được kho tri thức: ${err?.message || "lỗi không xác định"}`);
+    } finally {
+      setIsProfileCandidatesLoading(false);
+    }
+  };
+
+  const patchProfileCandidate = async (candidateId: string, payload: Record<string, unknown>, successNote: string) => {
+    const response = await fetch(`/api/knowledge/profile-candidates/${encodeURIComponent(candidateId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setProfileCandidateNote(data.error || "Không cập nhật được candidate hành trạng.");
+      return;
+    }
+    setProfileCandidateNote(successNote);
+    await loadProfileCandidates();
+  };
+
+  const handleAssignProfileCandidate = (candidate: ExtractedProfileCandidate, memberId: string) => {
+    const member = members.find((item) => item.id === memberId);
+    const apiMatch = [...memberSearchResults, ...(candidate.candidateMatches || [])].find((item) => item.memberId === memberId);
+    if (!member && !apiMatch) return;
+    void patchProfileCandidate(candidate.id, {
+      matchedMemberId: member?.id || apiMatch?.memberId,
+      matchedMemberName: member?.name || apiMatch?.fullName,
+      matchConfidence: apiMatch?.confidence || "manual"
+    }, "Đã gán candidate hành trạng với nhân vật được chọn.");
+  };
+
+  const handleBulkProfileAction = async (action: "approve" | "reject" | "reset" | "apply") => {
+    if (!selectedProfileCandidateIds.length) {
+      setProfileCandidateNote("Chưa chọn candidate hành trạng nào.");
+      return;
+    }
+    const response = await fetch("/api/knowledge/profile-candidates/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, ids: selectedProfileCandidateIds, appendMode: "append" })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setProfileCandidateNote(data.error || "Không chạy được thao tác hàng loạt.");
+      return;
+    }
+    setProfileCandidateNote(`Bulk ${action}: ${data.total} mục, applied ${data.applied || 0}, approved ${data.approved || 0}, rejected ${data.rejected || 0}, skipped ${data.skipped || 0}, failed ${data.failed || 0}.`);
+    setSelectedProfileCandidateIds([]);
+    await loadProfileCandidates();
+  };
+
+  const startEditProfileCandidate = (candidate: ExtractedProfileCandidate) => {
+    setEditingProfileCandidateId(candidate.id);
+    setEditingProfileText(candidate.reviewedText || candidate.extractedText || "");
+    setEditingProfileTargetField(candidate.targetField || "description");
+    setEditingMemberId(candidate.matchedMemberId || "");
+  };
+
+  const saveProfileCandidateEdit = async (candidate: ExtractedProfileCandidate) => {
+    await patchProfileCandidate(candidate.id, {
+      reviewedText: editingProfileText,
+      targetField: editingProfileTargetField,
+      matchedMemberId: editingMemberId || candidate.matchedMemberId || undefined,
+      matchConfidence: editingMemberId ? "manual" : undefined
+    }, "Đã lưu nội dung/field hành trạng đã chỉnh.");
+    setEditingProfileCandidateId("");
+    setEditingProfileText("");
+  };
+
+  const applyProfileCandidate = async (candidate: ExtractedProfileCandidate) => {
+    const memberId = editingProfileCandidateId === candidate.id ? editingMemberId : candidate.matchedMemberId;
+    if (!memberId) {
+      setProfileCandidateNote("Cần gán candidate với một nhân vật trước khi áp dụng.");
+      return;
+    }
+    const response = await fetch(`/api/knowledge/profile-candidates/${encodeURIComponent(candidate.id)}/apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        memberId,
+        reviewedText: editingProfileCandidateId === candidate.id ? editingProfileText : undefined,
+        targetField: editingProfileCandidateId === candidate.id ? editingProfileTargetField : candidate.targetField,
+        appendMode: "append"
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const conflicts = Array.isArray(data.conflicts) && data.conflicts.length
+        ? ` Trường đã có dữ liệu: ${data.conflicts.map((item: any) => item.field).join(", ")}.`
+        : "";
+      setProfileCandidateNote(`${data.error || "Không áp dụng được candidate hành trạng."}${conflicts}`);
+      return;
+    }
+    setProfileCandidateNote(`Đã áp dụng ${data.changes?.length ?? 0} trường hành trạng/công lao vào cây phả.`);
+    setEditingProfileCandidateId("");
+    await loadProfileCandidates();
   };
 
   const handleKnowledgeSearch = async () => {
@@ -1478,6 +1657,7 @@ export default function AIGovernor({
   useEffect(() => {
     void loadKnowledgeBackend();
     void loadExtractedCandidates();
+    void loadProfileCandidates();
     void loadAppliedExtractions();
     void loadAIRequestLogs();
     void loadAIEvalCases();
@@ -4430,6 +4610,139 @@ export default function AIGovernor({
                     Chưa có candidate phù hợp bộ lọc, hoặc tài khoản hiện tại chưa có quyền admin.
                   </p>
                 )}
+              </div>
+              <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50/30 p-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <h4 className="flex items-center gap-2 font-bold text-stone-850">
+                      <FileSearch className="h-4 w-4 text-emerald-700" />
+                      Hành trạng & Công lao cần duyệt
+                    </h4>
+                    <p className="mt-1 text-xs leading-relaxed text-stone-500">
+                      Scanner local bóc tách hành trạng, sự nghiệp, công lao từ kho tri thức. Candidate chỉ ghi vào cây phả khi admin duyệt và áp dụng.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={() => void scanProfileCandidates()} disabled={isProfileCandidatesLoading} className="inline-flex items-center justify-center gap-2 rounded bg-emerald-700 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-800 disabled:opacity-60">
+                      <Search className="h-4 w-4" />
+                      Quét kho tri thức
+                    </button>
+                    <button type="button" onClick={() => void loadProfileCandidates()} disabled={isProfileCandidatesLoading} className="inline-flex items-center justify-center gap-2 rounded border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-60">
+                      <RefreshCw className={`h-4 w-4 ${isProfileCandidatesLoading ? "animate-spin" : ""}`} />
+                      Tải candidate
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-4">
+                  <input value={profileNameFilter} onChange={(event) => setProfileNameFilter(event.target.value)} className="rounded border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:border-emerald-500" placeholder="Tên nhân vật hoặc nội dung" />
+                  <select value={profileStatusFilter} onChange={(event) => setProfileStatusFilter(event.target.value)} className="rounded border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:border-emerald-500">
+                    <option value="">Tất cả trạng thái</option>
+                    <option value="pending">Chưa duyệt</option>
+                    <option value="approved">Đã duyệt</option>
+                    <option value="rejected">Đã từ chối</option>
+                    <option value="applied">Đã áp dụng</option>
+                  </select>
+                  <select value={profileTypeFilter} onChange={(event) => setProfileTypeFilter(event.target.value)} className="rounded border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:border-emerald-500">
+                    <option value="">Tất cả loại</option>
+                    <option value="biography">Hành trạng</option>
+                    <option value="career">Sự nghiệp</option>
+                    <option value="achievement">Công lao</option>
+                    <option value="legacy_note">Di sản/tích trạng</option>
+                  </select>
+                  <button type="button" onClick={() => void loadProfileCandidates()} disabled={isProfileCandidatesLoading} className="inline-flex items-center justify-center gap-2 rounded bg-red-900 px-3 py-2 text-xs font-bold text-white hover:bg-red-950 disabled:opacity-60">
+                    <Search className="h-4 w-4" />
+                    Lọc
+                  </button>
+                </div>
+                {profileCandidateNote && <p className="mt-2 rounded bg-white p-2 text-[11px] leading-relaxed text-stone-700">{profileCandidateNote}</p>}
+                <div className="mt-3 flex flex-wrap items-center gap-2 rounded border border-stone-200 bg-white p-2">
+                  <span className="text-[11px] font-bold text-stone-600">Đã chọn: {selectedProfileCandidateIds.length}</span>
+                  <button type="button" onClick={() => setSelectedProfileCandidateIds(profileCandidates.map((item) => item.id))} className="rounded border border-stone-200 px-2 py-1 text-[11px] font-bold text-stone-600">Chọn tất cả</button>
+                  <button type="button" onClick={() => setSelectedProfileCandidateIds([])} className="rounded border border-stone-200 px-2 py-1 text-[11px] font-bold text-stone-600">Bỏ chọn</button>
+                  <button type="button" onClick={() => void handleBulkProfileAction("approve")} className="rounded bg-emerald-700 px-2 py-1 text-[11px] font-bold text-white">Duyệt nhiều</button>
+                  <button type="button" onClick={() => void handleBulkProfileAction("reject")} className="rounded border border-red-200 px-2 py-1 text-[11px] font-bold text-red-700">Từ chối nhiều</button>
+                  <button type="button" onClick={() => void handleBulkProfileAction("reset")} className="rounded border border-stone-200 px-2 py-1 text-[11px] font-bold text-stone-600">Reset pending</button>
+                  <button type="button" onClick={() => void handleBulkProfileAction("apply")} className="rounded bg-red-900 px-2 py-1 text-[11px] font-bold text-white">Apply nhiều</button>
+                </div>
+                <div className="mt-3 max-h-[520px] space-y-3 overflow-y-auto pr-1">
+                  {profileCandidates.map((candidate) => {
+                    const matchedInfo = getProfileCandidateMatchedInfo(candidate);
+                    const isEditing = editingProfileCandidateId === candidate.id;
+                    return (
+                      <article key={candidate.id} className="rounded border border-stone-200 bg-white p-3">
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <input type="checkbox" checked={selectedProfileCandidateIds.includes(candidate.id)} onChange={() => toggleProfileCandidateSelection(candidate.id)} className="h-4 w-4 rounded border-stone-300" />
+                              <h5 className="font-bold text-stone-850">{candidate.personName}</h5>
+                              <span className="rounded bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">{candidate.candidateType}</span>
+                              <span className="rounded bg-stone-100 px-2 py-0.5 text-[10px] font-bold text-stone-500">{candidate.status}</span>
+                              <span className="rounded bg-stone-100 px-2 py-0.5 text-[10px] font-bold text-stone-500">{candidate.matchConfidence || "none"}</span>
+                            </div>
+                            <p className="mt-1 text-[11px] text-stone-500">{candidate.knowledgeTitle || "-"} · {candidate.sourceId || "-"} · {candidate.chunkId || "-"} · {candidate.visibility || "public"}</p>
+                            <p className="mt-2 text-xs leading-relaxed text-stone-700">{truncateText(candidate.reviewedText || candidate.extractedText || "", 320)}</p>
+                          </div>
+                          <div className="flex shrink-0 flex-wrap gap-2">
+                            <button type="button" onClick={() => void patchProfileCandidate(candidate.id, { status: "approved" }, "Đã duyệt candidate hành trạng.")} disabled={candidate.status === "applied"} className="rounded bg-emerald-700 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-800 disabled:opacity-50">Duyệt</button>
+                            <button type="button" onClick={() => void patchProfileCandidate(candidate.id, { status: "rejected" }, "Đã từ chối candidate hành trạng.")} disabled={candidate.status === "applied"} className="rounded border border-red-200 px-2.5 py-1.5 text-[11px] font-bold text-red-700 hover:bg-red-50 disabled:opacity-50">Từ chối</button>
+                            <button type="button" onClick={() => startEditProfileCandidate(candidate)} className="rounded border border-stone-200 px-2.5 py-1.5 text-[11px] font-bold text-stone-600 hover:bg-stone-50">Sửa</button>
+                            <button type="button" onClick={() => void applyProfileCandidate(candidate)} disabled={candidate.status !== "approved" && candidate.status !== "applied"} className="rounded bg-red-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-red-950 disabled:opacity-50">Áp dụng</button>
+                          </div>
+                        </div>
+                        <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-3">
+                          <div className="rounded border border-stone-100 bg-[#fbfaf6] p-2">
+                            <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Field đích</p>
+                            <p className="mt-1 text-xs text-stone-700">{candidate.targetField}</p>
+                          </div>
+                          <div className="rounded border border-stone-100 bg-[#fbfaf6] p-2">
+                            <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Hiện tại</p>
+                            <p className="mt-1 text-xs text-stone-700">{truncateText(getProfileCandidateCurrentValue(candidate) || "Trống", 160)}</p>
+                          </div>
+                          <div className="rounded border border-stone-100 bg-[#fbfaf6] p-2">
+                            <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Match</p>
+                            <p className="mt-1 text-xs text-stone-700">{candidate.matchedMemberName || "chưa có"} · Đời {matchedInfo?.generation ?? "-"} · Cha: {matchedInfo?.fatherName || "-"} · Chi: {matchedInfo?.branchName || "-"}</p>
+                          </div>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button type="button" onClick={() => void openSourceChunk(candidate, setProfileCandidateNote)} className="rounded border border-stone-200 px-2 py-1 text-[11px] font-bold text-stone-600 hover:bg-stone-50">Mở đoạn nguồn</button>
+                          <input value={editingProfileCandidateId === candidate.id ? memberSearchQuery : ""} onFocus={() => { setEditingProfileCandidateId(candidate.id); setEditingProfileText(candidate.reviewedText || candidate.extractedText || ""); setEditingProfileTargetField(candidate.targetField || "description"); void searchMembersForCandidate(candidate.personName); }} onChange={(event) => { setEditingProfileCandidateId(candidate.id); void searchMembersForCandidate(event.target.value); }} className="min-w-[260px] rounded border border-stone-200 bg-white px-3 py-1.5 text-xs outline-none focus:border-emerald-500" placeholder="Tìm/gán nhân vật" />
+                        </div>
+                        {editingProfileCandidateId === candidate.id && (memberSearchResults.length > 0 || (candidate.candidateMatches || []).length > 0) && (
+                          <div className="mt-1 max-h-44 overflow-y-auto rounded border border-stone-200 bg-white shadow-sm">
+                            {[...memberSearchResults, ...(memberSearchResults.length ? [] : candidate.candidateMatches || [])].map((match) => (
+                              <button key={match.memberId} type="button" onClick={() => { setEditingMemberId(match.memberId); handleAssignProfileCandidate(candidate, match.memberId); }} className="block w-full border-b border-stone-100 px-3 py-2 text-left text-xs last:border-b-0 hover:bg-emerald-50">
+                                <span className="font-bold text-stone-800">{match.fullName}</span>
+                                <span className="ml-2 rounded bg-stone-100 px-1.5 py-0.5 text-[10px] font-bold text-stone-500">{match.confidence}</span>
+                                <span className="block text-[10px] text-stone-500">Đời {match.generation ?? "-"} · Cha: {match.fatherName || "-"} · Mẹ: {match.motherName || "-"} · Chi: {match.branchName || "-"}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {isEditing && (
+                          <div className="mt-3 rounded border border-emerald-200 bg-emerald-50 p-3">
+                            <div className="grid grid-cols-1 gap-2 md:grid-cols-[180px_1fr]">
+                              <select value={editingProfileTargetField} onChange={(event) => setEditingProfileTargetField(event.target.value as "description" | "bio" | "achievements")} className="rounded border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:border-emerald-500">
+                                <option value="description">Hành trạng webview</option>
+                                <option value="bio">Sự nghiệp dashboard</option>
+                                <option value="achievements">Công lao/vinh danh</option>
+                              </select>
+                              <textarea value={editingProfileText} onChange={(event) => setEditingProfileText(event.target.value)} rows={4} className="w-full rounded border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:border-emerald-500" />
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <button type="button" onClick={() => void saveProfileCandidateEdit(candidate)} className="rounded bg-red-900 px-3 py-1.5 text-[11px] font-bold text-white">Lưu chỉnh sửa</button>
+                              <button type="button" onClick={() => { setEditingProfileCandidateId(""); setEditingProfileText(""); }} className="rounded border border-stone-200 px-3 py-1.5 text-[11px] font-bold text-stone-600">Hủy</button>
+                            </div>
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })}
+                  {!profileCandidates.length && (
+                    <p className="rounded border border-dashed border-stone-200 bg-white p-3 text-xs text-stone-500">
+                      Chưa có candidate hành trạng/công lao phù hợp bộ lọc. Bấm “Quét kho tri thức” để tạo candidate từ knowledge_chunks.
+                    </p>
+                  )}
+                </div>
               </div>
               {isSourceChunkOpen && sourceChunkDetail && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">

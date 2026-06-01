@@ -23,6 +23,7 @@
     "test:phase2s-system-audit": "node scripts/test-phase-2s-system-audit.mjs",
     "test:phase2t-ai-action-drafts": "node scripts/test-phase-2t-ai-action-drafts.mjs",
     "test:phase2u-excel-import-gate": "node scripts/test-phase-2u-excel-import-gate.mjs",
+    "test:phase2v-profile-extraction": "node scripts/test-phase-2v-profile-extraction.mjs",
     "import:cao-toc-txt": "node scripts/import-cao-toc-txt-knowledge.mjs",
     "import:cao-toc-04": "node scripts/import-cao-toc-04-anniversaries.mjs",
     "test:lineage-display": "tsx scripts/test-lineage-display.ts",

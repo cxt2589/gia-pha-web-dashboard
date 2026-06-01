@@ -607,6 +607,40 @@ async function getDatabase() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS extracted_profile_candidates (
+      id TEXT PRIMARY KEY,
+      candidate_type TEXT NOT NULL DEFAULT 'biography',
+      person_name TEXT NOT NULL DEFAULT '',
+      person_name_norm TEXT NOT NULL DEFAULT '',
+      matched_member_id TEXT NOT NULL DEFAULT '',
+      matched_member_name TEXT NOT NULL DEFAULT '',
+      match_confidence TEXT NOT NULL DEFAULT 'none',
+      target_field TEXT NOT NULL DEFAULT 'description',
+      extracted_text TEXT NOT NULL DEFAULT '',
+      reviewed_text TEXT NOT NULL DEFAULT '',
+      source_quote TEXT NOT NULL DEFAULT '',
+      source_id TEXT NOT NULL DEFAULT '',
+      chunk_id TEXT NOT NULL DEFAULT '',
+      knowledge_title TEXT NOT NULL DEFAULT '',
+      visibility TEXT NOT NULL DEFAULT 'public',
+      status TEXT NOT NULL DEFAULT 'pending',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS extracted_profile_audit_logs (
+      id TEXT PRIMARY KEY,
+      candidate_id TEXT NOT NULL DEFAULT '',
+      member_id TEXT NOT NULL DEFAULT '',
+      action TEXT NOT NULL DEFAULT '',
+      field_changes_json TEXT NOT NULL DEFAULT '[]',
+      source_id TEXT NOT NULL DEFAULT '',
+      chunk_id TEXT NOT NULL DEFAULT '',
+      admin_user TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS anniversary_event_drafts (
       id TEXT PRIMARY KEY,
       anniversary_key TEXT NOT NULL DEFAULT '',
@@ -741,6 +775,11 @@ async function getDatabase() {
     CREATE INDEX IF NOT EXISTS idx_extracted_ann_status ON extracted_anniversary_candidates(status);
     CREATE INDEX IF NOT EXISTS idx_extracted_ann_audit_candidate ON extracted_anniversary_audit_logs(candidate_id);
     CREATE INDEX IF NOT EXISTS idx_extracted_ann_audit_created ON extracted_anniversary_audit_logs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_extracted_profile_person ON extracted_profile_candidates(person_name_norm);
+    CREATE INDEX IF NOT EXISTS idx_extracted_profile_source ON extracted_profile_candidates(source_id);
+    CREATE INDEX IF NOT EXISTS idx_extracted_profile_status ON extracted_profile_candidates(status);
+    CREATE INDEX IF NOT EXISTS idx_extracted_profile_audit_candidate ON extracted_profile_audit_logs(candidate_id);
+    CREATE INDEX IF NOT EXISTS idx_extracted_profile_audit_created ON extracted_profile_audit_logs(created_at);
     CREATE INDEX IF NOT EXISTS idx_anniversary_drafts_member ON anniversary_event_drafts(member_id);
     CREATE INDEX IF NOT EXISTS idx_anniversary_drafts_status ON anniversary_event_drafts(status);
     CREATE INDEX IF NOT EXISTS idx_anniversary_drafts_updated ON anniversary_event_drafts(updated_at);
@@ -2222,7 +2261,10 @@ function publicLineageMemberSearchResult(member, score = 0, confidence = 'none',
       death_structured: member.deathDateStructured || null,
       lunar_anniversary_structured: member.deathAnniversaryLunarStructured || null,
       hometown: member.birthPlace || member.residence || '',
-      grave: member.graveLocation || member.burialPlace || ''
+      grave: member.graveLocation || member.burialPlace || '',
+      description: member.description || '',
+      bio: member.bio || '',
+      achievements: Array.isArray(member.achievements) ? member.achievements.join('\n') : String(member.achievements || '').trim()
     }
   };
 }
@@ -2804,6 +2846,691 @@ async function getAppliedExtractionById(id) {
   const items = flattenAppliedExtractionAuditRow(row);
   if (indexText === undefined) return items[0] || null;
   return items[Number(indexText)] || null;
+}
+
+const PROFILE_CANDIDATE_KEYWORDS = [
+  'hanh trang',
+  'cong lao',
+  'su nghiep',
+  'tich trang',
+  'di san',
+  'pham hanh',
+  'chuc tuoc',
+  'lap nghiep',
+  'khai co',
+  'trung tu',
+  'phung su',
+  'vinh danh'
+];
+
+const PROFILE_QUESTION_KEYWORDS = [
+  ...PROFILE_CANDIDATE_KEYWORDS,
+  'tieu su',
+  'than the',
+  'cong trang',
+  'dong gop'
+];
+
+function normalizeProfileCandidateStatus(status) {
+  const value = String(status || '').trim().toLowerCase();
+  return ['pending', 'approved', 'rejected', 'applied'].includes(value) ? value : 'pending';
+}
+
+function normalizeProfileTargetField(value) {
+  const field = String(value || '').trim();
+  return ['description', 'bio', 'achievements'].includes(field) ? field : 'description';
+}
+
+function normalizeProfileCandidateType(value) {
+  const type = String(value || '').trim();
+  return ['biography', 'legacy_note', 'achievement', 'career', 'spouse_note', 'parent_note'].includes(type)
+    ? type
+    : 'biography';
+}
+
+function isProfileQuestion(query) {
+  const text = normalizeKnowledgeText(query);
+  return PROFILE_QUESTION_KEYWORDS.some((keyword) => text.includes(keyword));
+}
+
+function classifyProfileCandidateType(text) {
+  const normalized = normalizeKnowledgeText(text);
+  if (/(cong lao|cong trang|vinh danh|dong gop|phung su)/.test(normalized)) return 'achievement';
+  if (/(su nghiep|chuc tuoc|lap nghiep|khai co|trung tu)/.test(normalized)) return 'career';
+  if (/(di san|tich trang)/.test(normalized)) return 'legacy_note';
+  return 'biography';
+}
+
+function defaultProfileTargetField(candidateType) {
+  if (candidateType === 'achievement') return 'achievements';
+  if (candidateType === 'career' || candidateType === 'legacy_note') return 'bio';
+  return 'description';
+}
+
+function extractCaoNamesFromText(text) {
+  const source = String(text || '').replace(/\s+/g, ' ');
+  const names = new Set();
+  const pattern = /\bCao\s+(?:Đình|Duy|Văn|Xuân|Hữu|Quang|Thế|Minh|Mạnh|Bá|Trọng|Viết|Ngọc|Sỹ|Sĩ|Phúc|Phú|Cao)?(?:\s+[\p{L}]{2,}){1,4}/giu;
+  for (const match of source.matchAll(pattern)) {
+    const candidate = String(match[0] || '').replace(/[.,;:(){}\[\]"']/g, ' ').replace(/\s+/g, ' ').trim();
+    if (candidate.split(/\s+/).length >= 3 && candidate.length <= 80) {
+      names.add(candidate);
+    }
+  }
+  return [...names].slice(0, 8);
+}
+
+function buildProfileCandidateHash({ sourceId, chunkId, personName, candidateType, extractedText }) {
+  return sha256Base64Url([
+    sourceId,
+    chunkId,
+    normalizeKnowledgeText(personName),
+    candidateType,
+    normalizeKnowledgeText(extractedText).slice(0, 500)
+  ].join('|')).slice(0, 24);
+}
+
+function publicExtractedProfileCandidate(row) {
+  const metadata = safeJsonParse(row.metadata_json, {});
+  return {
+    id: row.id,
+    candidateType: row.candidate_type,
+    personName: row.person_name,
+    personNameNorm: row.person_name_norm,
+    matchedMemberId: row.matched_member_id,
+    matchedMemberName: row.matched_member_name,
+    matchConfidence: row.match_confidence,
+    targetField: row.target_field,
+    extractedText: row.extracted_text,
+    reviewedText: row.reviewed_text,
+    effectiveText: row.reviewed_text || row.extracted_text,
+    sourceQuote: row.source_quote,
+    sourceId: row.source_id,
+    chunkId: row.chunk_id,
+    knowledgeTitle: row.knowledge_title,
+    visibility: row.visibility,
+    status: normalizeProfileCandidateStatus(row.status),
+    metadata,
+    currentValues: metadata.currentValues || {},
+    candidateMatches: Array.isArray(metadata.candidateMatches) ? metadata.candidateMatches : [],
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+async function hydrateProfileCandidateReviewData(publicCandidate) {
+  const tree = await readLineageTreeForAI();
+  const members = tree ? flattenLineageTree(tree) : [];
+  const rowLike = {
+    person_name: publicCandidate.personName,
+    matched_member_id: publicCandidate.matchedMemberId
+  };
+  const candidateMatches = buildCandidateMatchesFromMembers(rowLike, members);
+  const matched = members.find((member) => member.id === publicCandidate.matchedMemberId) || null;
+  const currentValues = matched ? publicLineageMemberSearchResult(matched).currentValues : {};
+  return {
+    ...publicCandidate,
+    currentValues,
+    candidateMatches
+  };
+}
+
+async function listExtractedProfileCandidates({ q = '', status = '', type = '', sourceId = '', memberId = '', limit = 100 } = {}) {
+  const database = await getDatabase();
+  const rows = database.prepare('SELECT * FROM extracted_profile_candidates ORDER BY updated_at DESC, created_at DESC').all();
+  const queryNorm = normalizeKnowledgeText(q);
+  const statusFilter = normalizeProfileCandidateStatus(status);
+  const hasStatusFilter = Boolean(String(status || '').trim());
+  const typeFilter = String(type || '').trim();
+  const filtered = rows
+    .filter((row) => {
+      if (hasStatusFilter && normalizeProfileCandidateStatus(row.status) !== statusFilter) return false;
+      if (typeFilter && row.candidate_type !== typeFilter) return false;
+      if (sourceId && row.source_id !== sourceId) return false;
+      if (memberId && row.matched_member_id !== memberId) return false;
+      if (!queryNorm) return true;
+      return normalizeKnowledgeText([
+        row.person_name,
+        row.matched_member_name,
+        row.candidate_type,
+        row.target_field,
+        row.extracted_text,
+        row.reviewed_text,
+        row.source_quote,
+        row.knowledge_title
+      ].join(' ')).includes(queryNorm);
+    })
+    .slice(0, Math.max(1, Math.min(500, Number(limit) || 100)))
+    .map(publicExtractedProfileCandidate);
+  return Promise.all(filtered.map(hydrateProfileCandidateReviewData));
+}
+
+async function updateExtractedProfileCandidate(id, patch, adminUser = {}) {
+  const database = await getDatabase();
+  const row = database.prepare('SELECT * FROM extracted_profile_candidates WHERE id = ?').get(id);
+  if (!row) {
+    const err = new Error('Extracted profile candidate not found.');
+    err.status = 404;
+    throw err;
+  }
+  const metadata = safeJsonParse(row.metadata_json, {});
+  const nextStatus = patch.status === undefined ? normalizeProfileCandidateStatus(row.status) : normalizeProfileCandidateStatus(patch.status);
+  const nextCandidateType = patch.candidateType === undefined ? row.candidate_type : normalizeProfileCandidateType(patch.candidateType);
+  const nextTargetField = patch.targetField === undefined ? row.target_field : normalizeProfileTargetField(patch.targetField);
+  const nextReviewedText = patch.reviewedText === undefined ? row.reviewed_text : String(patch.reviewedText || '').trim();
+  const matchedMemberId = patch.matchedMemberId === undefined ? row.matched_member_id : String(patch.matchedMemberId || '').trim();
+  const matchedMemberName = patch.matchedMemberName === undefined ? row.matched_member_name : String(patch.matchedMemberName || '').trim();
+  const matchConfidence = patch.matchConfidence === undefined ? row.match_confidence : String(patch.matchConfidence || 'manual').trim();
+  const nextMetadata = {
+    ...metadata,
+    lastReviewedBy: adminUser?.username || adminUser?.fullName || '',
+    lastReviewedAt: new Date().toISOString()
+  };
+
+  database.prepare(`
+    UPDATE extracted_profile_candidates
+    SET status = ?,
+        candidate_type = ?,
+        target_field = ?,
+        reviewed_text = ?,
+        matched_member_id = ?,
+        matched_member_name = ?,
+        match_confidence = ?,
+        metadata_json = ?,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(
+    nextStatus,
+    nextCandidateType,
+    nextTargetField,
+    nextReviewedText,
+    matchedMemberId,
+    matchedMemberName,
+    matchConfidence,
+    JSON.stringify(nextMetadata),
+    id
+  );
+  return hydrateProfileCandidateReviewData(publicExtractedProfileCandidate(database.prepare('SELECT * FROM extracted_profile_candidates WHERE id = ?').get(id)));
+}
+
+async function scanExtractedProfileCandidates({ sourceId = '', limit = 250 } = {}) {
+  const database = await getDatabase();
+  const where = sourceId ? 'WHERE c.source_id = ?' : '';
+  const params = sourceId ? [sourceId] : [];
+  const rows = database.prepare(`
+    SELECT c.*, s.title AS source_title, s.visibility AS source_visibility
+    FROM knowledge_chunks c
+    LEFT JOIN knowledge_sources s ON s.id = c.source_id
+    ${where}
+    ORDER BY c.updated_at DESC
+    LIMIT ?
+  `).all(...params, Math.max(1, Math.min(2000, Number(limit) || 250)));
+  let scanned = 0;
+  let created = 0;
+  let skipped = 0;
+  const candidates = [];
+  for (const row of rows) {
+    scanned += 1;
+    const haystack = normalizeKnowledgeText([row.title, row.heading_path, row.summary, row.content].join(' '));
+    if (!PROFILE_CANDIDATE_KEYWORDS.some((keyword) => haystack.includes(keyword))) {
+      skipped += 1;
+      continue;
+    }
+    const rawText = compactText(row.content || row.summary || row.title || '', 1400);
+    if (normalizeKnowledgeText(rawText).length < 80) {
+      skipped += 1;
+      continue;
+    }
+    const names = extractCaoNamesFromText([row.title, row.heading_path, rawText].join(' '));
+    if (!names.length) {
+      skipped += 1;
+      continue;
+    }
+    const candidateType = classifyProfileCandidateType(rawText);
+    const targetField = defaultProfileTargetField(candidateType);
+    for (const personName of names) {
+      const personNameNorm = normalizeKnowledgeText(personName);
+      const matches = await searchLineageMembers(personName, { limit: 6 });
+      const topMatch = matches[0] || null;
+      const id = `profile_${buildProfileCandidateHash({
+        sourceId: row.source_id,
+        chunkId: row.id,
+        personName,
+        candidateType,
+        extractedText: rawText
+      })}`;
+      const exists = database.prepare('SELECT id FROM extracted_profile_candidates WHERE id = ?').get(id);
+      if (exists) {
+        skipped += 1;
+        continue;
+      }
+      const metadata = {
+        headingPath: row.heading_path || '',
+        summary: row.summary || '',
+        tags: safeJsonParse(row.tags_json, []),
+        entityRefs: safeJsonParse(row.entity_refs_json, []),
+        candidateMatches: matches
+      };
+      database.prepare(`
+        INSERT INTO extracted_profile_candidates
+          (id, candidate_type, person_name, person_name_norm, matched_member_id, matched_member_name,
+           match_confidence, target_field, extracted_text, reviewed_text, source_quote, source_id,
+           chunk_id, knowledge_title, visibility, status, metadata_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, datetime('now'), datetime('now'))
+      `).run(
+        id,
+        candidateType,
+        personName,
+        personNameNorm,
+        topMatch?.confidence && topMatch.confidence !== 'weak' && topMatch.confidence !== 'ambiguous' ? topMatch.memberId : '',
+        topMatch?.confidence && topMatch.confidence !== 'weak' && topMatch.confidence !== 'ambiguous' ? topMatch.fullName : '',
+        topMatch?.confidence || 'none',
+        targetField,
+        rawText,
+        '',
+        compactText(row.content || row.summary || '', 420),
+        row.source_id,
+        row.id,
+        row.source_title || row.title || '',
+        row.visibility || row.source_visibility || 'public',
+        JSON.stringify(metadata)
+      );
+      created += 1;
+      candidates.push(await hydrateProfileCandidateReviewData(publicExtractedProfileCandidate(database.prepare('SELECT * FROM extracted_profile_candidates WHERE id = ?').get(id))));
+    }
+  }
+  return { ok: true, scanned, created, skipped, candidates };
+}
+
+function getProfileFieldValue(node, field) {
+  const targetField = normalizeProfileTargetField(field);
+  if (targetField === 'achievements') {
+    return Array.isArray(node.achievements) ? node.achievements.join('\n') : String(node.achievements || '').trim();
+  }
+  return String(node[targetField] || '').trim();
+}
+
+function setProfileFieldValue(node, field, value, mode = 'replace') {
+  const targetField = normalizeProfileTargetField(field);
+  const text = String(value || '').trim();
+  if (targetField === 'achievements') {
+    const current = Array.isArray(node.achievements)
+      ? node.achievements.map((item) => String(item || '').trim()).filter(Boolean)
+      : String(node.achievements || '').trim()
+        ? [String(node.achievements || '').trim()]
+        : [];
+    if (mode === 'append') {
+      if (!current.some((item) => normalizeKnowledgeText(item) === normalizeKnowledgeText(text))) {
+        current.push(text);
+      }
+      node.achievements = current;
+    } else {
+      node.achievements = text ? [text] : [];
+    }
+    return;
+  }
+  if (mode === 'append') {
+    const current = String(node[targetField] || '').trim();
+    node[targetField] = current && normalizeKnowledgeText(current) !== normalizeKnowledgeText(text)
+      ? `${current}\n\n${text}`
+      : text;
+    return;
+  }
+  node[targetField] = text;
+}
+
+async function applyExtractedProfileCandidate(id, body = {}, adminUser = {}) {
+  const database = await getDatabase();
+  const row = database.prepare('SELECT * FROM extracted_profile_candidates WHERE id = ?').get(id);
+  if (!row) {
+    const err = new Error('Extracted profile candidate not found.');
+    err.status = 404;
+    throw err;
+  }
+  const status = normalizeProfileCandidateStatus(row.status);
+  if (status !== 'approved' && status !== 'applied') {
+    const err = new Error('Candidate must be approved before applying.');
+    err.status = 400;
+    throw err;
+  }
+  const memberId = String(body.memberId || row.matched_member_id || '').trim();
+  if (!memberId) {
+    const err = new Error('Missing matched member id.');
+    err.status = 400;
+    throw err;
+  }
+  const tree = await readLineageTreeForAI();
+  if (!tree) {
+    const err = new Error('Lineage tree is not available.');
+    err.status = 404;
+    throw err;
+  }
+  const target = getLineageNodeById(tree, memberId);
+  if (!target) {
+    const err = new Error('Matched member not found in lineage tree.');
+    err.status = 404;
+    throw err;
+  }
+
+  const targetField = normalizeProfileTargetField(body.targetField || row.target_field);
+  const value = String(body.reviewedText || row.reviewed_text || row.extracted_text || '').trim();
+  const appendMode = body.appendMode === 'append' ? 'append' : 'replace';
+  const confirmOverwrite = body.confirmOverwrite === true || body.force === true;
+  const oldValue = getProfileFieldValue(target, targetField);
+  if (!value) {
+    const err = new Error('Candidate text is empty.');
+    err.status = 400;
+    throw err;
+  }
+  if (oldValue && appendMode !== 'append' && !confirmOverwrite && normalizeKnowledgeText(oldValue) !== normalizeKnowledgeText(value)) {
+    const err = new Error('Target profile field is not empty. Use appendMode=append or confirmOverwrite=true.');
+    err.status = 409;
+    err.conflicts = [{ field: targetField, oldValue, newValue: value }];
+    throw err;
+  }
+  setProfileFieldValue(target, targetField, value, appendMode);
+  const newValue = getProfileFieldValue(target, targetField);
+  const changes = oldValue === newValue ? [] : [{
+    lineageField: targetField,
+    oldValue,
+    newValue,
+    sourceId: row.source_id,
+    chunkId: row.chunk_id
+  }];
+  if (changes.length) {
+    await writeState(TREE_STATE_KEY, tree);
+  }
+  const auditId = `profile_audit_${sha256Base64Url(`${id}:${Date.now()}`).slice(0, 24)}`;
+  database.prepare(`
+    INSERT INTO extracted_profile_audit_logs
+      (id, candidate_id, member_id, action, field_changes_json, source_id, chunk_id, admin_user, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `).run(
+    auditId,
+    id,
+    memberId,
+    changes.length ? 'apply' : 'apply_noop',
+    JSON.stringify({ changes, appendMode, targetField }),
+    row.source_id,
+    row.chunk_id,
+    adminUser?.username || adminUser?.fullName || ''
+  );
+  database.prepare(`
+    UPDATE extracted_profile_candidates
+    SET status = 'applied',
+        target_field = ?,
+        matched_member_id = ?,
+        matched_member_name = ?,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(targetField, memberId, String(target.name || row.matched_member_name || '').trim(), id);
+  return {
+    ok: true,
+    candidate: await hydrateProfileCandidateReviewData(publicExtractedProfileCandidate(database.prepare('SELECT * FROM extracted_profile_candidates WHERE id = ?').get(id))),
+    changes,
+    conflicts: [],
+    auditId
+  };
+}
+
+async function bulkUpdateExtractedProfileCandidates(body = {}, adminUser = {}) {
+  const action = String(body.action || '').trim();
+  const ids = Array.isArray(body.ids) ? body.ids.map((id) => String(id || '').trim()).filter(Boolean) : [];
+  if (!ids.length) {
+    const err = new Error('Missing candidate ids.');
+    err.status = 400;
+    throw err;
+  }
+  if (!['approve', 'reject', 'reset', 'apply'].includes(action)) {
+    const err = new Error('Unsupported bulk action.');
+    err.status = 400;
+    throw err;
+  }
+  const results = [];
+  for (const id of ids) {
+    try {
+      if (action === 'approve') {
+        const candidate = await updateExtractedProfileCandidate(id, { status: 'approved' }, adminUser);
+        results.push({ id, ok: true, status: 'approved', candidate });
+      } else if (action === 'reject') {
+        const candidate = await updateExtractedProfileCandidate(id, { status: 'rejected' }, adminUser);
+        results.push({ id, ok: true, status: 'rejected', candidate });
+      } else if (action === 'reset') {
+        const candidate = await updateExtractedProfileCandidate(id, { status: 'pending' }, adminUser);
+        results.push({ id, ok: true, status: 'pending', candidate });
+      } else {
+        const row = (await getDatabase()).prepare('SELECT status FROM extracted_profile_candidates WHERE id = ?').get(id);
+        if (!row || normalizeProfileCandidateStatus(row.status) !== 'approved') {
+          results.push({ id, ok: false, skipped: true, reason: row ? 'not_approved' : 'not_found' });
+          continue;
+        }
+        const applied = await applyExtractedProfileCandidate(id, body, adminUser);
+        results.push({ id, ok: true, status: 'applied', changes: applied.changes });
+      }
+    } catch (err) {
+      results.push({ id, ok: false, error: err.message || String(err), conflicts: err.conflicts || [] });
+    }
+  }
+  const database = await getDatabase();
+  const auditId = `profile_audit_bulk_${sha256Base64Url(`${action}:${Date.now()}:${ids.join(',')}`).slice(0, 24)}`;
+  database.prepare(`
+    INSERT INTO extracted_profile_audit_logs
+      (id, candidate_id, member_id, action, field_changes_json, source_id, chunk_id, admin_user, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `).run(
+    auditId,
+    ids.join(','),
+    '',
+    `bulk_${action}`,
+    JSON.stringify({ results }),
+    '',
+    '',
+    adminUser?.username || adminUser?.fullName || ''
+  );
+  return {
+    ok: results.every((item) => item.ok || item.skipped),
+    action,
+    total: ids.length,
+    applied: results.filter((item) => item.status === 'applied').length,
+    approved: results.filter((item) => item.status === 'approved').length,
+    rejected: results.filter((item) => item.status === 'rejected').length,
+    reset: results.filter((item) => item.status === 'pending').length,
+    skipped: results.filter((item) => item.skipped).length,
+    failed: results.filter((item) => !item.ok && !item.skipped).length,
+    auditId,
+    results
+  };
+}
+
+async function listAppliedProfileExtractions({ q = '', limit = 80 } = {}) {
+  const database = await getDatabase();
+  const rows = database.prepare(`
+    SELECT a.*, c.person_name, c.matched_member_name, c.target_field, c.knowledge_title,
+           c.source_quote, s.title AS source_title, k.heading_path AS chunk_heading_path
+    FROM extracted_profile_audit_logs a
+    LEFT JOIN extracted_profile_candidates c ON c.id = a.candidate_id
+    LEFT JOIN knowledge_sources s ON s.id = a.source_id
+    LEFT JOIN knowledge_chunks k ON k.id = a.chunk_id
+    WHERE a.action IN ('apply', 'apply_noop')
+    ORDER BY a.created_at DESC
+    LIMIT ?
+  `).all(Math.max(1, Math.min(500, Number(limit) || 80)));
+  const queryNorm = normalizeKnowledgeText(q);
+  return rows
+    .flatMap((row) => {
+      const payload = safeJsonParse(row.field_changes_json, {});
+      const changes = Array.isArray(payload?.changes) ? payload.changes : [];
+      return changes.map((change, index) => ({
+        id: `${row.id}:${index}`,
+        auditId: row.id,
+        candidateId: row.candidate_id,
+        memberId: row.member_id,
+        memberName: row.matched_member_name || row.person_name || '',
+        field: change.lineageField || row.target_field || '',
+        oldValue: change.oldValue || '',
+        newValue: change.newValue || '',
+        sourceId: row.source_id,
+        sourceTitle: row.source_title || row.knowledge_title || '',
+        chunkId: row.chunk_id,
+        headingPath: row.chunk_heading_path || '',
+        appliedBy: row.admin_user || '',
+        appliedAt: row.created_at,
+        action: row.action
+      }));
+    })
+    .filter((item) => {
+      if (!queryNorm) return true;
+      return normalizeKnowledgeText([
+        item.memberName,
+        item.field,
+        item.oldValue,
+        item.newValue,
+        item.sourceTitle,
+        item.headingPath
+      ].join(' ')).includes(queryNorm);
+    })
+    .slice(0, Math.max(1, Math.min(500, Number(limit) || 80)));
+}
+
+async function listProfileAuditLogs({ limit = 80 } = {}) {
+  const database = await getDatabase();
+  return database.prepare(`
+    SELECT a.*, c.person_name, c.matched_member_name, c.target_field, c.knowledge_title
+    FROM extracted_profile_audit_logs a
+    LEFT JOIN extracted_profile_candidates c ON c.id = a.candidate_id
+    ORDER BY a.created_at DESC
+    LIMIT ?
+  `).all(Math.max(1, Math.min(500, Number(limit) || 80))).map((row) => ({
+    id: row.id,
+    candidateId: row.candidate_id,
+    memberId: row.member_id,
+    memberName: row.matched_member_name || row.person_name || '',
+    action: row.action,
+    fieldChanges: safeJsonParse(row.field_changes_json, {}),
+    sourceId: row.source_id,
+    chunkId: row.chunk_id,
+    adminUser: row.admin_user,
+    createdAt: row.created_at
+  }));
+}
+
+async function buildProfileLocalAnswer(query, authScope = 'anonymous') {
+  if (!isProfileQuestion(query)) return null;
+  if (!['admin', 'kyc_verified'].includes(authScope)) {
+    return {
+      text: 'Thông tin hành trạng/công lao chi tiết cần đăng nhập và hoàn tất KYC để xem.',
+      knowledgeMatchesCount: 0,
+      knowledgeSourceIds: [],
+      profileCandidatesCount: 0,
+      appliedProfileFieldsUsed: [],
+      pendingProfileCandidatesCount: 0
+    };
+  }
+  const queryNameNorms = extractCaoNamesFromText(query).map((name) => normalizeKnowledgeText(name)).filter(Boolean);
+  const queryHasSpecificName = queryNameNorms.length > 0;
+  const queryNameMatches = (nameNorm) => {
+    const normalized = normalizeKnowledgeText(nameNorm);
+    if (!queryHasSpecificName) return false;
+    return queryNameNorms.some((queryName) => queryName.includes(normalized) || normalized.includes(queryName));
+  };
+  const matches = await searchLineageMembers(query, { limit: 6 });
+  const strong = matches.find((match) => ['exact', 'strong'].includes(match.confidence || '')) || null;
+  const strongNameNorm = normalizeKnowledgeText(strong?.fullName || '');
+  const canUseStrongMember = Boolean(strong?.memberId && strongNameNorm && (
+    normalizeKnowledgeText(query).includes(strongNameNorm) ||
+    queryNameMatches(strongNameNorm)
+  ));
+  const tree = await readLineageTreeForAI();
+  const member = canUseStrongMember && tree ? getLineageNodeById(tree, strong.memberId) : null;
+  const fields = [];
+  if (member?.description) fields.push({ field: 'description', label: 'Hành trạng', value: String(member.description).trim() });
+  if (member?.bio) fields.push({ field: 'bio', label: 'Sự nghiệp', value: String(member.bio).trim() });
+  if (Array.isArray(member?.achievements) && member.achievements.length) {
+    fields.push({ field: 'achievements', label: 'Công lao/vinh danh', value: member.achievements.map((item) => String(item || '').trim()).filter(Boolean).join('\n') });
+  }
+  if (fields.length) {
+    const database = await getDatabase();
+    const appliedRowsForMember = database.prepare(`
+      SELECT * FROM extracted_profile_candidates
+      WHERE status = 'applied'
+      ORDER BY updated_at DESC
+      LIMIT 80
+    `).all().filter((row) => (
+      (strong?.fullName && normalizeKnowledgeText([row.person_name, row.matched_member_name].join(' ')).includes(normalizeKnowledgeText(strong.fullName))) ||
+      (row.matched_member_id && strong?.memberId && row.matched_member_id === strong.memberId)
+    ));
+    for (const row of appliedRowsForMember) {
+      const value = String(row.reviewed_text || row.extracted_text || '').trim();
+      if (value && !fields.some((item) => normalizeKnowledgeText(item.value).includes(normalizeKnowledgeText(value).slice(0, 80)))) {
+        fields.push({ field: row.target_field || 'description', label: row.target_field || 'Đã áp dụng', value });
+      }
+    }
+    return {
+      text: [
+        `${getMemberDisplayName(member) || member.name}: dữ liệu đã áp dụng trong cây phả.`,
+        ...fields.map((item) => `- ${item.label}: ${compactText(item.value, 520)}`)
+      ].join('\n'),
+      knowledgeMatchesCount: fields.length,
+      knowledgeSourceIds: [],
+      profileCandidatesCount: fields.length,
+      appliedProfileFieldsUsed: fields.map((item) => item.field),
+      pendingProfileCandidatesCount: 0
+    };
+  }
+  const database = await getDatabase();
+  const queryNorm = normalizeKnowledgeText(query);
+  const appliedRows = database.prepare(`
+    SELECT * FROM extracted_profile_candidates
+    WHERE status = 'applied'
+    ORDER BY updated_at DESC
+    LIMIT 80
+  `).all().filter((row) => {
+    const haystack = normalizeKnowledgeText([row.person_name, row.matched_member_name, row.extracted_text, row.reviewed_text].join(' '));
+    return (strong?.fullName && canUseStrongMember && haystack.includes(normalizeKnowledgeText(strong.fullName))) ||
+      (row.person_name_norm && (queryNorm.includes(row.person_name_norm) || queryNameMatches(row.person_name_norm)));
+  });
+  if (appliedRows.length) {
+    return {
+      text: [
+        `${appliedRows[0].matched_member_name || appliedRows[0].person_name}: dữ liệu hành trạng/công lao đã được admin áp dụng.`,
+        ...appliedRows.slice(0, 3).map((row) => `- ${row.target_field}: ${compactText(row.reviewed_text || row.extracted_text, 520)}`)
+      ].join('\n'),
+      knowledgeMatchesCount: appliedRows.length,
+      knowledgeSourceIds: [...new Set(appliedRows.map((row) => row.source_id).filter(Boolean))],
+      profileCandidatesCount: appliedRows.length,
+      appliedProfileFieldsUsed: [...new Set(appliedRows.map((row) => row.target_field).filter(Boolean))],
+      pendingProfileCandidatesCount: 0
+    };
+  }
+  const pendingRows = database.prepare(`
+    SELECT * FROM extracted_profile_candidates
+    WHERE status IN ('pending', 'approved')
+    ORDER BY updated_at DESC
+    LIMIT 50
+  `).all().filter((row) => {
+    const haystack = normalizeKnowledgeText([row.person_name, row.matched_member_name, row.extracted_text, row.reviewed_text].join(' '));
+    return (strong?.fullName && canUseStrongMember && haystack.includes(normalizeKnowledgeText(strong.fullName))) ||
+      (row.person_name_norm && (queryNorm.includes(row.person_name_norm) || queryNameMatches(row.person_name_norm))) ||
+      haystack.includes(queryNorm);
+  });
+  if (pendingRows.length) {
+    return {
+      text: `Có ${pendingRows.length} dữ liệu hành trạng/công lao đang chờ Ban trị sự duyệt hoặc đã duyệt nhưng chưa áp dụng vào hồ sơ. Tôi chưa coi đây là dữ liệu xác minh.`,
+      knowledgeMatchesCount: pendingRows.length,
+      knowledgeSourceIds: [...new Set(pendingRows.map((row) => row.source_id).filter(Boolean))],
+      profileCandidatesCount: pendingRows.length,
+      appliedProfileFieldsUsed: [],
+      pendingProfileCandidatesCount: pendingRows.length
+    };
+  }
+  return {
+    text: 'Chưa tìm thấy dữ liệu hành trạng/công lao đã xác minh trong cây phả hiện tại.',
+    knowledgeMatchesCount: 0,
+    knowledgeSourceIds: [],
+    profileCandidatesCount: 0,
+    appliedProfileFieldsUsed: [],
+    pendingProfileCandidatesCount: 0
+  };
 }
 
 function isVitalRecordQuestion(query) {
@@ -3700,6 +4427,111 @@ app.get('/api/knowledge/applied-extractions/:id', async (req, res) => {
   }
 });
 
+app.get('/api/knowledge/profile-candidates', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const q = String(req.query.q || '').trim();
+    const status = String(req.query.status || '').trim();
+    const type = String(req.query.type || '').trim();
+    const sourceId = String(req.query.sourceId || '').trim();
+    const memberId = String(req.query.memberId || '').trim();
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit || 100) || 100));
+    res.json({ candidates: await listExtractedProfileCandidates({ q, status, type, sourceId, memberId, limit }) });
+  } catch (err) {
+    console.error('Failed to list profile candidates:', err);
+    res.status(500).json({ error: 'Failed to list profile candidates.' });
+  }
+});
+
+app.post('/api/knowledge/profile-candidates/scan', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const sourceId = String(req.body?.sourceId || '').trim();
+    const limit = Math.max(1, Math.min(2000, Number(req.body?.limit || 500) || 500));
+    res.json(await scanExtractedProfileCandidates({ sourceId, limit }));
+  } catch (err) {
+    console.error('Failed to scan profile candidates:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to scan profile candidates.' });
+  }
+});
+
+app.get('/api/knowledge/profile-candidates/applied', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const q = String(req.query.q || '').trim();
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit || 80) || 80));
+    res.json({ appliedProfileExtractions: await listAppliedProfileExtractions({ q, limit }) });
+  } catch (err) {
+    console.error('Failed to list applied profile extractions:', err);
+    res.status(500).json({ error: 'Failed to list applied profile extractions.' });
+  }
+});
+
+app.get('/api/knowledge/profile-candidates/logs', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit || 80) || 80));
+    res.json({ logs: await listProfileAuditLogs({ limit }) });
+  } catch (err) {
+    console.error('Failed to list profile extraction logs:', err);
+    res.status(500).json({ error: 'Failed to list profile extraction logs.' });
+  }
+});
+
+app.get('/api/knowledge/profile-candidates/:id', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const database = await getDatabase();
+    const row = database.prepare('SELECT * FROM extracted_profile_candidates WHERE id = ?').get(String(req.params.id || ''));
+    if (!row) {
+      res.status(404).json({ error: 'Profile candidate not found.' });
+      return;
+    }
+    res.json({ candidate: await hydrateProfileCandidateReviewData(publicExtractedProfileCandidate(row)) });
+  } catch (err) {
+    console.error('Failed to read profile candidate:', err);
+    res.status(500).json({ error: 'Failed to read profile candidate.' });
+  }
+});
+
+app.patch('/api/knowledge/profile-candidates/:id', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const candidate = await updateExtractedProfileCandidate(String(req.params.id || ''), req.body || {}, admin.authUser);
+    res.json({ ok: true, candidate });
+  } catch (err) {
+    console.error('Failed to update profile candidate:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to update profile candidate.' });
+  }
+});
+
+app.post('/api/knowledge/profile-candidates/bulk', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json(await bulkUpdateExtractedProfileCandidates(req.body || {}, admin.authUser));
+  } catch (err) {
+    console.error('Failed to bulk update profile candidates:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to bulk update profile candidates.' });
+  }
+});
+
+app.post('/api/knowledge/profile-candidates/:id/apply', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json(await applyExtractedProfileCandidate(String(req.params.id || ''), req.body || {}, admin.authUser));
+  } catch (err) {
+    console.error('Failed to apply profile candidate:', err);
+    res.status(err.status || 500).json({
+      error: err.message || 'Failed to apply profile candidate.',
+      conflicts: err.conflicts || []
+    });
+  }
+});
+
 app.get('/api/knowledge/chunks/:id', async (req, res) => {
   try {
     if (!await requireAdmin(req, res)) return;
@@ -4078,6 +4910,7 @@ app.post('/api/excel-import/sessions/:id/import', async (req, res) => {
 app.get('/api/ai/operation-graph', async (req, res) => {
   try {
     if (!await requireAdmin(req, res)) return;
+    const database = await getDatabase();
     const [configs, summary, knowledge] = await Promise.all([
       listAIBotConfigs(),
       summarizeAIRequestLogs(),
@@ -4085,7 +4918,7 @@ app.get('/api/ai/operation-graph', async (req, res) => {
     ]);
     const configByBot = new Map(configs.map((config) => [config.botType, config]));
     const botCount = (botType) => summary.topBotTypes?.find((item) => item.name === botType)?.count || 0;
-    const auditRows = getDatabase().prepare(`
+    const auditRows = database.prepare(`
       SELECT status, priority, COUNT(*) AS count
       FROM system_audit_suggestions
       GROUP BY status, priority
@@ -4096,11 +4929,15 @@ app.get('/api/ai/operation-graph', async (req, res) => {
     const auditCritical = auditRows
       .filter((row) => ['critical', 'high'].includes(String(row.priority || '')))
       .reduce((sum, row) => sum + Number(row.count || 0), 0);
-    const excelRows = getDatabase().prepare('SELECT status, COUNT(*) AS count FROM excel_import_sessions GROUP BY status').all();
+    const excelRows = database.prepare('SELECT status, COUNT(*) AS count FROM excel_import_sessions GROUP BY status').all();
     const excelMetric = (status) => excelRows
       .filter((row) => row.status === status)
       .reduce((sum, row) => sum + Number(row.count || 0), 0);
-    const excelErrorCount = getDatabase().prepare("SELECT COUNT(*) AS count FROM excel_import_validation_issues WHERE severity IN ('critical', 'error')").get()?.count || 0;
+    const excelErrorCount = database.prepare("SELECT COUNT(*) AS count FROM excel_import_validation_issues WHERE severity IN ('critical', 'error')").get()?.count || 0;
+    const profileRows = database.prepare('SELECT status, COUNT(*) AS count FROM extracted_profile_candidates GROUP BY status').all();
+    const profileMetric = (status) => profileRows
+      .filter((row) => row.status === status)
+      .reduce((sum, row) => sum + Number(row.count || 0), 0);
     const botNode = (id, label, row, description) => {
       const config = configByBot.get(id);
       return {
@@ -4137,6 +4974,7 @@ app.get('/api/ai/operation-graph', async (req, res) => {
         { id: 'knowledge_search', label: 'Kho tri thức', type: 'data', status: 'active', column: 4, row: 5, description: 'Tìm top chunks từ tài liệu Cao Tộc và alias.', metrics: { sources: knowledge.sources, chunks: knowledge.chunks, aliases: knowledge.aliases } },
         { id: 'system_audit', label: 'Kiểm tra hệ thống', type: 'audit', status: auditCritical ? 'error' : 'active', column: 5, row: 2, description: 'Scanner local-first phát hiện lỗi font, dữ liệu mẫu, danh xưng sai, rủi ro riêng tư và tạo đề xuất chờ admin duyệt.', metrics: { pending: auditMetric('pending'), applied: auditMetric('applied'), rejected: auditMetric('rejected'), critical: auditCritical } },
         { id: 'gemini', label: 'Gemini', type: 'model', status: 'active', column: 5, row: 4, description: 'Chỉ dùng khi local/knowledge chưa đủ hoặc cần sinh nội dung dài.' },
+        { id: 'profile_extraction', label: 'Hành trạng/Công lao', type: 'audit', status: profileMetric('pending') ? 'warning' : 'active', column: 5, row: 5, description: 'Bóc tách hành trạng, sự nghiệp, công lao từ kho tri thức; chỉ ghi vào cây phả sau khi admin duyệt và apply.', metrics: { pending: profileMetric('pending'), approved: profileMetric('approved'), applied: profileMetric('applied') } },
         { id: 'response_guard', label: 'Response Guard', type: 'guard', status: 'active', column: 6, row: 3, description: 'Chặn bịa dữ liệu, phân biệt pending/applied và giới hạn output.' },
         { id: 'excel_import_gate', label: 'Duyệt cấu trúc Excel', type: 'guard', status: excelErrorCount ? 'error' : 'active', column: 5, row: 6, description: 'Cổng duyệt file Excel/CSV: kiểm tra an toàn, mapping 55 cột, preview và validation trước khi import.', metrics: { pending: excelMetric('structure_review') + excelMetric('mapping_approved'), ready: excelMetric('ready_to_import'), errors: excelErrorCount } },
         { id: 'ai_logs', label: 'Logs / Token', type: 'logs', status: 'active', column: 6, row: 5, description: 'Theo dõi request, cache, lỗi, token và nguồn theo từng bot.', metrics: { tokens: summary.estimatedTokens, avg: `${summary.avgDurationMs}ms` } }
@@ -4158,6 +4996,9 @@ app.get('/api/ai/operation-graph', async (req, res) => {
         { from: 'system_audit', to: 'bot_config', label: 'prompt/config' },
         { from: 'system_audit', to: 'local_db', label: 'scan' },
         { from: 'system_audit', to: 'knowledge_search', label: 'scan' },
+        { from: 'knowledge_search', to: 'profile_extraction', label: 'bóc tách' },
+        { from: 'profile_extraction', to: 'local_db', label: 'admin apply' },
+        { from: 'profile_extraction', to: 'response_guard', label: 'pending/applied' },
         { from: 'ai_governor', to: 'excel_import_gate', label: 'mapping' },
         { from: 'excel_import_gate', to: 'local_db', label: 'confirm import' },
         { from: 'excel_import_gate', to: 'system_audit', label: 'validation' },
@@ -7263,7 +8104,11 @@ function flattenLineageTree(node, parent = null, output = []) {
     motherName: String(node.motherName || '').trim(),
     spouse: String(node.spouse || '').trim(),
     residence: String(node.residence || '').trim(),
-    bio: String(node.bio || '').trim()
+    bio: String(node.bio || '').trim(),
+    description: String(node.description || '').trim(),
+    achievements: Array.isArray(node.achievements)
+      ? node.achievements.map((item) => String(item || '').trim()).filter(Boolean)
+      : []
   });
   children.forEach((child) => flattenLineageTree(child, node, output));
   return output;
@@ -7807,6 +8652,34 @@ async function handleAIGatewayRequest(req, res) {
         knowledgeSourceIds: []
       });
       res.json(knowledgeResponse);
+      return;
+    }
+
+    const profileAnswer = await buildProfileLocalAnswer(userQuery || message, requestContext.authScope || 'anonymous');
+    if (profileAnswer) {
+      const profileResponse = {
+        model: 'local-profile',
+        provider: 'local',
+        engine: 'local',
+        botType: requestContext.botType,
+        intent: requestContext.intent,
+        text: profileAnswer.text,
+        knowledgeMatchesCount: profileAnswer.knowledgeMatchesCount,
+        knowledgeSourceIds: profileAnswer.knowledgeSourceIds,
+        profileCandidatesCount: profileAnswer.profileCandidatesCount,
+        appliedProfileFieldsUsed: profileAnswer.appliedProfileFieldsUsed,
+        pendingProfileCandidatesCount: profileAnswer.pendingProfileCandidatesCount
+      };
+      logGateway({
+        engine: 'local-profile',
+        model: 'local-profile',
+        status: 200,
+        cached: false,
+        durationMs: Date.now() - startedAt,
+        knowledgeMatchesCount: profileAnswer.knowledgeMatchesCount,
+        knowledgeSourceIds: profileAnswer.knowledgeSourceIds
+      });
+      res.json(profileResponse);
       return;
     }
 

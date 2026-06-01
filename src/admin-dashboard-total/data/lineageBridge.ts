@@ -64,16 +64,17 @@ function toDashboardMember(node: any, parentId?: string): FamilyMember {
     parentId: node.parentId || parentId,
     photo: node.photo,
     bio: [
+      node.bio,
       node.description,
       node.residence ? `N\u01a1i \u1edf: ${node.residence}` : "",
       node.motherName ? `M\u1eabu th\u00e2n: ${node.motherName}` : "",
       node.phone1 ? `Li\u00ean h\u1ec7: ${node.phone1}${node.phone2 ? ` - ${node.phone2}` : ""}` : "",
     ].filter(Boolean).join(" | ") || undefined,
-    achievements: node.customSuffix
-      ? [node.customSuffix]
-      : node.title
-        ? [stripGeneratedLineageTitlePrefix(node.title) || node.title]
-        : [],
+    achievements: [
+      ...(Array.isArray(node.achievements) ? node.achievements : []),
+      node.customSuffix,
+      node.title ? (stripGeneratedLineageTitlePrefix(node.title) || node.title) : "",
+    ].filter(Boolean),
   };
 }
 
@@ -139,7 +140,9 @@ function toLineageNode(member: FamilyMember): AncestorNode {
     spouseList: member.spouse ? member.spouse.split(",").map((item) => item.trim()).filter(Boolean) : [],
     spouseDetails: member.spouse ? [{ name: member.spouse }] : [],
     parentId: member.parentId,
+    bio: member.bio,
     description: member.bio,
+    achievements: member.achievements ?? [],
     children: [],
   };
 }
