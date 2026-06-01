@@ -257,6 +257,9 @@ type AIOperationGraphEdgeLayout = {
   toSide?: AIOperationGraphSide;
   fromSlot?: number;
   toSlot?: number;
+  elbowAxis?: "horizontal" | "vertical";
+  routeOffsetX?: number;
+  routeOffsetY?: number;
   routeMode?: "auto" | "straight" | "elbow" | "manual";
   labelHidden?: boolean;
   waypoints?: Array<{ x: number; y: number }>;
@@ -1993,6 +1996,7 @@ export default function AIGovernor({
   const graphCanvas = { width: 1640, height: 800, nodeWidth: 172, nodeHeight: 76 };
   const operationSideOptions: AIOperationGraphSide[] = ["left", "right", "top", "bottom"];
   const clampOperationAnchorSlot = (value: unknown) => Math.min(0.92, Math.max(0.08, Number(value) || 0.5));
+  const clampOperationRouteOffset = (value: unknown) => Math.min(260, Math.max(-260, Number(value) || 0));
   const editableOperationRouteMode = (mode?: AIOperationGraphEdgeLayout["routeMode"]) =>
     mode && mode !== "auto" ? mode : "elbow";
   const getOperationEdgeKey = (edge: AIOperationGraphEdge) => `${edge.from}->${edge.to}:${edge.label || ""}`;
@@ -2190,8 +2194,15 @@ export default function AIGovernor({
           y: Math.min(graphCanvas.height - 12, Math.max(12, Number(point.y) || 12))
         })), end];
       } else {
-        const midX = Math.round((start.x + end.x) / 2);
-        routePoints = [start, { x: midX, y: start.y }, { x: midX, y: end.y }, end];
+        const offsetX = clampOperationRouteOffset(edgeLayout.routeOffsetX);
+        const offsetY = clampOperationRouteOffset(edgeLayout.routeOffsetY);
+        if (edgeLayout.elbowAxis === "vertical") {
+          const midY = Math.min(graphCanvas.height - 12, Math.max(12, Math.round((start.y + end.y) / 2 + offsetY)));
+          routePoints = [start, { x: start.x, y: midY }, { x: end.x, y: midY }, end];
+        } else {
+          const midX = Math.min(graphCanvas.width - 12, Math.max(12, Math.round((start.x + end.x) / 2 + offsetX)));
+          routePoints = [start, { x: midX, y: start.y }, { x: midX, y: end.y }, end];
+        }
       }
     } else if (edge.to === "ai_gateway" && fromNode.type === "bot") {
       const preferred = getPreferredOperationSides(edge);
@@ -2458,6 +2469,35 @@ export default function AIGovernor({
       fromSide: edge.edgeLayout.fromSide || getPreferredOperationSides(edge).fromSide,
       toSide: edge.edgeLayout.toSide || getPreferredOperationSides(edge).toSide,
       [endpoint === "from" ? "fromSlot" : "toSlot"]: clampOperationAnchorSlot(slot)
+    });
+  };
+  const makeOperationEdgeManual = (edge: typeof selectedOperationEdge) => {
+    if (!edge) return;
+    const waypoints = edge.routePoints.slice(1, -1).map((point) => ({
+      x: Math.round(point.x),
+      y: Math.round(point.y)
+    }));
+    updateOperationEdgeLayout(edge.edgeKey, {
+      routeMode: "manual",
+      fromSide: edge.edgeLayout.fromSide || getPreferredOperationSides(edge).fromSide,
+      toSide: edge.edgeLayout.toSide || getPreferredOperationSides(edge).toSide,
+      waypoints
+    });
+  };
+  const nudgeOperationEdgeRoute = (edge: typeof selectedOperationEdge, dx: number, dy: number) => {
+    if (!edge) return;
+    if (edge.edgeLayout.routeMode === "manual" && edge.edgeLayout.waypoints?.length) {
+      const waypoints = edge.edgeLayout.waypoints.map((point) => ({
+        x: Math.min(graphCanvas.width - 12, Math.max(12, Math.round(point.x + dx))),
+        y: Math.min(graphCanvas.height - 12, Math.max(12, Math.round(point.y + dy)))
+      }));
+      updateOperationEdgeLayout(edge.edgeKey, { routeMode: "manual", waypoints });
+      return;
+    }
+    updateOperationEdgeLayout(edge.edgeKey, {
+      routeMode: editableOperationRouteMode(edge.edgeLayout.routeMode),
+      routeOffsetX: clampOperationRouteOffset((edge.edgeLayout.routeOffsetX || 0) + dx),
+      routeOffsetY: clampOperationRouteOffset((edge.edgeLayout.routeOffsetY || 0) + dy)
     });
   };
   const addOperationEdgeWaypoint = (edge: typeof selectedOperationEdge) => {
@@ -2883,7 +2923,7 @@ export default function AIGovernor({
                 </p>
               )}
               {isOperationGraphEditing && (
-                <div className="mb-3 grid gap-2 rounded-xl border border-stone-200 bg-white p-3 text-[11px] shadow-sm lg:grid-cols-8">
+                <div className="mb-3 grid gap-2 rounded-xl border border-stone-200 bg-white p-3 text-[11px] shadow-sm lg:grid-cols-8 xl:grid-cols-10">
                   <label className="lg:col-span-2">
                     <span className="mb-1 block font-bold uppercase text-stone-400">Edge</span>
                     <select
@@ -2927,6 +2967,17 @@ export default function AIGovernor({
                     </select>
                   </label>
                   <label>
+                    <span className="mb-1 block font-bold uppercase text-stone-400">Elbow</span>
+                    <select
+                      value={selectedOperationEdge?.edgeLayout.elbowAxis || "horizontal"}
+                      onChange={(event) => selectedOperationEdge && updateOperationEdgeLayout(selectedOperationEdge.edgeKey, { elbowAxis: event.target.value as AIOperationGraphEdgeLayout["elbowAxis"], routeMode: "elbow" })}
+                      className="w-full rounded border border-stone-200 bg-white px-2 py-1.5 font-semibold text-stone-700"
+                    >
+                      <option value="horizontal">ngang trước</option>
+                      <option value="vertical">dọc trước</option>
+                    </select>
+                  </label>
+                  <label>
                     <span className="mb-1 block font-bold uppercase text-stone-400">From slot</span>
                     <input
                       type="range"
@@ -2950,7 +3001,31 @@ export default function AIGovernor({
                       className="w-full accent-red-800"
                     />
                   </label>
-                  <div className="flex flex-wrap items-end gap-2">
+                  <label>
+                    <span className="mb-1 block font-bold uppercase text-stone-400">Route X</span>
+                    <input
+                      type="range"
+                      min="-260"
+                      max="260"
+                      step="10"
+                      value={selectedOperationEdge ? clampOperationRouteOffset(selectedOperationEdge.edgeLayout.routeOffsetX) : 0}
+                      onChange={(event) => selectedOperationEdge && updateOperationEdgeLayout(selectedOperationEdge.edgeKey, { routeOffsetX: Number(event.target.value), routeMode: editableOperationRouteMode(selectedOperationEdge.edgeLayout.routeMode) })}
+                      className="w-full accent-stone-600"
+                    />
+                  </label>
+                  <label>
+                    <span className="mb-1 block font-bold uppercase text-stone-400">Route Y</span>
+                    <input
+                      type="range"
+                      min="-260"
+                      max="260"
+                      step="10"
+                      value={selectedOperationEdge ? clampOperationRouteOffset(selectedOperationEdge.edgeLayout.routeOffsetY) : 0}
+                      onChange={(event) => selectedOperationEdge && updateOperationEdgeLayout(selectedOperationEdge.edgeKey, { routeOffsetY: Number(event.target.value), routeMode: editableOperationRouteMode(selectedOperationEdge.edgeLayout.routeMode) })}
+                      className="w-full accent-stone-600"
+                    />
+                  </label>
+                  <div className="flex flex-wrap items-end gap-2 lg:col-span-8 xl:col-span-10">
                     <button
                       type="button"
                       onClick={() => addOperationEdgeWaypoint(selectedOperationEdge)}
@@ -2959,6 +3034,31 @@ export default function AIGovernor({
                     >
                       Add point
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => makeOperationEdgeManual(selectedOperationEdge)}
+                      disabled={!selectedOperationEdge}
+                      className="rounded border border-blue-200 bg-white px-2.5 py-1.5 font-bold text-blue-800 disabled:opacity-50"
+                    >
+                      Manualize
+                    </button>
+                    {[
+                      ["←", -18, 0],
+                      ["↑", 0, -18],
+                      ["↓", 0, 18],
+                      ["→", 18, 0]
+                    ].map(([label, dx, dy]) => (
+                      <button
+                        key={label}
+                        type="button"
+                        onClick={() => selectedOperationEdge && nudgeOperationEdgeRoute(selectedOperationEdge, Number(dx), Number(dy))}
+                        disabled={!selectedOperationEdge}
+                        className="h-8 w-8 rounded border border-stone-200 bg-stone-50 font-bold text-stone-700 disabled:opacity-50"
+                        aria-label={`Nudge route ${label}`}
+                      >
+                        {label}
+                      </button>
+                    ))}
                     <button
                       type="button"
                       onClick={() => selectedOperationEdge && updateOperationEdgeLayout(selectedOperationEdge.edgeKey, { labelHidden: !selectedOperationEdge.edgeLayout.labelHidden })}
