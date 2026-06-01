@@ -598,6 +598,7 @@ export default function AIGovernor({
   const [extractedCandidates, setExtractedCandidates] = useState<ExtractedAnniversaryCandidate[]>([]);
   const [isExtractedLoading, setIsExtractedLoading] = useState(false);
   const [extractedNote, setExtractedNote] = useState("");
+  const [extractionReviewGroup, setExtractionReviewGroup] = useState<"vital" | "profile">("vital");
   const [extractedStatusFilter, setExtractedStatusFilter] = useState("pending");
   const [extractedTypeFilter, setExtractedTypeFilter] = useState("");
   const [extractedNameFilter, setExtractedNameFilter] = useState("");
@@ -4370,20 +4371,27 @@ export default function AIGovernor({
                     Dữ liệu trích xuất cần duyệt
                   </h4>
                   <p className="mt-1 text-xs leading-relaxed text-stone-500">
-                    Candidate từ file 04 chỉ được áp dụng vào cây phả khi admin duyệt. Hệ thống không tự ghi đè trường đã có dữ liệu.
+                    Candidate trích xuất từ tài liệu chỉ được áp dụng vào cây phả khi admin duyệt. Bao gồm ngày tháng/mộ chí và hành trạng/công lao.
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void loadExtractedCandidates()}
-                  disabled={isExtractedLoading}
-                  className="inline-flex items-center justify-center gap-2 rounded border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-60"
-                >
-                  <RefreshCw className={`h-4 w-4 ${isExtractedLoading ? "animate-spin" : ""}`} />
-                  Tải candidate
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setExtractionReviewGroup("vital")}
+                    className={`rounded px-3 py-2 text-xs font-bold ${extractionReviewGroup === "vital" ? "bg-red-900 text-white" : "border border-stone-200 bg-white text-stone-700 hover:bg-stone-50"}`}
+                  >
+                    Ngày tháng & mộ chí
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setExtractionReviewGroup("profile")}
+                    className={`rounded px-3 py-2 text-xs font-bold ${extractionReviewGroup === "profile" ? "bg-emerald-700 text-white" : "border border-stone-200 bg-white text-stone-700 hover:bg-stone-50"}`}
+                  >
+                    Hành trạng & công lao
+                  </button>
+                </div>
               </div>
-              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-4">
+              <div className={`${extractionReviewGroup === "vital" ? "grid" : "hidden"} mt-3 grid-cols-1 gap-2 md:grid-cols-4`}>
                 <input
                   value={extractedNameFilter}
                   onChange={(event) => setExtractedNameFilter(event.target.value)}
@@ -4413,18 +4421,29 @@ export default function AIGovernor({
                   <option value="hometown">Quê quán</option>
                   <option value="grave">Mộ chí</option>
                 </select>
-                <button
-                  type="button"
-                  onClick={() => void loadExtractedCandidates()}
-                  disabled={isExtractedLoading}
-                  className="inline-flex items-center justify-center gap-2 rounded bg-red-900 px-3 py-2 text-xs font-bold text-white hover:bg-red-950 disabled:opacity-60"
-                >
-                  <Search className="h-4 w-4" />
-                  Lọc
-                </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void loadExtractedCandidates()}
+                    disabled={isExtractedLoading}
+                    className="inline-flex items-center justify-center gap-2 rounded bg-red-900 px-3 py-2 text-xs font-bold text-white hover:bg-red-950 disabled:opacity-60"
+                  >
+                    <Search className="h-4 w-4" />
+                    Lọc
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void loadExtractedCandidates()}
+                    disabled={isExtractedLoading}
+                    className="inline-flex items-center justify-center gap-2 rounded border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-60"
+                  >
+                    <RefreshCw className={`h-4 w-4 ${isExtractedLoading ? "animate-spin" : ""}`} />
+                    Tải
+                  </button>
+                </div>
               </div>
-              {extractedNote && <p className="mt-2 rounded bg-white p-2 text-[11px] leading-relaxed text-stone-700">{extractedNote}</p>}
-              <div className="mt-3 flex flex-wrap items-center gap-2 rounded border border-stone-200 bg-white p-2">
+              {extractionReviewGroup === "vital" && extractedNote && <p className="mt-2 rounded bg-white p-2 text-[11px] leading-relaxed text-stone-700">{extractedNote}</p>}
+              <div className={`${extractionReviewGroup === "vital" ? "flex" : "hidden"} mt-3 flex-wrap items-center gap-2 rounded border border-stone-200 bg-white p-2`}>
                 <span className="text-[11px] font-bold text-stone-600">Đã chọn: {selectedCandidateIds.length}</span>
                 <button type="button" onClick={() => setSelectedCandidateIds(extractedCandidates.map((item) => item.id))} className="rounded border border-stone-200 px-2 py-1 text-[11px] font-bold text-stone-600">Chọn tất cả</button>
                 <button type="button" onClick={() => setSelectedCandidateIds([])} className="rounded border border-stone-200 px-2 py-1 text-[11px] font-bold text-stone-600">Bỏ chọn</button>
@@ -4433,7 +4452,7 @@ export default function AIGovernor({
                 <button type="button" onClick={() => void handleBulkExtractedAction("reset")} className="rounded border border-stone-200 px-2 py-1 text-[11px] font-bold text-stone-600">Reset pending</button>
                 <button type="button" onClick={() => void handleBulkExtractedAction("apply")} className="rounded bg-red-900 px-2 py-1 text-[11px] font-bold text-white">Apply nhiều</button>
               </div>
-              <div className="mt-3 max-h-[520px] space-y-3 overflow-y-auto pr-1">
+              <div className={`${extractionReviewGroup === "vital" ? "block" : "hidden"} mt-3 max-h-[520px] space-y-3 overflow-y-auto pr-1`}>
                 {extractedCandidates.map((candidate) => (
                   <article key={candidate.id} className="rounded border border-stone-200 bg-white p-3">
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -4611,13 +4630,13 @@ export default function AIGovernor({
                   </p>
                 )}
               </div>
-              <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50/30 p-4">
+              <div className={`${extractionReviewGroup === "profile" ? "block" : "hidden"} mt-4 border-t border-emerald-200 pt-4`}>
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                   <div>
-                    <h4 className="flex items-center gap-2 font-bold text-stone-850">
+                    <h5 className="flex items-center gap-2 font-bold text-stone-850">
                       <FileSearch className="h-4 w-4 text-emerald-700" />
-                      Hành trạng & Công lao cần duyệt
-                    </h4>
+                      Nhóm: Hành trạng & Công lao
+                    </h5>
                     <p className="mt-1 text-xs leading-relaxed text-stone-500">
                       Scanner local bóc tách hành trạng, sự nghiệp, công lao từ kho tri thức. Candidate chỉ ghi vào cây phả khi admin duyệt và áp dụng.
                     </p>
