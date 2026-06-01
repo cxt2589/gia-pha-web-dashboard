@@ -418,6 +418,34 @@ type ExtractedProfileCandidate = {
   updatedAt?: string;
 };
 
+type ExtractedRelationshipCandidate = {
+  id: string;
+  relationshipType: string;
+  subjectName: string;
+  subjectMemberId?: string;
+  subjectMemberName?: string;
+  subjectMatchConfidence?: string;
+  objectName: string;
+  objectMemberId?: string;
+  objectMemberName?: string;
+  objectMatchConfidence?: string;
+  direction?: string;
+  extractedText: string;
+  reviewedText?: string;
+  effectiveText?: string;
+  sourceQuote?: string;
+  sourceId?: string;
+  chunkId?: string;
+  knowledgeTitle?: string;
+  visibility?: string;
+  status: "pending" | "approved" | "rejected" | "applied";
+  flags?: Record<string, boolean>;
+  currentValues?: any;
+  subjectMatches?: LineageMemberMatch[];
+  objectMatches?: LineageMemberMatch[];
+  updatedAt?: string;
+};
+
 type SourceChunkDetail = {
   chunkId: string;
   title: string;
@@ -598,7 +626,7 @@ export default function AIGovernor({
   const [extractedCandidates, setExtractedCandidates] = useState<ExtractedAnniversaryCandidate[]>([]);
   const [isExtractedLoading, setIsExtractedLoading] = useState(false);
   const [extractedNote, setExtractedNote] = useState("");
-  const [extractionReviewGroup, setExtractionReviewGroup] = useState<"name" | "vital" | "profile">("vital");
+  const [extractionReviewGroup, setExtractionReviewGroup] = useState<"name" | "vital" | "profile" | "relationship">("vital");
   const [extractedStatusFilter, setExtractedStatusFilter] = useState("pending");
   const [extractedTypeFilter, setExtractedTypeFilter] = useState("");
   const [extractedNameFilter, setExtractedNameFilter] = useState("");
@@ -614,6 +642,13 @@ export default function AIGovernor({
   const [profileTypeFilter, setProfileTypeFilter] = useState("");
   const [profileNameFilter, setProfileNameFilter] = useState("");
   const [selectedProfileCandidateIds, setSelectedProfileCandidateIds] = useState<string[]>([]);
+  const [relationshipCandidates, setRelationshipCandidates] = useState<ExtractedRelationshipCandidate[]>([]);
+  const [isRelationshipCandidatesLoading, setIsRelationshipCandidatesLoading] = useState(false);
+  const [relationshipCandidateNote, setRelationshipCandidateNote] = useState("");
+  const [relationshipStatusFilter, setRelationshipStatusFilter] = useState("pending");
+  const [relationshipTypeFilter, setRelationshipTypeFilter] = useState("");
+  const [relationshipNameFilter, setRelationshipNameFilter] = useState("");
+  const [selectedRelationshipCandidateIds, setSelectedRelationshipCandidateIds] = useState<string[]>([]);
   const [editingProfileCandidateId, setEditingProfileCandidateId] = useState("");
   const [editingProfileText, setEditingProfileText] = useState("");
   const [editingProfileTargetField, setEditingProfileTargetField] = useState<"name" | "description" | "bio" | "achievements">("description");
@@ -777,6 +812,14 @@ export default function AIGovernor({
       || candidate.candidateMatches?.[0]
       || null
   );
+  const relationshipTypeLabel = (type: string) => ({
+    spouse: "Vợ/chồng",
+    father: "Cha",
+    mother: "Mẹ",
+    child: "Con",
+    parent_child: "Cha/mẹ - con",
+    sibling: "Anh/chị/em"
+  }[type] || type);
 
   const toggleCandidateSelection = (candidateId: string) => {
     setSelectedCandidateIds((current) => (
@@ -787,6 +830,13 @@ export default function AIGovernor({
   };
   const toggleProfileCandidateSelection = (candidateId: string) => {
     setSelectedProfileCandidateIds((current) => (
+      current.includes(candidateId)
+        ? current.filter((id) => id !== candidateId)
+        : [...current, candidateId]
+    ));
+  };
+  const toggleRelationshipCandidateSelection = (candidateId: string) => {
+    setSelectedRelationshipCandidateIds((current) => (
       current.includes(candidateId)
         ? current.filter((id) => id !== candidateId)
         : [...current, candidateId]
@@ -1232,6 +1282,119 @@ export default function AIGovernor({
     setProfileCandidateNote(`Đã áp dụng ${data.changes?.length ?? 0} trường hành trạng/công lao vào cây phả.`);
     setEditingProfileCandidateId("");
     await loadProfileCandidates();
+  };
+
+  const loadRelationshipCandidates = async () => {
+    setIsRelationshipCandidatesLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("limit", "160");
+      if (relationshipNameFilter.trim()) params.set("q", relationshipNameFilter.trim());
+      if (relationshipStatusFilter) params.set("status", relationshipStatusFilter);
+      if (relationshipTypeFilter) params.set("type", relationshipTypeFilter);
+      const response = await fetch(`/api/knowledge/relationship-candidates?${params.toString()}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không đọc được candidate quan hệ.");
+      setRelationshipCandidates(Array.isArray(data.candidates) ? data.candidates : []);
+      setRelationshipCandidateNote("");
+    } catch (err: any) {
+      setRelationshipCandidateNote(`Không đọc được candidate quan hệ: ${err?.message || "lỗi không xác định"}`);
+    } finally {
+      setIsRelationshipCandidatesLoading(false);
+    }
+  };
+
+  const scanRelationshipCandidates = async () => {
+    setIsRelationshipCandidatesLoading(true);
+    try {
+      const response = await fetch("/api/knowledge/relationship-candidates/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limit: 800 })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không quét được quan hệ phả hệ.");
+      setRelationshipCandidateNote(`Đã quét ${data.scanned || 0} đoạn, tạo mới ${data.created || 0} candidate quan hệ, bỏ qua ${data.skipped || 0}.`);
+      await loadRelationshipCandidates();
+    } catch (err: any) {
+      setRelationshipCandidateNote(`Không quét được quan hệ phả hệ: ${err?.message || "lỗi không xác định"}`);
+    } finally {
+      setIsRelationshipCandidatesLoading(false);
+    }
+  };
+
+  const patchRelationshipCandidate = async (candidateId: string, payload: Record<string, unknown>, successNote: string) => {
+    const response = await fetch(`/api/knowledge/relationship-candidates/${encodeURIComponent(candidateId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setRelationshipCandidateNote(data.error || "Không cập nhật được candidate quan hệ.");
+      return;
+    }
+    setRelationshipCandidateNote(successNote);
+    await loadRelationshipCandidates();
+  };
+
+  const handleBulkRelationshipAction = async (action: "approve" | "reject" | "reset") => {
+    if (!selectedRelationshipCandidateIds.length) {
+      setRelationshipCandidateNote("Chưa chọn candidate quan hệ nào.");
+      return;
+    }
+    const response = await fetch("/api/knowledge/relationship-candidates/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, ids: selectedRelationshipCandidateIds })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setRelationshipCandidateNote(data.error || "Không chạy được thao tác hàng loạt.");
+      return;
+    }
+    setRelationshipCandidateNote(`Bulk ${action}: ${data.total} mục, approved ${data.approved || 0}, rejected ${data.rejected || 0}, reset ${data.reset || 0}, failed ${data.failed || 0}.`);
+    setSelectedRelationshipCandidateIds([]);
+    await loadRelationshipCandidates();
+  };
+
+  const assignRelationshipMember = (candidate: ExtractedRelationshipCandidate, side: "subject" | "object", memberId: string) => {
+    const member = members.find((item) => item.id === memberId);
+    if (!member) return;
+    void patchRelationshipCandidate(candidate.id, side === "subject" ? {
+      subjectMemberId: member.id,
+      subjectMemberName: member.name,
+      subjectMatchConfidence: "manual",
+      flags: { ...(candidate.flags || {}), ambiguous_subject: false, requires_new_subject: false }
+    } : {
+      objectMemberId: member.id,
+      objectMemberName: member.name,
+      objectMatchConfidence: "manual",
+      flags: { ...(candidate.flags || {}), ambiguous_object: false, requires_new_object: false }
+    }, side === "subject" ? "Đã gán chủ thể quan hệ." : "Đã gán đối tượng quan hệ.");
+  };
+
+  const applyRelationshipCandidate = async (candidate: ExtractedRelationshipCandidate, confirmOverwrite = false) => {
+    if (!candidate.subjectMemberId || !candidate.objectMemberId) {
+      setRelationshipCandidateNote("Cần gán đủ hai nhân vật trước khi áp dụng quan hệ.");
+      return;
+    }
+    const response = await fetch(`/api/knowledge/relationship-candidates/${encodeURIComponent(candidate.id)}/apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        confirmOverwrite,
+        appendSpouse: true,
+        applyBidirectional: candidate.relationshipType === "spouse"
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setRelationshipCandidateNote(data.error || "Không áp dụng được candidate quan hệ.");
+      return;
+    }
+    setRelationshipCandidateNote(`Đã áp dụng ${data.changes?.length ?? 0} quan hệ vào cây phả và ghi audit log.`);
+    await loadRelationshipCandidates();
   };
 
   const handleKnowledgeSearch = async () => {
@@ -4405,7 +4568,7 @@ export default function AIGovernor({
                   <select
                     value={extractionReviewGroup}
                     onChange={(event) => {
-                      const nextGroup = event.target.value as "name" | "vital" | "profile";
+                      const nextGroup = event.target.value as "name" | "vital" | "profile" | "relationship";
                       setExtractionReviewGroup(nextGroup);
                       if (nextGroup === "name") setProfileTypeFilter("name_alias");
                       if (nextGroup === "profile" && profileTypeFilter === "name_alias") setProfileTypeFilter("");
@@ -4415,6 +4578,7 @@ export default function AIGovernor({
                     <option value="name">Họ tên & danh xưng</option>
                     <option value="vital">Ngày tháng & mộ chí</option>
                     <option value="profile">Hành trạng & công lao</option>
+                    <option value="relationship">Quan hệ phả hệ</option>
                   </select>
                 </label>
               </div>
@@ -4455,6 +4619,116 @@ export default function AIGovernor({
                   </button>
                 </div>
                 {profileCandidateNote && <p className="mt-2 rounded bg-white p-2 text-[11px] leading-relaxed text-stone-700">{profileCandidateNote}</p>}
+              </div>
+              <div className={`${extractionReviewGroup === "relationship" ? "block" : "hidden"} mt-4 border-t border-blue-200 pt-4`}>
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <h5 className="flex items-center gap-2 font-bold text-stone-850">
+                      <FileSearch className="h-4 w-4 text-blue-700" />
+                      Nhóm: Quan hệ phả hệ
+                    </h5>
+                    <p className="mt-1 text-xs leading-relaxed text-stone-500">
+                      Bóc tách vợ/chồng, cha, mẹ, con từ kho tri thức. Candidate mơ hồ hoặc cần tạo người mới sẽ bị giữ pending để admin gán thủ công.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={() => void scanRelationshipCandidates()} disabled={isRelationshipCandidatesLoading} className="inline-flex items-center justify-center gap-2 rounded bg-blue-700 px-3 py-2 text-xs font-bold text-white hover:bg-blue-800 disabled:opacity-60">
+                      <Search className="h-4 w-4" />
+                      Quét quan hệ
+                    </button>
+                    <button type="button" onClick={() => void loadRelationshipCandidates()} disabled={isRelationshipCandidatesLoading} className="inline-flex items-center justify-center gap-2 rounded border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-60">
+                      <RefreshCw className={`h-4 w-4 ${isRelationshipCandidatesLoading ? "animate-spin" : ""}`} />
+                      Tải candidate
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-4">
+                  <input value={relationshipNameFilter} onChange={(event) => setRelationshipNameFilter(event.target.value)} className="rounded border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:border-blue-500" placeholder="Tên người hoặc đoạn nguồn" />
+                  <select value={relationshipStatusFilter} onChange={(event) => setRelationshipStatusFilter(event.target.value)} className="rounded border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:border-blue-500">
+                    <option value="">Tất cả trạng thái</option>
+                    <option value="pending">Chưa duyệt</option>
+                    <option value="approved">Đã duyệt</option>
+                    <option value="rejected">Đã từ chối</option>
+                    <option value="applied">Đã áp dụng</option>
+                  </select>
+                  <select value={relationshipTypeFilter} onChange={(event) => setRelationshipTypeFilter(event.target.value)} className="rounded border border-stone-200 bg-white px-3 py-2 text-xs outline-none focus:border-blue-500">
+                    <option value="">Tất cả quan hệ</option>
+                    <option value="spouse">Vợ/chồng</option>
+                    <option value="father">Cha</option>
+                    <option value="mother">Mẹ</option>
+                    <option value="child">Con</option>
+                    <option value="parent_child">Cha/mẹ - con</option>
+                  </select>
+                  <button type="button" onClick={() => void loadRelationshipCandidates()} disabled={isRelationshipCandidatesLoading} className="inline-flex items-center justify-center gap-2 rounded bg-red-900 px-3 py-2 text-xs font-bold text-white hover:bg-red-950 disabled:opacity-60">
+                    <Search className="h-4 w-4" />
+                    Lọc
+                  </button>
+                </div>
+                {relationshipCandidateNote && <p className="mt-2 rounded bg-white p-2 text-[11px] leading-relaxed text-stone-700">{relationshipCandidateNote}</p>}
+                <div className="mt-3 flex flex-wrap items-center gap-2 rounded border border-stone-200 bg-white p-2">
+                  <span className="text-[11px] font-bold text-stone-600">Đã chọn: {selectedRelationshipCandidateIds.length}</span>
+                  <button type="button" onClick={() => setSelectedRelationshipCandidateIds(relationshipCandidates.map((item) => item.id))} className="rounded border border-stone-200 px-2 py-1 text-[11px] font-bold text-stone-600">Chọn tất cả</button>
+                  <button type="button" onClick={() => setSelectedRelationshipCandidateIds([])} className="rounded border border-stone-200 px-2 py-1 text-[11px] font-bold text-stone-600">Bỏ chọn</button>
+                  <button type="button" onClick={() => void handleBulkRelationshipAction("approve")} className="rounded bg-emerald-700 px-2 py-1 text-[11px] font-bold text-white">Duyệt nhiều</button>
+                  <button type="button" onClick={() => void handleBulkRelationshipAction("reject")} className="rounded border border-red-200 px-2 py-1 text-[11px] font-bold text-red-700">Từ chối nhiều</button>
+                  <button type="button" onClick={() => void handleBulkRelationshipAction("reset")} className="rounded border border-stone-200 px-2 py-1 text-[11px] font-bold text-stone-600">Reset pending</button>
+                </div>
+                <div className="mt-3 max-h-[520px] space-y-3 overflow-y-auto pr-1">
+                  {relationshipCandidates.map((candidate) => (
+                    <article key={candidate.id} className="rounded border border-stone-200 bg-white p-3">
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <input type="checkbox" checked={selectedRelationshipCandidateIds.includes(candidate.id)} onChange={() => toggleRelationshipCandidateSelection(candidate.id)} className="h-4 w-4 rounded border-stone-300" />
+                            <h5 className="font-bold text-stone-850">{candidate.subjectName} → {relationshipTypeLabel(candidate.relationshipType)} → {candidate.objectName}</h5>
+                            <span className="rounded bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700">{candidate.relationshipType}</span>
+                            <span className="rounded bg-stone-100 px-2 py-0.5 text-[10px] font-bold text-stone-500">{candidate.status}</span>
+                          </div>
+                          <p className="mt-1 text-[11px] text-stone-500">{candidate.knowledgeTitle || "-"} · {candidate.sourceId || "-"} · {candidate.chunkId || "-"} · {candidate.visibility || "public"}</p>
+                          <p className="mt-2 text-xs leading-relaxed text-stone-700">{truncateText(candidate.reviewedText || candidate.extractedText || "", 300)}</p>
+                          {(candidate.flags?.ambiguous_subject || candidate.flags?.ambiguous_object || candidate.flags?.requires_new_subject || candidate.flags?.requires_new_object) && (
+                            <p className="mt-2 rounded bg-amber-50 p-2 text-[11px] font-semibold text-amber-800">
+                              Cần rà lại: {candidate.flags?.ambiguous_subject ? "chủ thể mơ hồ; " : ""}{candidate.flags?.ambiguous_object ? "đối tượng mơ hồ; " : ""}{candidate.flags?.requires_new_subject ? "chưa có chủ thể trong cây; " : ""}{candidate.flags?.requires_new_object ? "chưa có đối tượng trong cây; " : ""}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2">
+                          <button type="button" onClick={() => void patchRelationshipCandidate(candidate.id, { status: "approved" }, "Đã duyệt candidate quan hệ.")} disabled={candidate.status === "applied"} className="rounded bg-emerald-700 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-800 disabled:opacity-50">Duyệt</button>
+                          <button type="button" onClick={() => void patchRelationshipCandidate(candidate.id, { status: "rejected" }, "Đã từ chối candidate quan hệ.")} disabled={candidate.status === "applied"} className="rounded border border-red-200 px-2.5 py-1.5 text-[11px] font-bold text-red-700 hover:bg-red-50 disabled:opacity-50">Từ chối</button>
+                          <button type="button" onClick={() => void applyRelationshipCandidate(candidate)} disabled={candidate.status !== "approved" && candidate.status !== "applied"} className="rounded bg-red-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-red-950 disabled:opacity-50">Áp dụng</button>
+                          <button type="button" onClick={() => void applyRelationshipCandidate(candidate, true)} disabled={candidate.status !== "approved" && candidate.status !== "applied"} className="rounded border border-amber-300 px-2.5 py-1.5 text-[11px] font-bold text-amber-800 hover:bg-amber-50 disabled:opacity-50">Ghi đè</button>
+                        </div>
+                      </div>
+                      <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
+                        <div className="rounded border border-stone-100 bg-[#fbfaf6] p-2">
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-blue-700">Chủ thể</p>
+                          <p className="mt-1 text-xs text-stone-700">{candidate.subjectMemberName || "chưa gán"} · {candidate.subjectMatchConfidence || "none"}</p>
+                          <select value={candidate.subjectMemberId || ""} onChange={(event) => assignRelationshipMember(candidate, "subject", event.target.value)} className="mt-2 w-full rounded border border-stone-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500">
+                            <option value="">Gán chủ thể</option>
+                            {(candidate.subjectMatches || []).map((match) => <option key={match.memberId} value={match.memberId}>{match.fullName} · đời {match.generation ?? "-"}</option>)}
+                          </select>
+                        </div>
+                        <div className="rounded border border-stone-100 bg-[#fbfaf6] p-2">
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-blue-700">Đối tượng</p>
+                          <p className="mt-1 text-xs text-stone-700">{candidate.objectMemberName || "chưa gán"} · {candidate.objectMatchConfidence || "none"}</p>
+                          <select value={candidate.objectMemberId || ""} onChange={(event) => assignRelationshipMember(candidate, "object", event.target.value)} className="mt-2 w-full rounded border border-stone-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-blue-500">
+                            <option value="">Gán đối tượng</option>
+                            {(candidate.objectMatches || []).map((match) => <option key={match.memberId} value={match.memberId}>{match.fullName} · đời {match.generation ?? "-"}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                      <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
+                        <p className="rounded bg-stone-50 px-3 py-2 text-[11px] text-stone-500">Chủ thể hiện tại: parentId {candidate.currentValues?.subject?.parentId || "-"} · cha {candidate.currentValues?.subject?.fatherName || "-"} · mẹ {candidate.currentValues?.subject?.motherName || "-"} · vợ/chồng {candidate.currentValues?.subject?.spouse || "-"}</p>
+                        <p className="rounded bg-stone-50 px-3 py-2 text-[11px] text-stone-500">Đối tượng hiện tại: parentId {candidate.currentValues?.object?.parentId || "-"} · cha {candidate.currentValues?.object?.fatherName || "-"} · mẹ {candidate.currentValues?.object?.motherName || "-"} · vợ/chồng {candidate.currentValues?.object?.spouse || "-"}</p>
+                      </div>
+                    </article>
+                  ))}
+                  {!relationshipCandidates.length && (
+                    <p className="rounded border border-dashed border-stone-200 bg-white p-3 text-xs text-stone-500">
+                      Chưa có candidate quan hệ phù hợp bộ lọc. Bấm “Quét quan hệ” để tạo candidate từ knowledge_chunks.
+                    </p>
+                  )}
+                </div>
               </div>
               <div className={`${extractionReviewGroup === "vital" ? "grid" : "hidden"} mt-3 grid-cols-1 gap-2 md:grid-cols-4`}>
                 <input

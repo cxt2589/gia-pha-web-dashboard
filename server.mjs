@@ -641,6 +641,51 @@ async function getDatabase() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS extracted_relationship_candidates (
+      id TEXT PRIMARY KEY,
+      relationship_type TEXT NOT NULL DEFAULT 'parent_child',
+      subject_name TEXT NOT NULL DEFAULT '',
+      subject_name_norm TEXT NOT NULL DEFAULT '',
+      subject_member_id TEXT NOT NULL DEFAULT '',
+      subject_member_name TEXT NOT NULL DEFAULT '',
+      subject_match_confidence TEXT NOT NULL DEFAULT 'none',
+      object_name TEXT NOT NULL DEFAULT '',
+      object_name_norm TEXT NOT NULL DEFAULT '',
+      object_member_id TEXT NOT NULL DEFAULT '',
+      object_member_name TEXT NOT NULL DEFAULT '',
+      object_match_confidence TEXT NOT NULL DEFAULT 'none',
+      direction TEXT NOT NULL DEFAULT 'subject_to_object',
+      extracted_text TEXT NOT NULL DEFAULT '',
+      reviewed_text TEXT NOT NULL DEFAULT '',
+      source_quote TEXT NOT NULL DEFAULT '',
+      source_id TEXT NOT NULL DEFAULT '',
+      chunk_id TEXT NOT NULL DEFAULT '',
+      knowledge_title TEXT NOT NULL DEFAULT '',
+      visibility TEXT NOT NULL DEFAULT 'public',
+      status TEXT NOT NULL DEFAULT 'pending',
+      flags_json TEXT NOT NULL DEFAULT '{}',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS extracted_relationship_audit_logs (
+      id TEXT PRIMARY KEY,
+      candidate_id TEXT NOT NULL DEFAULT '',
+      action TEXT NOT NULL DEFAULT '',
+      subject_member_id TEXT NOT NULL DEFAULT '',
+      object_member_id TEXT NOT NULL DEFAULT '',
+      relationship_type TEXT NOT NULL DEFAULT '',
+      old_value_json TEXT NOT NULL DEFAULT '{}',
+      new_value_json TEXT NOT NULL DEFAULT '{}',
+      source_id TEXT NOT NULL DEFAULT '',
+      chunk_id TEXT NOT NULL DEFAULT '',
+      admin_user TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT '',
+      error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS anniversary_event_drafts (
       id TEXT PRIMARY KEY,
       anniversary_key TEXT NOT NULL DEFAULT '',
@@ -780,6 +825,13 @@ async function getDatabase() {
     CREATE INDEX IF NOT EXISTS idx_extracted_profile_status ON extracted_profile_candidates(status);
     CREATE INDEX IF NOT EXISTS idx_extracted_profile_audit_candidate ON extracted_profile_audit_logs(candidate_id);
     CREATE INDEX IF NOT EXISTS idx_extracted_profile_audit_created ON extracted_profile_audit_logs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_extracted_rel_subject ON extracted_relationship_candidates(subject_name_norm);
+    CREATE INDEX IF NOT EXISTS idx_extracted_rel_object ON extracted_relationship_candidates(object_name_norm);
+    CREATE INDEX IF NOT EXISTS idx_extracted_rel_status ON extracted_relationship_candidates(status);
+    CREATE INDEX IF NOT EXISTS idx_extracted_rel_type ON extracted_relationship_candidates(relationship_type);
+    CREATE INDEX IF NOT EXISTS idx_extracted_rel_source ON extracted_relationship_candidates(source_id);
+    CREATE INDEX IF NOT EXISTS idx_extracted_rel_audit_candidate ON extracted_relationship_audit_logs(candidate_id);
+    CREATE INDEX IF NOT EXISTS idx_extracted_rel_audit_created ON extracted_relationship_audit_logs(created_at);
     CREATE INDEX IF NOT EXISTS idx_anniversary_drafts_member ON anniversary_event_drafts(member_id);
     CREATE INDEX IF NOT EXISTS idx_anniversary_drafts_status ON anniversary_event_drafts(status);
     CREATE INDEX IF NOT EXISTS idx_anniversary_drafts_updated ON anniversary_event_drafts(updated_at);
@@ -2510,6 +2562,46 @@ function getLineageNodeById(node, memberId) {
   return found;
 }
 
+function detachLineageNodeById(node, memberId) {
+  if (!node || typeof node !== 'object') return null;
+  const children = Array.isArray(node.children) ? node.children : [];
+  const index = children.findIndex((child) => String(child?.id || '') === String(memberId || ''));
+  if (index >= 0) {
+    const [removed] = children.splice(index, 1);
+    return removed;
+  }
+  for (const child of children) {
+    const removed = detachLineageNodeById(child, memberId);
+    if (removed) return removed;
+  }
+  return null;
+}
+
+function isLineageDescendant(node, possibleDescendantId) {
+  if (!node || typeof node !== 'object') return false;
+  const children = Array.isArray(node.children) ? node.children : [];
+  for (const child of children) {
+    if (String(child?.id || '') === String(possibleDescendantId || '')) return true;
+    if (isLineageDescendant(child, possibleDescendantId)) return true;
+  }
+  return false;
+}
+
+function reparentLineageNode(tree, childId, parentId) {
+  if (!tree || String(childId || '') === String(parentId || '')) return false;
+  const child = getLineageNodeById(tree, childId);
+  const parent = getLineageNodeById(tree, parentId);
+  if (!child || !parent || isLineageDescendant(child, parentId)) return false;
+  const removed = String(tree.id || '') === String(childId || '') ? child : detachLineageNodeById(tree, childId);
+  if (!removed) return false;
+  if (!Array.isArray(parent.children)) parent.children = [];
+  if (!parent.children.some((item) => String(item?.id || '') === String(childId || ''))) {
+    parent.children.push(removed);
+  }
+  removed.parentId = parent.id;
+  return true;
+}
+
 function mapExtractedFieldToLineageFields(fieldType) {
   switch (fieldType) {
     case 'birth':
@@ -2936,7 +3028,9 @@ function buildProfileCandidateHash({ sourceId, chunkId, personName, candidateTyp
 function compactExtractedNameCandidate(value) {
   const text = stripHanCharacters(value)
     .replace(/[.,;:()[\]{}"']/g, ' ')
+    .replace(/\s+(?:la|là|cua|của|cha|me|mẹ|phu|phụ|mau|mẫu|than|thân|vo|vợ|chong|chồng|sinh|de|đẻ|con)\b.*$/giu, '')
     .replace(/\b(?:la|là|tuc|tức|hieu|hiệu|ten|tên|huy|huý|thuy|thuỷ|to|tổ|cao|cu|cụ)\b$/giu, '')
+    .replace(/\s+(?:la|là)$/giu, '')
     .replace(/\s+/g, ' ')
     .trim();
   return text;
@@ -3462,6 +3556,560 @@ async function bulkUpdateExtractedProfileCandidates(body = {}, adminUser = {}) {
     auditId,
     results
   };
+}
+
+const RELATIONSHIP_TYPES = ['spouse', 'father', 'mother', 'child', 'parent_child', 'sibling'];
+
+function normalizeRelationshipCandidateStatus(status) {
+  const value = String(status || '').trim().toLowerCase();
+  return ['pending', 'approved', 'rejected', 'applied'].includes(value) ? value : 'pending';
+}
+
+function normalizeRelationshipType(value) {
+  const type = String(value || '').trim().toLowerCase();
+  return RELATIONSHIP_TYPES.includes(type) ? type : 'parent_child';
+}
+
+function normalizeRelationshipDirection(value) {
+  const direction = String(value || '').trim().toLowerCase();
+  return ['subject_to_object', 'object_to_subject', 'bidirectional'].includes(direction) ? direction : 'subject_to_object';
+}
+
+function buildRelationshipCandidateHash({ sourceId, chunkId, relationshipType, subjectName, objectName, extractedText }) {
+  return sha256Base64Url([
+    sourceId,
+    chunkId,
+    normalizeRelationshipType(relationshipType),
+    normalizeKnowledgeText(subjectName),
+    normalizeKnowledgeText(objectName),
+    normalizeKnowledgeText(extractedText).slice(0, 500)
+  ].join('|')).slice(0, 24);
+}
+
+function relationshipMatchFlags(subjectMatches, objectMatches) {
+  const subjectTop = subjectMatches[0] || null;
+  const objectTop = objectMatches[0] || null;
+  const strong = new Set(['exact', 'strong']);
+  const subjectStrong = subjectTop && strong.has(subjectTop.confidence);
+  const objectStrong = objectTop && strong.has(objectTop.confidence);
+  return {
+    requires_new_subject: !subjectMatches.length,
+    requires_new_object: !objectMatches.length,
+    ambiguous_subject: !subjectStrong || subjectTop?.confidence === 'ambiguous',
+    ambiguous_object: !objectStrong || objectTop?.confidence === 'ambiguous',
+    needs_manual_review: !subjectStrong || !objectStrong || subjectTop?.confidence === 'ambiguous' || objectTop?.confidence === 'ambiguous'
+  };
+}
+
+function publicExtractedRelationshipCandidate(row) {
+  const flags = safeJsonParse(row.flags_json, {});
+  const metadata = safeJsonParse(row.metadata_json, {});
+  return {
+    id: row.id,
+    relationshipType: normalizeRelationshipType(row.relationship_type),
+    subjectName: row.subject_name,
+    subjectNameNorm: row.subject_name_norm,
+    subjectMemberId: row.subject_member_id,
+    subjectMemberName: row.subject_member_name,
+    subjectMatchConfidence: row.subject_match_confidence,
+    objectName: row.object_name,
+    objectNameNorm: row.object_name_norm,
+    objectMemberId: row.object_member_id,
+    objectMemberName: row.object_member_name,
+    objectMatchConfidence: row.object_match_confidence,
+    direction: normalizeRelationshipDirection(row.direction),
+    extractedText: row.extracted_text,
+    reviewedText: row.reviewed_text,
+    effectiveText: row.reviewed_text || row.extracted_text,
+    sourceQuote: row.source_quote,
+    sourceId: row.source_id,
+    chunkId: row.chunk_id,
+    knowledgeTitle: row.knowledge_title,
+    visibility: row.visibility,
+    status: normalizeRelationshipCandidateStatus(row.status),
+    flags,
+    metadata,
+    subjectMatches: Array.isArray(metadata.subjectMatches) ? metadata.subjectMatches : [],
+    objectMatches: Array.isArray(metadata.objectMatches) ? metadata.objectMatches : [],
+    currentValues: metadata.currentValues || {},
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function relationCurrentValues(subject, object) {
+  return {
+    subject: subject ? {
+      name: subject.name || '',
+      parentId: subject.parentId || '',
+      fatherName: subject.fatherName || '',
+      motherName: subject.motherName || '',
+      spouse: subject.spouse || '',
+      spouseDetails: Array.isArray(subject.spouseDetails) ? subject.spouseDetails.map((item) => item?.name || '').filter(Boolean) : []
+    } : {},
+    object: object ? {
+      name: object.name || '',
+      parentId: object.parentId || '',
+      fatherName: object.fatherName || '',
+      motherName: object.motherName || '',
+      spouse: object.spouse || '',
+      spouseDetails: Array.isArray(object.spouseDetails) ? object.spouseDetails.map((item) => item?.name || '').filter(Boolean) : []
+    } : {}
+  };
+}
+
+async function hydrateRelationshipCandidateReviewData(publicCandidate) {
+  const tree = await readLineageTreeForAI();
+  const members = tree ? flattenLineageTree(tree) : [];
+  const subjectMatches = buildCandidateMatchesFromMembers({ person_name: publicCandidate.subjectName }, members);
+  const objectMatches = buildCandidateMatchesFromMembers({ person_name: publicCandidate.objectName }, members);
+  const subject = members.find((member) => member.id === publicCandidate.subjectMemberId) || null;
+  const object = members.find((member) => member.id === publicCandidate.objectMemberId) || null;
+  return {
+    ...publicCandidate,
+    subjectMatches,
+    objectMatches,
+    currentValues: relationCurrentValues(subject, object)
+  };
+}
+
+function relationshipSentencesFromText(text) {
+  return String(text || '')
+    .replace(/\s+/g, ' ')
+    .split(/(?<=[.!?。；;])\s+|[\n\r]+/u)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 12)
+    .slice(0, 80);
+}
+
+function detectRelationshipType(sentence) {
+  const text = normalizeKnowledgeText(sentence);
+  if (/(vo|chong|phoi ngau|chinh that|thu that|that)/.test(text)) return 'spouse';
+  if (/(mau than|than mau| me | la me|me cua)/.test(` ${text} `)) return 'mother';
+  if (/(phu than|than phu| cha | la cha|cha cua|khao)/.test(` ${text} `)) return 'father';
+  if (/(sinh ha|sinh duoc|de ra|con cua|con trai|con gai|truong nam|thu nam|truong nu|thu nu|hau due)/.test(text)) return 'parent_child';
+  return '';
+}
+
+function inferRelationshipPair(sentence, relationshipType) {
+  const names = extractNameAliasCandidatesFromText(sentence);
+  if (names.length < 2) return null;
+  const text = normalizeKnowledgeText(sentence);
+  let subjectName = names[0];
+  let objectName = names[1];
+  let direction = 'subject_to_object';
+  if (relationshipType === 'father' || relationshipType === 'mother') {
+    const firstBeforeSecond = text.indexOf(normalizeKnowledgeText(names[0])) < text.indexOf(normalizeKnowledgeText(names[1]));
+    const hasParentOf = /(la cha cua|cha cua|la me cua|me cua|phu than cua|mau than cua)/.test(text);
+    const hasChildOf = /(con cua|than phu la|than mau la|phu than la|mau than la)/.test(text);
+    if (hasParentOf && firstBeforeSecond) {
+      subjectName = names[1];
+      objectName = names[0];
+    } else if (hasChildOf) {
+      subjectName = names[0];
+      objectName = names[1];
+    }
+  }
+  if (relationshipType === 'spouse') {
+    direction = 'bidirectional';
+  }
+  if (relationshipType === 'parent_child') {
+    const hasChildOf = /(con cua|la con|con trai cua|con gai cua)/.test(text);
+    if (hasChildOf) {
+      subjectName = names[0];
+      objectName = names[1];
+      return { relationshipType: 'father', subjectName, objectName, direction: 'object_to_subject' };
+    }
+    subjectName = names[0];
+    objectName = names[1];
+  }
+  return { relationshipType, subjectName, objectName, direction };
+}
+
+async function scanExtractedRelationshipCandidates({ sourceId = '', limit = 250 } = {}) {
+  const database = await getDatabase();
+  const where = sourceId ? 'WHERE c.source_id = ?' : '';
+  const params = sourceId ? [sourceId] : [];
+  const rows = database.prepare(`
+    SELECT c.*, s.title AS source_title, s.visibility AS source_visibility
+    FROM knowledge_chunks c
+    LEFT JOIN knowledge_sources s ON s.id = c.source_id
+    ${where}
+    ORDER BY c.updated_at DESC
+    LIMIT ?
+  `).all(...params, Math.max(1, Math.min(2000, Number(limit) || 250)));
+  let scanned = 0;
+  let created = 0;
+  let skipped = 0;
+  const candidates = [];
+  for (const row of rows) {
+    const rawText = compactText(row.content || row.summary || row.title || '', 1800);
+    const haystack = normalizeKnowledgeText([row.title, row.heading_path, row.summary, rawText].join(' '));
+    if (!/(vo|chong|phoi ngau|chinh that|thu that|sinh ha|sinh duoc|con cua|phu than|mau than|cha cua|me cua|truong nam|thu nam|truong nu|thu nu)/.test(haystack)) {
+      skipped += 1;
+      continue;
+    }
+    for (const sentence of relationshipSentencesFromText(rawText)) {
+      scanned += 1;
+      const relationshipType = detectRelationshipType(sentence);
+      if (!relationshipType) {
+        skipped += 1;
+        continue;
+      }
+      const pair = inferRelationshipPair(sentence, relationshipType);
+      if (!pair?.subjectName || !pair?.objectName || normalizeKnowledgeText(pair.subjectName) === normalizeKnowledgeText(pair.objectName)) {
+        skipped += 1;
+        continue;
+      }
+      const subjectMatches = await searchLineageMembers(pair.subjectName, { limit: 6 });
+      const objectMatches = await searchLineageMembers(pair.objectName, { limit: 6 });
+      const flags = relationshipMatchFlags(subjectMatches, objectMatches);
+      const subjectTop = subjectMatches[0] || null;
+      const objectTop = objectMatches[0] || null;
+      const id = `rel_${buildRelationshipCandidateHash({
+        sourceId: row.source_id,
+        chunkId: row.id,
+        relationshipType: pair.relationshipType,
+        subjectName: pair.subjectName,
+        objectName: pair.objectName,
+        extractedText: sentence
+      })}`;
+      if (database.prepare('SELECT id FROM extracted_relationship_candidates WHERE id = ?').get(id)) {
+        skipped += 1;
+        continue;
+      }
+      const metadata = {
+        headingPath: row.heading_path || '',
+        summary: row.summary || '',
+        tags: safeJsonParse(row.tags_json, []),
+        entityRefs: safeJsonParse(row.entity_refs_json, []),
+        subjectMatches,
+        objectMatches
+      };
+      database.prepare(`
+        INSERT INTO extracted_relationship_candidates
+          (id, relationship_type, subject_name, subject_name_norm, subject_member_id, subject_member_name,
+           subject_match_confidence, object_name, object_name_norm, object_member_id, object_member_name,
+           object_match_confidence, direction, extracted_text, reviewed_text, source_quote, source_id,
+           chunk_id, knowledge_title, visibility, status, flags_json, metadata_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'), datetime('now'))
+      `).run(
+        id,
+        normalizeRelationshipType(pair.relationshipType),
+        pair.subjectName,
+        normalizeKnowledgeText(pair.subjectName),
+        flags.ambiguous_subject ? '' : subjectTop?.memberId || '',
+        flags.ambiguous_subject ? '' : subjectTop?.fullName || '',
+        subjectTop?.confidence || 'none',
+        pair.objectName,
+        normalizeKnowledgeText(pair.objectName),
+        flags.ambiguous_object ? '' : objectTop?.memberId || '',
+        flags.ambiguous_object ? '' : objectTop?.fullName || '',
+        objectTop?.confidence || 'none',
+        normalizeRelationshipDirection(pair.direction),
+        sentence,
+        compactText(row.content || row.summary || '', 420),
+        row.source_id,
+        row.id,
+        row.source_title || row.title || '',
+        row.visibility || row.source_visibility || 'public',
+        JSON.stringify(flags),
+        JSON.stringify(metadata)
+      );
+      created += 1;
+      candidates.push(await hydrateRelationshipCandidateReviewData(publicExtractedRelationshipCandidate(database.prepare('SELECT * FROM extracted_relationship_candidates WHERE id = ?').get(id))));
+    }
+  }
+  return { ok: true, scanned, created, skipped, candidates };
+}
+
+async function listExtractedRelationshipCandidates({ q = '', status = '', type = '', memberId = '', ambiguous = '', requiresNewMember = '', limit = 100 } = {}) {
+  const database = await getDatabase();
+  const rows = database.prepare('SELECT * FROM extracted_relationship_candidates ORDER BY updated_at DESC, created_at DESC').all();
+  const queryNorm = normalizeKnowledgeText(q);
+  const statusFilter = normalizeRelationshipCandidateStatus(status);
+  const hasStatusFilter = Boolean(String(status || '').trim());
+  const typeFilter = String(type || '').trim();
+  const ambiguousFilter = String(ambiguous || '').toLowerCase();
+  const newMemberFilter = String(requiresNewMember || '').toLowerCase();
+  const filtered = rows.filter((row) => {
+    const flags = safeJsonParse(row.flags_json, {});
+    if (hasStatusFilter && normalizeRelationshipCandidateStatus(row.status) !== statusFilter) return false;
+    if (typeFilter && normalizeRelationshipType(row.relationship_type) !== typeFilter) return false;
+    if (memberId && row.subject_member_id !== memberId && row.object_member_id !== memberId) return false;
+    if (ambiguousFilter === 'true' && !flags.ambiguous_subject && !flags.ambiguous_object) return false;
+    if (ambiguousFilter === 'false' && (flags.ambiguous_subject || flags.ambiguous_object)) return false;
+    if (newMemberFilter === 'true' && !flags.requires_new_subject && !flags.requires_new_object) return false;
+    if (newMemberFilter === 'false' && (flags.requires_new_subject || flags.requires_new_object)) return false;
+    if (!queryNorm) return true;
+    return normalizeKnowledgeText([
+      row.subject_name,
+      row.subject_member_name,
+      row.object_name,
+      row.object_member_name,
+      row.relationship_type,
+      row.extracted_text,
+      row.reviewed_text,
+      row.source_quote,
+      row.knowledge_title
+    ].join(' ')).includes(queryNorm);
+  }).slice(0, Math.max(1, Math.min(500, Number(limit) || 100))).map(publicExtractedRelationshipCandidate);
+  return Promise.all(filtered.map(hydrateRelationshipCandidateReviewData));
+}
+
+async function updateExtractedRelationshipCandidate(id, patch = {}, adminUser = {}) {
+  const database = await getDatabase();
+  const row = database.prepare('SELECT * FROM extracted_relationship_candidates WHERE id = ?').get(id);
+  if (!row) {
+    const err = new Error('Relationship candidate not found.');
+    err.status = 404;
+    throw err;
+  }
+  const flags = { ...safeJsonParse(row.flags_json, {}), ...(patch.flags && typeof patch.flags === 'object' ? patch.flags : {}) };
+  const metadata = {
+    ...safeJsonParse(row.metadata_json, {}),
+    lastReviewedBy: adminUser?.username || adminUser?.fullName || '',
+    lastReviewedAt: new Date().toISOString()
+  };
+  const next = {
+    status: patch.status === undefined ? normalizeRelationshipCandidateStatus(row.status) : normalizeRelationshipCandidateStatus(patch.status),
+    relationshipType: patch.relationshipType === undefined ? normalizeRelationshipType(row.relationship_type) : normalizeRelationshipType(patch.relationshipType),
+    subjectMemberId: patch.subjectMemberId === undefined ? row.subject_member_id : String(patch.subjectMemberId || '').trim(),
+    subjectMemberName: patch.subjectMemberName === undefined ? row.subject_member_name : String(patch.subjectMemberName || '').trim(),
+    subjectMatchConfidence: patch.subjectMatchConfidence === undefined ? row.subject_match_confidence : String(patch.subjectMatchConfidence || 'manual').trim(),
+    objectMemberId: patch.objectMemberId === undefined ? row.object_member_id : String(patch.objectMemberId || '').trim(),
+    objectMemberName: patch.objectMemberName === undefined ? row.object_member_name : String(patch.objectMemberName || '').trim(),
+    objectMatchConfidence: patch.objectMatchConfidence === undefined ? row.object_match_confidence : String(patch.objectMatchConfidence || 'manual').trim(),
+    direction: patch.direction === undefined ? normalizeRelationshipDirection(row.direction) : normalizeRelationshipDirection(patch.direction),
+    reviewedText: patch.reviewedText === undefined ? row.reviewed_text : String(patch.reviewedText || '').trim()
+  };
+  database.prepare(`
+    UPDATE extracted_relationship_candidates
+    SET status = ?, relationship_type = ?, subject_member_id = ?, subject_member_name = ?,
+        subject_match_confidence = ?, object_member_id = ?, object_member_name = ?,
+        object_match_confidence = ?, direction = ?, reviewed_text = ?, flags_json = ?,
+        metadata_json = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(
+    next.status,
+    next.relationshipType,
+    next.subjectMemberId,
+    next.subjectMemberName,
+    next.subjectMatchConfidence,
+    next.objectMemberId,
+    next.objectMemberName,
+    next.objectMatchConfidence,
+    next.direction,
+    next.reviewedText,
+    JSON.stringify(flags),
+    JSON.stringify(metadata),
+    id
+  );
+  return hydrateRelationshipCandidateReviewData(publicExtractedRelationshipCandidate(database.prepare('SELECT * FROM extracted_relationship_candidates WHERE id = ?').get(id)));
+}
+
+function addSpouseToNode(node, spouseName, { appendSpouse = true, confirmOverwrite = false } = {}) {
+  const oldSpouse = String(node.spouse || '').trim();
+  const names = oldSpouse.split(/[,/;+\-]+/).map((item) => item.trim()).filter(Boolean);
+  const exists = names.some((item) => normalizeKnowledgeText(item) === normalizeKnowledgeText(spouseName));
+  if (oldSpouse && !appendSpouse && !confirmOverwrite && !exists) {
+    const err = new Error('Spouse field is not empty. Use appendSpouse=true or confirmOverwrite=true.');
+    err.status = 409;
+    throw err;
+  }
+  const nextNames = appendSpouse ? [...names] : [];
+  if (!exists) nextNames.push(spouseName);
+  node.spouse = nextNames.join(', ');
+  if (!Array.isArray(node.spouseList)) node.spouseList = [];
+  node.spouseList = node.spouse.split(/[,/;+\-]+/).map((item) => item.trim()).filter(Boolean);
+  if (!Array.isArray(node.spouseDetails)) node.spouseDetails = [];
+  if (!node.spouseDetails.some((item) => normalizeKnowledgeText(item?.name) === normalizeKnowledgeText(spouseName))) {
+    node.spouseDetails.push({ name: spouseName });
+  }
+}
+
+async function applyExtractedRelationshipCandidate(id, body = {}, adminUser = {}) {
+  const database = await getDatabase();
+  const row = database.prepare('SELECT * FROM extracted_relationship_candidates WHERE id = ?').get(id);
+  if (!row) {
+    const err = new Error('Relationship candidate not found.');
+    err.status = 404;
+    throw err;
+  }
+  const status = normalizeRelationshipCandidateStatus(row.status);
+  if (status !== 'approved' && status !== 'applied') {
+    const err = new Error('Candidate must be approved before applying.');
+    err.status = 400;
+    throw err;
+  }
+  const flags = safeJsonParse(row.flags_json, {});
+  if (flags.requires_new_subject || flags.requires_new_object || body.createMissingMember === true) {
+    const err = new Error('Cần tạo/gán nhân vật trước khi áp dụng quan hệ.');
+    err.status = 409;
+    throw err;
+  }
+  const subjectId = String(body.subjectMemberId || row.subject_member_id || '').trim();
+  const objectId = String(body.objectMemberId || row.object_member_id || '').trim();
+  if (!subjectId || !objectId) {
+    const err = new Error('Missing subject or object member id.');
+    err.status = 400;
+    throw err;
+  }
+  const tree = await readLineageTreeForAI();
+  if (!tree) {
+    const err = new Error('Lineage tree is not available.');
+    err.status = 404;
+    throw err;
+  }
+  const subject = getLineageNodeById(tree, subjectId);
+  const object = getLineageNodeById(tree, objectId);
+  if (!subject || !object) {
+    const err = new Error('Subject or object member not found in lineage tree.');
+    err.status = 404;
+    throw err;
+  }
+  const relationshipType = normalizeRelationshipType(body.relationshipType || row.relationship_type);
+  const confirmOverwrite = body.confirmOverwrite === true || body.force === true;
+  const appendSpouse = body.appendSpouse !== false;
+  const applyBidirectional = body.applyBidirectional === true || row.direction === 'bidirectional';
+  const oldValue = relationCurrentValues(subject, object);
+  let changed = false;
+  if (relationshipType === 'spouse') {
+    addSpouseToNode(subject, object.name || row.object_name, { appendSpouse, confirmOverwrite });
+    if (applyBidirectional) addSpouseToNode(object, subject.name || row.subject_name, { appendSpouse, confirmOverwrite });
+    changed = true;
+  } else if (relationshipType === 'father') {
+    if (subject.parentId && subject.parentId !== object.id && !confirmOverwrite) {
+      const err = new Error('Subject already has a different parentId. Use confirmOverwrite=true.');
+      err.status = 409;
+      throw err;
+    }
+    if (!subject.parentId || subject.parentId !== object.id) changed = reparentLineageNode(tree, subject.id, object.id) || changed;
+    subject.parentId = object.id;
+    subject.fatherName = object.name || subject.fatherName || row.object_name;
+    changed = true;
+  } else if (relationshipType === 'mother') {
+    if (subject.motherName && normalizeKnowledgeText(subject.motherName) !== normalizeKnowledgeText(object.name) && !confirmOverwrite) {
+      const err = new Error('Subject already has a different motherName. Use confirmOverwrite=true.');
+      err.status = 409;
+      throw err;
+    }
+    subject.motherName = object.name || row.object_name;
+    subject.motherId = object.id;
+    changed = true;
+  } else if (relationshipType === 'child' || relationshipType === 'parent_child') {
+    if (object.parentId && object.parentId !== subject.id && !confirmOverwrite) {
+      const err = new Error('Object already has a different parentId. Use confirmOverwrite=true.');
+      err.status = 409;
+      throw err;
+    }
+    changed = reparentLineageNode(tree, object.id, subject.id) || changed;
+    object.parentId = subject.id;
+    object.fatherName = subject.name || object.fatherName || row.subject_name;
+    changed = true;
+  } else {
+    const err = new Error('Sibling apply is not supported in Phase 2W.1.');
+    err.status = 400;
+    throw err;
+  }
+  const newSubject = getLineageNodeById(tree, subjectId);
+  const newObject = getLineageNodeById(tree, objectId);
+  const newValue = relationCurrentValues(newSubject, newObject);
+  if (changed) await writeState(TREE_STATE_KEY, tree);
+  const auditId = `rel_audit_${sha256Base64Url(`${id}:${Date.now()}`).slice(0, 24)}`;
+  database.prepare(`
+    INSERT INTO extracted_relationship_audit_logs
+      (id, candidate_id, action, subject_member_id, object_member_id, relationship_type,
+       old_value_json, new_value_json, source_id, chunk_id, admin_user, status, error, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', datetime('now'))
+  `).run(
+    auditId,
+    id,
+    changed ? 'apply' : 'apply_noop',
+    subjectId,
+    objectId,
+    relationshipType,
+    JSON.stringify(oldValue),
+    JSON.stringify(newValue),
+    row.source_id,
+    row.chunk_id,
+    adminUser?.username || adminUser?.fullName || '',
+    changed ? 'applied' : 'noop'
+  );
+  database.prepare(`
+    UPDATE extracted_relationship_candidates
+    SET status = 'applied',
+        relationship_type = ?,
+        subject_member_id = ?,
+        subject_member_name = ?,
+        object_member_id = ?,
+        object_member_name = ?,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(relationshipType, subjectId, newSubject?.name || row.subject_member_name, objectId, newObject?.name || row.object_member_name, id);
+  return {
+    ok: true,
+    candidate: await hydrateRelationshipCandidateReviewData(publicExtractedRelationshipCandidate(database.prepare('SELECT * FROM extracted_relationship_candidates WHERE id = ?').get(id))),
+    changes: changed ? [{ relationshipType, subjectId, objectId, oldValue, newValue }] : [],
+    auditId
+  };
+}
+
+async function bulkUpdateExtractedRelationshipCandidates(body = {}, adminUser = {}) {
+  const action = String(body.action || '').trim();
+  const ids = Array.isArray(body.ids) ? body.ids.map((id) => String(id || '').trim()).filter(Boolean) : [];
+  if (!ids.length) {
+    const err = new Error('Missing candidate ids.');
+    err.status = 400;
+    throw err;
+  }
+  if (!['approve', 'reject', 'reset'].includes(action)) {
+    const err = new Error('Unsupported bulk action.');
+    err.status = 400;
+    throw err;
+  }
+  const status = action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : 'pending';
+  const results = [];
+  for (const id of ids) {
+    try {
+      const candidate = await updateExtractedRelationshipCandidate(id, { status }, adminUser);
+      results.push({ id, ok: true, status, candidate });
+    } catch (err) {
+      results.push({ id, ok: false, error: err.message || String(err) });
+    }
+  }
+  return {
+    ok: results.every((item) => item.ok),
+    action,
+    total: ids.length,
+    approved: results.filter((item) => item.status === 'approved').length,
+    rejected: results.filter((item) => item.status === 'rejected').length,
+    reset: results.filter((item) => item.status === 'pending').length,
+    failed: results.filter((item) => !item.ok).length,
+    results
+  };
+}
+
+async function listRelationshipAuditLogs({ limit = 80 } = {}) {
+  const database = await getDatabase();
+  return database.prepare('SELECT * FROM extracted_relationship_audit_logs ORDER BY created_at DESC LIMIT ?')
+    .all(Math.max(1, Math.min(500, Number(limit) || 80)))
+    .map((row) => ({
+      id: row.id,
+      candidateId: row.candidate_id,
+      action: row.action,
+      subjectMemberId: row.subject_member_id,
+      objectMemberId: row.object_member_id,
+      relationshipType: row.relationship_type,
+      oldValue: safeJsonParse(row.old_value_json, {}),
+      newValue: safeJsonParse(row.new_value_json, {}),
+      sourceId: row.source_id,
+      chunkId: row.chunk_id,
+      adminUser: row.admin_user,
+      status: row.status,
+      error: row.error,
+      createdAt: row.created_at
+    }));
 }
 
 async function listAppliedProfileExtractions({ q = '', limit = 80 } = {}) {
@@ -4588,6 +5236,101 @@ app.post('/api/knowledge/profile-candidates/scan-names', async (req, res) => {
   } catch (err) {
     console.error('Failed to scan name alias candidates:', err);
     res.status(err.status || 500).json({ error: err.message || 'Failed to scan name alias candidates.' });
+  }
+});
+
+app.get('/api/knowledge/relationship-candidates', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit || 100) || 100));
+    res.json({
+      candidates: await listExtractedRelationshipCandidates({
+        q: String(req.query.q || '').trim(),
+        status: String(req.query.status || '').trim(),
+        type: String(req.query.type || '').trim(),
+        memberId: String(req.query.memberId || '').trim(),
+        ambiguous: String(req.query.ambiguous || '').trim(),
+        requiresNewMember: String(req.query.requiresNewMember || '').trim(),
+        limit
+      })
+    });
+  } catch (err) {
+    console.error('Failed to list relationship candidates:', err);
+    res.status(500).json({ error: 'Failed to list relationship candidates.' });
+  }
+});
+
+app.post('/api/knowledge/relationship-candidates/scan', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const sourceId = String(req.body?.sourceId || '').trim();
+    const limit = Math.max(1, Math.min(2000, Number(req.body?.limit || 500) || 500));
+    res.json(await scanExtractedRelationshipCandidates({ sourceId, limit }));
+  } catch (err) {
+    console.error('Failed to scan relationship candidates:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to scan relationship candidates.' });
+  }
+});
+
+app.get('/api/knowledge/relationship-candidates/logs', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit || 80) || 80));
+    res.json({ logs: await listRelationshipAuditLogs({ limit }) });
+  } catch (err) {
+    console.error('Failed to list relationship extraction logs:', err);
+    res.status(500).json({ error: 'Failed to list relationship extraction logs.' });
+  }
+});
+
+app.get('/api/knowledge/relationship-candidates/:id', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const database = await getDatabase();
+    const row = database.prepare('SELECT * FROM extracted_relationship_candidates WHERE id = ?').get(String(req.params.id || ''));
+    if (!row) {
+      res.status(404).json({ error: 'Relationship candidate not found.' });
+      return;
+    }
+    res.json({ candidate: await hydrateRelationshipCandidateReviewData(publicExtractedRelationshipCandidate(row)) });
+  } catch (err) {
+    console.error('Failed to read relationship candidate:', err);
+    res.status(500).json({ error: 'Failed to read relationship candidate.' });
+  }
+});
+
+app.patch('/api/knowledge/relationship-candidates/:id', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const candidate = await updateExtractedRelationshipCandidate(String(req.params.id || ''), req.body || {}, admin.authUser);
+    res.json({ ok: true, candidate });
+  } catch (err) {
+    console.error('Failed to update relationship candidate:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to update relationship candidate.' });
+  }
+});
+
+app.post('/api/knowledge/relationship-candidates/bulk', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json(await bulkUpdateExtractedRelationshipCandidates(req.body || {}, admin.authUser));
+  } catch (err) {
+    console.error('Failed to run bulk relationship action:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to run bulk relationship action.' });
+  }
+});
+
+app.post('/api/knowledge/relationship-candidates/:id/apply', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json(await applyExtractedRelationshipCandidate(String(req.params.id || ''), req.body || {}, admin.authUser));
+  } catch (err) {
+    console.error('Failed to apply relationship candidate:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to apply relationship candidate.' });
   }
 });
 
