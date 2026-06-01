@@ -1843,6 +1843,12 @@ export default function AIGovernor({
       if (point.y === previous.y) return `${path} H ${point.x}`;
       return `${path} L ${point.x} ${point.y}`;
     }, "");
+  const getAuditLeftOutputSlot = (targetId: string) => {
+    const orderedTargets = ["bot_config", "local_db", "knowledge_search"];
+    const index = orderedTargets.indexOf(targetId);
+    if (index < 0) return 0.5;
+    return (index * 2 + 1) / (orderedTargets.length * 2);
+  };
   const operationGraphEdges = aiOperationGraph.edges.map((edge, index) => {
     const fromNode = aiOperationGraph.nodes.find((node) => node.id === edge.from);
     const toNode = aiOperationGraph.nodes.find((node) => node.id === edge.to);
@@ -1914,7 +1920,7 @@ export default function AIGovernor({
     } else if (edge.from === "system_audit" && edge.to === "bot_config") {
       const auditRect = getOperationNodeRect(fromNode);
       const configRect = getOperationNodeRect(toNode);
-      const straightY = (Math.max(auditRect.top, configRect.top) + Math.min(auditRect.bottom, configRect.bottom)) / 2;
+      const straightY = auditRect.top + graphCanvas.nodeHeight * getAuditLeftOutputSlot(edge.to);
       const start = { x: auditRect.left, y: straightY };
       const end = { x: configRect.right, y: straightY };
       routePoints = [start, end];
@@ -1947,9 +1953,10 @@ export default function AIGovernor({
       const endX = dataRect.left + graphCanvas.nodeWidth * 0.76;
       const routeX = dataRect.right + 32;
       const routeY = dataRect.top - 26;
+      const startY = auditRect.top + graphCanvas.nodeHeight * getAuditLeftOutputSlot(edge.to);
       routePoints = [
-        { x: auditRect.left, y: auditRect.top + graphCanvas.nodeHeight * 0.46 },
-        { x: routeX, y: auditRect.top + graphCanvas.nodeHeight * 0.46 },
+        { x: auditRect.left, y: startY },
+        { x: routeX, y: startY },
         { x: routeX, y: routeY },
         { x: endX, y: routeY },
         { x: endX, y: dataRect.top }
@@ -1960,9 +1967,10 @@ export default function AIGovernor({
       const routeX = dataRect.right + 56;
       const routeY = dataRect.bottom + 28;
       const endX = dataRect.left + graphCanvas.nodeWidth * 0.64;
+      const startY = auditRect.top + graphCanvas.nodeHeight * getAuditLeftOutputSlot(edge.to);
       routePoints = [
-        { x: auditRect.left, y: auditRect.top + graphCanvas.nodeHeight * 0.66 },
-        { x: routeX, y: auditRect.top + graphCanvas.nodeHeight * 0.66 },
+        { x: auditRect.left, y: startY },
+        { x: routeX, y: startY },
         { x: routeX, y: routeY },
         { x: endX, y: routeY },
         { x: endX, y: dataRect.bottom }
