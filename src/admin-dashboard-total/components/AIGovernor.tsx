@@ -1931,8 +1931,8 @@ export default function AIGovernor({
     } else if (edge.from === "ai_governor" && edge.to === "system_audit") {
       const start = getOperationAnchor(fromNode, "right", getOperationAnchorSlot(edge, fromNode.id, "right", "from"));
       const end = getOperationAnchor(toNode, "top", getOperationAnchorSlot(edge, toNode.id, "top", "to"));
-      const routeX = sourceRect.right + 44;
-      const routeY = Math.max(18, Math.min(start.y, end.y) - 86);
+      const routeX = sourceRect.right + 22;
+      const routeY = 24;
       routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: routeY }, { x: end.x, y: routeY }, end];
     }
 
