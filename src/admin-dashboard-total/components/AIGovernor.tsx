@@ -193,12 +193,46 @@ type SystemAuditApplyLog = {
   createdAt?: string;
 };
 
+type AIActionDraft = {
+  id: string;
+  draftType: "article" | "prayer" | "anniversary_notice" | "webview_fix" | "missing_data_checklist" | "zalo_rule" | "other";
+  title: string;
+  summary: string;
+  content: string;
+  targetModule: string;
+  targetId?: string;
+  sourceType: string;
+  sourceId?: string;
+  relatedMemberIds?: string[];
+  relatedSourceIds?: string[];
+  relatedChunkIds?: string[];
+  status: "draft" | "pending_review" | "approved" | "rejected" | "applied";
+  priority: "low" | "medium" | "high" | "critical";
+  createdBy?: string;
+  createdAt?: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  appliedBy?: string;
+  appliedAt?: string;
+  metadata?: Record<string, unknown>;
+};
+
+type AIActionDraftLog = {
+  id: string;
+  draftId: string;
+  action: string;
+  oldValue?: string;
+  newValue?: string;
+  adminUser?: string;
+  createdAt?: string;
+};
+
 type AIOperationGraphNodeStatus = "active" | "paused" | "disabled" | "error";
 
 type AIOperationGraphNode = {
   id: string;
   label: string;
-  type: "bot" | "gateway" | "config" | "router" | "data" | "model" | "guard" | "logs" | "audit";
+  type: "bot" | "gateway" | "config" | "router" | "data" | "model" | "guard" | "logs" | "audit" | "action";
   status: AIOperationGraphNodeStatus;
   description: string;
   column: number;
@@ -457,7 +491,7 @@ export default function AIGovernor({
   onSetAIInitialPrompt
 }: AIGovernorProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [activeMode, setActiveMode] = useState<"overview" | "operations" | "system-audit" | "knowledge" | "content" | "channels">("overview");
+  const [activeMode, setActiveMode] = useState<"overview" | "operations" | "system-audit" | "action-drafts" | "knowledge" | "content" | "channels">("overview");
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGeneratingTemplate, setIsGeneratingTemplate] = useState(false);
   const [isScanningSystem, setIsScanningSystem] = useState(false);
@@ -549,6 +583,18 @@ export default function AIGovernor({
   const [systemAuditQuery, setSystemAuditQuery] = useState("");
   const [systemAuditNote, setSystemAuditNote] = useState("");
   const [isSystemAuditLoading, setIsSystemAuditLoading] = useState(false);
+  const [aiActionDrafts, setAiActionDrafts] = useState<AIActionDraft[]>([]);
+  const [aiActionDraftLogs, setAiActionDraftLogs] = useState<AIActionDraftLog[]>([]);
+  const [aiActionDraftStatusFilter, setAiActionDraftStatusFilter] = useState("");
+  const [aiActionDraftTypeFilter, setAiActionDraftTypeFilter] = useState("");
+  const [aiActionDraftQuery, setAiActionDraftQuery] = useState("");
+  const [aiActionDraftNote, setAiActionDraftNote] = useState("");
+  const [isAIActionDraftLoading, setIsAIActionDraftLoading] = useState(false);
+  const [newActionDraftType, setNewActionDraftType] = useState<AIActionDraft["draftType"]>("article");
+  const [newActionDraftTopic, setNewActionDraftTopic] = useState("Bài viết giới thiệu dữ liệu gia phả đã xác minh");
+  const [newActionDraftMemberId, setNewActionDraftMemberId] = useState("");
+  const [newActionDraftSourceId, setNewActionDraftSourceId] = useState("");
+  const [selectedActionDraftId, setSelectedActionDraftId] = useState("");
   const [zaloBotStatus, setZaloBotStatus] = useState<ZaloBotStatus | null>(null);
   const [zaloWebhookStatus, setZaloWebhookStatus] = useState<ZaloWebhookStatus | null>(null);
   const [zaloBotEvents, setZaloBotEvents] = useState<ZaloBotEvent[]>([]);
@@ -657,10 +703,11 @@ export default function AIGovernor({
       { label: "Nhân vật gia phả", value: formatNumber(members.length), hint: "nguồn xác thực hồ sơ" },
       { label: "Tài liệu AI", value: formatNumber(knowledgeDocs.length), hint: "đã nạp vào kho tri thức" },
       { label: "Bài viết", value: formatNumber(articles.length), hint: "cần rà soát mẫu" },
+      { label: "Nháp hành động", value: formatNumber(aiActionDrafts.length), hint: "chờ admin duyệt/apply" },
       { label: "Rule Zalo", value: formatNumber((zaloRules.length || DEFAULT_ZALO_RULES.length)), hint: "có thể tạo từ AI Tổng Quản" },
       { label: "Số dư quỹ", value: `${formatNumber(treasuryTotal)} đ`, hint: "dữ liệu tài chính tham chiếu" }
     ];
-  }, [articles.length, knowledgeDocs.length, members.length, transactions, zaloRules.length]);
+  }, [aiActionDrafts.length, articles.length, knowledgeDocs.length, members.length, transactions, zaloRules.length]);
 
   const aiTouchpoints = useMemo(() => [
     {
@@ -1169,6 +1216,95 @@ export default function AIGovernor({
     }
   };
 
+  const loadAIActionDrafts = async () => {
+    setIsAIActionDraftLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (aiActionDraftStatusFilter) params.set("status", aiActionDraftStatusFilter);
+      if (aiActionDraftTypeFilter) params.set("type", aiActionDraftTypeFilter);
+      if (aiActionDraftQuery.trim()) params.set("q", aiActionDraftQuery.trim());
+      params.set("limit", "100");
+      const response = await fetch(`/api/ai-action-drafts?${params.toString()}`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không đọc được nháp hành động AI.");
+      const drafts = Array.isArray(data.drafts) ? data.drafts : [];
+      setAiActionDrafts(drafts);
+      if (!selectedActionDraftId && drafts[0]?.id) setSelectedActionDraftId(drafts[0].id);
+      setAiActionDraftNote("");
+    } catch (err: any) {
+      setAiActionDraftNote(`Không đọc được nháp hành động AI: ${err?.message || "lỗi không xác định"}`);
+    } finally {
+      setIsAIActionDraftLoading(false);
+    }
+  };
+
+  const loadAIActionDraftLogs = async (draftId: string) => {
+    if (!draftId) {
+      setAiActionDraftLogs([]);
+      return;
+    }
+    try {
+      const response = await fetch(`/api/ai-action-drafts/${encodeURIComponent(draftId)}/logs?limit=30`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không đọc được log nháp.");
+      setAiActionDraftLogs(Array.isArray(data.logs) ? data.logs : []);
+    } catch (err: any) {
+      setAiActionDraftNote(`Không đọc được log nháp: ${err?.message || "lỗi không xác định"}`);
+    }
+  };
+
+  const generateAIActionDraft = async () => {
+    if (!newActionDraftTopic.trim()) {
+      setAiActionDraftNote("Cần nhập chủ đề trước khi tạo nháp.");
+      return;
+    }
+    setIsAIActionDraftLoading(true);
+    try {
+      const response = await fetch("/api/ai-action-drafts/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          draftType: newActionDraftType,
+          topic: newActionDraftTopic,
+          memberId: newActionDraftMemberId || undefined,
+          sourceId: newActionDraftSourceId || undefined
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không tạo được nháp hành động.");
+      setSelectedActionDraftId(data.draft?.id || "");
+      setAiActionDraftNote("Đã tạo nháp hành động AI ở trạng thái chờ duyệt. Chưa đăng/gửi/sửa dữ liệu thật.");
+      await loadAIActionDrafts();
+      await loadAIRequestLogs();
+    } catch (err: any) {
+      setAiActionDraftNote(`Lỗi tạo nháp hành động: ${err?.message || "không xác định"}`);
+    } finally {
+      setIsAIActionDraftLoading(false);
+    }
+  };
+
+  const patchAIActionDraftStatus = async (draft: AIActionDraft, action: "approve" | "reject" | "apply") => {
+    const confirmed = action !== "apply" || window.confirm("Áp dụng nháp này vào module đích? Hệ thống vẫn không publish/gửi thật.");
+    if (!confirmed) return;
+    setIsAIActionDraftLoading(true);
+    try {
+      const response = await fetch(`/api/ai-action-drafts/${encodeURIComponent(draft.id)}/${action}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `Không ${action} được nháp.`);
+      setAiActionDraftNote(action === "apply" ? "Đã áp dụng nháp vào module đích ở trạng thái nháp/an toàn." : "Đã cập nhật trạng thái nháp.");
+      await loadAIActionDrafts();
+      await loadAIActionDraftLogs(draft.id);
+    } catch (err: any) {
+      setAiActionDraftNote(`Lỗi thao tác nháp: ${err?.message || "không xác định"}`);
+    } finally {
+      setIsAIActionDraftLoading(false);
+    }
+  };
+
   const markZaloEventReviewed = async (eventId: string) => {
     setIsZaloBotLoading(true);
     setZaloBotNote("");
@@ -1239,11 +1375,20 @@ export default function AIGovernor({
     void loadZaloBotPanel();
     void loadAIBotConfigs();
     void loadSystemAuditPanel();
+    void loadAIActionDrafts();
   }, []);
 
   useEffect(() => {
     void loadSystemAuditPanel();
   }, [systemAuditStatusFilter, systemAuditTypeFilter]);
+
+  useEffect(() => {
+    void loadAIActionDrafts();
+  }, [aiActionDraftStatusFilter, aiActionDraftTypeFilter]);
+
+  useEffect(() => {
+    void loadAIActionDraftLogs(selectedActionDraftId);
+  }, [selectedActionDraftId]);
 
   const handleScanWholeSystem = async () => {
     setIsScanningSystem(true);
@@ -1617,6 +1762,19 @@ export default function AIGovernor({
           metrics: auditSummary
         },
         {
+          id: "action_drafts",
+          label: "Nháp hành động AI",
+          type: "action",
+          status: aiActionDrafts.some((draft) => draft.status === "pending_review" || draft.status === "draft") ? "paused" : "active",
+          column: 5,
+          row: 5.25,
+          description: "Kho nháp hành động AI: bài viết, trác thư/sớ, nhắc ngày giỗ, webview fix, checklist dữ liệu và rule Zalo. Tất cả phải chờ admin duyệt.",
+          metrics: {
+            drafts: aiActionDrafts.length,
+            pending: aiActionDrafts.filter((draft) => draft.status === "pending_review" || draft.status === "draft").length
+          }
+        },
+        {
           id: "gemini",
           label: "Gemini",
           type: "model",
@@ -1662,8 +1820,11 @@ export default function AIGovernor({
         { from: "intent_router", to: "knowledge_search", label: "search" },
         { from: "ai_governor", to: "system_audit", label: "system_audit" },
         { from: "system_audit", to: "bot_config", label: "prompt/config" },
+        { from: "system_audit", to: "action_drafts", label: "tạo nháp" },
         { from: "system_audit", to: "local_db", label: "scan" },
         { from: "system_audit", to: "knowledge_search", label: "scan" },
+        { from: "knowledge_search", to: "action_drafts", label: "nguồn" },
+        { from: "anniversary_calendar", to: "action_drafts", label: "nhắc giỗ" },
         { from: "knowledge_search", to: "gemini", label: "khi cần" },
         { from: "local_db", to: "response_guard" },
         { from: "anniversary_calendar", to: "response_guard" },
@@ -1672,10 +1833,11 @@ export default function AIGovernor({
         { from: "response_guard", to: "ai_logs", label: "ghi log" }
       ]
     };
-  }, [aiBotConfigs, aiConfig.modelName, aiLogSummary, events.length, knowledgeStatus, members.length, systemAuditSuggestions]);
+  }, [aiActionDrafts, aiBotConfigs, aiConfig.modelName, aiLogSummary, events.length, knowledgeStatus, members.length, systemAuditSuggestions]);
 
   const selectedOperationNode =
     aiOperationGraph.nodes.find((node) => node.id === selectedOperationNodeId) || aiOperationGraph.nodes[0];
+  const selectedActionDraft = aiActionDrafts.find((draft) => draft.id === selectedActionDraftId) || aiActionDrafts[0] || null;
   const selectedOperationBotConfig = selectedOperationNode.type === "bot"
     ? aiBotConfigs.find((config) => config.botType === selectedOperationNode.id) || null
     : null;
@@ -1718,7 +1880,8 @@ export default function AIGovernor({
     model: "Model",
     guard: "Guard",
     logs: "Log",
-    audit: "Audit"
+    audit: "Audit",
+    action: "Nháp"
   };
   const graphCanvas = { width: 1640, height: 800, nodeWidth: 172, nodeHeight: 76 };
   const getOperationNodePosition = (node: AIOperationGraphNode) => ({
@@ -2126,6 +2289,7 @@ export default function AIGovernor({
           ["overview", "Tổng quan AI", BrainCircuit],
           ["operations", "Sơ đồ vận hành", GitBranch],
           ["system-audit", "Kiểm tra hệ thống", AlertTriangle],
+          ["action-drafts", "Nháp hành động", ClipboardList],
           ["knowledge", "Kho tri thức", UploadCloud],
           ["content", "Rà soát & viết bài", FileSearch],
           ["channels", "Kênh trả lời", MessageSquare]
@@ -2505,6 +2669,19 @@ export default function AIGovernor({
                         className="mt-4 rounded bg-red-900 px-3 py-2 text-xs font-bold text-white hover:bg-red-950"
                       >
                         Mở danh sách đề xuất
+                      </button>
+                    )}
+
+                    {selectedOperationNode.id === "action_drafts" && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsOperationDetailOpen(false);
+                          setActiveMode("action-drafts");
+                        }}
+                        className="mt-4 rounded bg-red-900 px-3 py-2 text-xs font-bold text-white hover:bg-red-950"
+                      >
+                        Mở nháp hành động AI
                       </button>
                     )}
 
@@ -2931,6 +3108,147 @@ export default function AIGovernor({
               </div>
             </aside>
           </section>
+        </div>
+      )}
+
+      {activeMode === "action-drafts" && (
+        <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
+          <section className="xl:col-span-4 rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
+            <h3 className="flex items-center gap-2 font-serif text-lg font-bold text-red-950">
+              <ClipboardList className="h-5 w-5 text-amber-700" />
+              Tạo nháp hành động AI
+            </h3>
+            <p className="mt-1 text-xs leading-relaxed text-stone-500">
+              Tạo nháp chờ duyệt cho bài viết, trác thư/sớ, nhắc ngày giỗ, webview fix, checklist dữ liệu hoặc rule Zalo. Không tự đăng, không tự gửi, không tự sửa dữ liệu thật.
+            </p>
+            <div className="mt-4 space-y-3 text-xs">
+              <label className="block">
+                <span className="mb-1 block text-[10px] font-bold uppercase text-stone-400">Loại nháp</span>
+                <select value={newActionDraftType} onChange={(event) => setNewActionDraftType(event.target.value as AIActionDraft["draftType"])} className="w-full rounded-lg border border-stone-200 px-3 py-2">
+                  <option value="article">Bài viết</option>
+                  <option value="prayer">Trác thư / Sớ</option>
+                  <option value="anniversary_notice">Nhắc ngày giỗ</option>
+                  <option value="webview_fix">Đề xuất chỉnh webview</option>
+                  <option value="missing_data_checklist">Checklist dữ liệu thiếu</option>
+                  <option value="zalo_rule">Rule Zalo nháp</option>
+                  <option value="other">Khác</option>
+                </select>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[10px] font-bold uppercase text-stone-400">Chủ đề</span>
+                <textarea value={newActionDraftTopic} onChange={(event) => setNewActionDraftTopic(event.target.value)} rows={3} className="w-full rounded-lg border border-stone-200 px-3 py-2" />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[10px] font-bold uppercase text-stone-400">Nhân vật liên quan</span>
+                <select value={newActionDraftMemberId} onChange={(event) => setNewActionDraftMemberId(event.target.value)} className="w-full rounded-lg border border-stone-200 px-3 py-2">
+                  <option value="">Không gắn nhân vật</option>
+                  {memberOptions.slice(0, 120).map((member) => <option key={member.id} value={member.id}>{member.label}</option>)}
+                </select>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[10px] font-bold uppercase text-stone-400">Nguồn tri thức</span>
+                <select value={newActionDraftSourceId} onChange={(event) => setNewActionDraftSourceId(event.target.value)} className="w-full rounded-lg border border-stone-200 px-3 py-2">
+                  <option value="">Không gắn nguồn</option>
+                  {backendSources.slice(0, 80).map((source) => <option key={source.id} value={source.id}>{source.title}</option>)}
+                </select>
+              </label>
+              <button type="button" onClick={() => void generateAIActionDraft()} disabled={isAIActionDraftLoading} className="inline-flex w-full items-center justify-center gap-2 rounded bg-red-900 px-4 py-3 font-bold text-white hover:bg-red-950 disabled:opacity-60">
+                <Wand2 className="h-4 w-4" />
+                Tạo nháp mới bằng AI
+              </button>
+            </div>
+            {aiActionDraftNote && <p className="mt-3 rounded bg-amber-50 p-3 text-xs text-amber-900">{aiActionDraftNote}</p>}
+          </section>
+
+          <section className="xl:col-span-5 rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <h3 className="font-serif text-lg font-bold text-red-950">Danh sách nháp</h3>
+              <button type="button" onClick={() => void loadAIActionDrafts()} disabled={isAIActionDraftLoading} className="inline-flex items-center gap-2 rounded border border-stone-200 px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-60">
+                <RefreshCw className={`h-4 w-4 ${isAIActionDraftLoading ? "animate-spin" : ""}`} />
+                Tải lại
+              </button>
+            </div>
+            <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-[150px_150px_1fr_auto]">
+              <select value={aiActionDraftStatusFilter} onChange={(event) => setAiActionDraftStatusFilter(event.target.value)} className="rounded-lg border border-stone-200 px-3 py-2 text-xs">
+                <option value="">Mọi trạng thái</option>
+                <option value="draft">draft</option>
+                <option value="pending_review">pending_review</option>
+                <option value="approved">approved</option>
+                <option value="rejected">rejected</option>
+                <option value="applied">applied</option>
+              </select>
+              <select value={aiActionDraftTypeFilter} onChange={(event) => setAiActionDraftTypeFilter(event.target.value)} className="rounded-lg border border-stone-200 px-3 py-2 text-xs">
+                <option value="">Mọi loại</option>
+                <option value="article">article</option>
+                <option value="prayer">prayer</option>
+                <option value="anniversary_notice">anniversary_notice</option>
+                <option value="webview_fix">webview_fix</option>
+                <option value="missing_data_checklist">missing_data_checklist</option>
+                <option value="zalo_rule">zalo_rule</option>
+              </select>
+              <input value={aiActionDraftQuery} onChange={(event) => setAiActionDraftQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void loadAIActionDrafts(); }} placeholder="Tìm nháp..." className="rounded-lg border border-stone-200 px-3 py-2 text-xs" />
+              <button type="button" onClick={() => void loadAIActionDrafts()} className="rounded bg-stone-900 px-4 py-2 text-xs font-bold text-white hover:bg-black">Lọc</button>
+            </div>
+            <div className="mt-4 space-y-3">
+              {aiActionDrafts.map((draft) => (
+                <button key={draft.id} type="button" onClick={() => setSelectedActionDraftId(draft.id)} className={`block w-full rounded-xl border p-4 text-left text-xs shadow-sm transition hover:border-amber-300 ${selectedActionDraft?.id === draft.id ? "border-red-300 bg-red-50/30" : "border-stone-200 bg-white"}`}>
+                  <div className="flex flex-wrap gap-2 text-[10px] font-bold uppercase tracking-wide">
+                    <span className="rounded bg-stone-100 px-2 py-1 text-stone-600">{draft.draftType}</span>
+                    <span className="rounded bg-blue-50 px-2 py-1 text-blue-800">{draft.status}</span>
+                    <span className={`rounded px-2 py-1 ${["critical", "high"].includes(draft.priority) ? "bg-red-50 text-red-800" : "bg-amber-50 text-amber-800"}`}>{draft.priority}</span>
+                  </div>
+                  <h4 className="mt-2 font-bold text-red-950">{draft.title}</h4>
+                  <p className="mt-1 line-clamp-2 text-stone-500">{draft.summary}</p>
+                </button>
+              ))}
+              {!aiActionDrafts.length && <p className="rounded-xl border border-dashed border-stone-200 p-8 text-center text-sm text-stone-500">Chưa có nháp hành động AI theo bộ lọc hiện tại.</p>}
+            </div>
+          </section>
+
+          <aside className="xl:col-span-3 rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
+            <h3 className="font-serif text-lg font-bold text-red-950">Chi tiết nháp</h3>
+            {selectedActionDraft ? (
+              <div className="mt-4 space-y-4 text-xs">
+                <div>
+                  <div className="flex flex-wrap gap-2 text-[10px] font-bold uppercase">
+                    <span className="rounded bg-stone-100 px-2 py-1 text-stone-600">{selectedActionDraft.targetModule}</span>
+                    <span className="rounded bg-blue-50 px-2 py-1 text-blue-800">{selectedActionDraft.sourceType}</span>
+                  </div>
+                  <h4 className="mt-2 font-bold text-red-950">{selectedActionDraft.title}</h4>
+                  <p className="mt-1 text-stone-500">{selectedActionDraft.summary}</p>
+                </div>
+                <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-stone-50 p-3 text-[11px] leading-relaxed text-stone-700">{selectedActionDraft.content}</pre>
+                <div className="grid grid-cols-1 gap-2">
+                  {(selectedActionDraft.status === "draft" || selectedActionDraft.status === "pending_review") && (
+                    <>
+                      <button type="button" onClick={() => void patchAIActionDraftStatus(selectedActionDraft, "approve")} className="rounded bg-emerald-700 px-3 py-2 font-bold text-white hover:bg-emerald-800">Duyệt nháp</button>
+                      <button type="button" onClick={() => void patchAIActionDraftStatus(selectedActionDraft, "reject")} className="rounded border border-stone-200 px-3 py-2 font-bold text-stone-700 hover:bg-stone-50">Từ chối</button>
+                    </>
+                  )}
+                  {selectedActionDraft.status === "approved" && (
+                    <button type="button" onClick={() => void patchAIActionDraftStatus(selectedActionDraft, "apply")} className="rounded bg-red-900 px-3 py-2 font-bold text-white hover:bg-red-950">Áp dụng an toàn</button>
+                  )}
+                </div>
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-wide text-stone-400">Log thao tác</p>
+                  <div className="mt-2 space-y-2">
+                    {aiActionDraftLogs.map((log) => (
+                      <div key={log.id} className="rounded-lg bg-stone-50 p-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold text-red-950">{log.action}</span>
+                          <span className="text-[10px] text-stone-400">{log.createdAt || "-"}</span>
+                        </div>
+                        <p className="mt-1 text-[10px] text-stone-500">{log.adminUser || "system"}</p>
+                      </div>
+                    ))}
+                    {!aiActionDraftLogs.length && <p className="rounded bg-stone-50 p-3 text-stone-500">Chưa có log.</p>}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <p className="mt-4 rounded bg-stone-50 p-3 text-xs text-stone-500">Chọn một nháp để xem chi tiết.</p>
+            )}
+          </aside>
         </div>
       )}
 

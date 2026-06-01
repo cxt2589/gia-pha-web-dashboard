@@ -500,6 +500,40 @@ async function getDatabase() {
       updated_by TEXT NOT NULL DEFAULT 'system'
     );
 
+    CREATE TABLE IF NOT EXISTS ai_action_drafts (
+      id TEXT PRIMARY KEY,
+      draft_type TEXT NOT NULL DEFAULT 'other',
+      title TEXT NOT NULL DEFAULT '',
+      summary TEXT NOT NULL DEFAULT '',
+      content TEXT NOT NULL DEFAULT '',
+      target_module TEXT NOT NULL DEFAULT 'other',
+      target_id TEXT NOT NULL DEFAULT '',
+      source_type TEXT NOT NULL DEFAULT 'manual',
+      source_id TEXT NOT NULL DEFAULT '',
+      related_member_ids_json TEXT NOT NULL DEFAULT '[]',
+      related_source_ids_json TEXT NOT NULL DEFAULT '[]',
+      related_chunk_ids_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'draft',
+      priority TEXT NOT NULL DEFAULT 'medium',
+      created_by TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      reviewed_by TEXT NOT NULL DEFAULT '',
+      reviewed_at TEXT NOT NULL DEFAULT '',
+      applied_by TEXT NOT NULL DEFAULT '',
+      applied_at TEXT NOT NULL DEFAULT '',
+      metadata_json TEXT NOT NULL DEFAULT '{}'
+    );
+
+    CREATE TABLE IF NOT EXISTS ai_action_draft_logs (
+      id TEXT PRIMARY KEY,
+      draft_id TEXT NOT NULL DEFAULT '',
+      action TEXT NOT NULL DEFAULT '',
+      old_value TEXT NOT NULL DEFAULT '',
+      new_value TEXT NOT NULL DEFAULT '',
+      admin_user TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS extracted_anniversary_candidates (
       id TEXT PRIMARY KEY,
       source_id TEXT NOT NULL,
@@ -690,6 +724,30 @@ async function getDatabase() {
   ensureTableColumn(db, 'ai_request_logs', 'bot_config_max_output_tokens', "ALTER TABLE ai_request_logs ADD COLUMN bot_config_max_output_tokens INTEGER NOT NULL DEFAULT 0");
   ensureTableColumn(db, 'ai_request_logs', 'cache_enabled', "ALTER TABLE ai_request_logs ADD COLUMN cache_enabled INTEGER NOT NULL DEFAULT 1");
   ensureTableColumn(db, 'ai_request_logs', 'config_version', "ALTER TABLE ai_request_logs ADD COLUMN config_version TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'ai_action_drafts', 'draft_type', "ALTER TABLE ai_action_drafts ADD COLUMN draft_type TEXT NOT NULL DEFAULT 'other'");
+  ensureTableColumn(db, 'ai_action_drafts', 'summary', "ALTER TABLE ai_action_drafts ADD COLUMN summary TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'ai_action_drafts', 'content', "ALTER TABLE ai_action_drafts ADD COLUMN content TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'ai_action_drafts', 'target_module', "ALTER TABLE ai_action_drafts ADD COLUMN target_module TEXT NOT NULL DEFAULT 'other'");
+  ensureTableColumn(db, 'ai_action_drafts', 'target_id', "ALTER TABLE ai_action_drafts ADD COLUMN target_id TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'ai_action_drafts', 'source_type', "ALTER TABLE ai_action_drafts ADD COLUMN source_type TEXT NOT NULL DEFAULT 'manual'");
+  ensureTableColumn(db, 'ai_action_drafts', 'source_id', "ALTER TABLE ai_action_drafts ADD COLUMN source_id TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'ai_action_drafts', 'related_member_ids_json', "ALTER TABLE ai_action_drafts ADD COLUMN related_member_ids_json TEXT NOT NULL DEFAULT '[]'");
+  ensureTableColumn(db, 'ai_action_drafts', 'related_source_ids_json', "ALTER TABLE ai_action_drafts ADD COLUMN related_source_ids_json TEXT NOT NULL DEFAULT '[]'");
+  ensureTableColumn(db, 'ai_action_drafts', 'related_chunk_ids_json', "ALTER TABLE ai_action_drafts ADD COLUMN related_chunk_ids_json TEXT NOT NULL DEFAULT '[]'");
+  ensureTableColumn(db, 'ai_action_drafts', 'status', "ALTER TABLE ai_action_drafts ADD COLUMN status TEXT NOT NULL DEFAULT 'draft'");
+  ensureTableColumn(db, 'ai_action_drafts', 'priority', "ALTER TABLE ai_action_drafts ADD COLUMN priority TEXT NOT NULL DEFAULT 'medium'");
+  ensureTableColumn(db, 'ai_action_drafts', 'created_by', "ALTER TABLE ai_action_drafts ADD COLUMN created_by TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'ai_action_drafts', 'created_at', "ALTER TABLE ai_action_drafts ADD COLUMN created_at TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'ai_action_drafts', 'reviewed_by', "ALTER TABLE ai_action_drafts ADD COLUMN reviewed_by TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'ai_action_drafts', 'reviewed_at', "ALTER TABLE ai_action_drafts ADD COLUMN reviewed_at TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'ai_action_drafts', 'applied_by', "ALTER TABLE ai_action_drafts ADD COLUMN applied_by TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'ai_action_drafts', 'applied_at', "ALTER TABLE ai_action_drafts ADD COLUMN applied_at TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'ai_action_drafts', 'metadata_json', "ALTER TABLE ai_action_drafts ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'");
+  ensureTableColumn(db, 'ai_action_draft_logs', 'action', "ALTER TABLE ai_action_draft_logs ADD COLUMN action TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'ai_action_draft_logs', 'old_value', "ALTER TABLE ai_action_draft_logs ADD COLUMN old_value TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'ai_action_draft_logs', 'new_value', "ALTER TABLE ai_action_draft_logs ADD COLUMN new_value TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'ai_action_draft_logs', 'admin_user', "ALTER TABLE ai_action_draft_logs ADD COLUMN admin_user TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(db, 'ai_action_draft_logs', 'created_at', "ALTER TABLE ai_action_draft_logs ADD COLUMN created_at TEXT NOT NULL DEFAULT ''");
   ensureTableColumn(db, 'reminder_send_logs', 'blocked_reason', "ALTER TABLE reminder_send_logs ADD COLUMN blocked_reason TEXT NOT NULL DEFAULT ''");
   ensureTableColumn(db, 'reminder_send_logs', 'request_id', "ALTER TABLE reminder_send_logs ADD COLUMN request_id TEXT NOT NULL DEFAULT ''");
   ensureTableColumn(db, 'reminder_send_logs', 'response_id', "ALTER TABLE reminder_send_logs ADD COLUMN response_id TEXT NOT NULL DEFAULT ''");
@@ -704,6 +762,10 @@ async function getDatabase() {
     CREATE INDEX IF NOT EXISTS idx_knowledge_sources_visibility ON knowledge_sources(visibility);
     CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_visibility ON knowledge_chunks(visibility);
     CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_ascii ON knowledge_chunks(content_ascii);
+    CREATE INDEX IF NOT EXISTS idx_ai_action_drafts_status ON ai_action_drafts(status);
+    CREATE INDEX IF NOT EXISTS idx_ai_action_drafts_type ON ai_action_drafts(draft_type);
+    CREATE INDEX IF NOT EXISTS idx_ai_action_drafts_created ON ai_action_drafts(created_at);
+    CREATE INDEX IF NOT EXISTS idx_ai_action_draft_logs_draft ON ai_action_draft_logs(draft_id);
     CREATE INDEX IF NOT EXISTS idx_zalo_bot_events_event_id ON zalo_bot_events(event_id);
     CREATE INDEX IF NOT EXISTS idx_zalo_bot_events_status ON zalo_bot_events(status);
   `);
@@ -3343,6 +3405,92 @@ app.get('/api/system-audit/logs', async (req, res) => {
   }
 });
 
+app.get('/api/ai-action-drafts', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json({ ok: true, drafts: await listAIActionDrafts(req.query || {}) });
+  } catch (err) {
+    console.error('Failed to list AI action drafts:', err);
+    res.status(500).json({ error: 'Failed to list AI action drafts.' });
+  }
+});
+
+app.post('/api/ai-action-drafts', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json({ ok: true, draft: await createAIActionDraft(req.body || {}, admin.authUser) });
+  } catch (err) {
+    console.error('Failed to create AI action draft:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to create AI action draft.' });
+  }
+});
+
+app.post('/api/ai-action-drafts/generate', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json({ ok: true, draft: await generateAIActionDraft(req.body || {}, admin.authUser) });
+  } catch (err) {
+    console.error('Failed to generate AI action draft:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to generate AI action draft.' });
+  }
+});
+
+app.patch('/api/ai-action-drafts/:id', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json({ ok: true, draft: await updateAIActionDraft(req.params.id, req.body || {}, admin.authUser) });
+  } catch (err) {
+    console.error('Failed to update AI action draft:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to update AI action draft.' });
+  }
+});
+
+app.post('/api/ai-action-drafts/:id/approve', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json({ ok: true, draft: await setAIActionDraftReviewStatus(req.params.id, 'approved', admin.authUser) });
+  } catch (err) {
+    console.error('Failed to approve AI action draft:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to approve AI action draft.' });
+  }
+});
+
+app.post('/api/ai-action-drafts/:id/reject', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json({ ok: true, draft: await setAIActionDraftReviewStatus(req.params.id, 'rejected', admin.authUser) });
+  } catch (err) {
+    console.error('Failed to reject AI action draft:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to reject AI action draft.' });
+  }
+});
+
+app.post('/api/ai-action-drafts/:id/apply', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json({ ok: true, result: await applyAIActionDraft(req.params.id, req.body || {}, admin.authUser) });
+  } catch (err) {
+    console.error('Failed to apply AI action draft:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to apply AI action draft.' });
+  }
+});
+
+app.get('/api/ai-action-drafts/:id/logs', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json({ ok: true, logs: await getAIActionDraftLogs(req.params.id, req.query || {}) });
+  } catch (err) {
+    console.error('Failed to list AI action draft logs:', err);
+    res.status(500).json({ error: 'Failed to list AI action draft logs.' });
+  }
+});
+
 app.get('/api/ai/operation-graph', async (req, res) => {
   try {
     if (!await requireAdmin(req, res)) return;
@@ -4323,6 +4471,470 @@ async function applySystemAuditSuggestion(id, body = {}, adminUser = {}) {
     suggestion: publicSystemAuditSuggestion(database.prepare('SELECT * FROM system_audit_suggestions WHERE id = ?').get(row.id)),
     log: publicSystemAuditApplyLog(database.prepare('SELECT * FROM system_audit_apply_logs WHERE id = ?').get(logId))
   };
+}
+
+const AI_ACTION_DRAFT_TYPES = new Set(['article', 'prayer', 'anniversary_notice', 'webview_fix', 'missing_data_checklist', 'zalo_rule', 'other']);
+const AI_ACTION_TARGET_MODULES = new Set(['articles', 'prayers', 'events', 'webview', 'genealogy', 'zalo', 'settings', 'other']);
+const AI_ACTION_SOURCE_TYPES = new Set(['ai_governor', 'system_audit', 'knowledge', 'anniversary', 'manual']);
+const AI_ACTION_STATUSES = new Set(['draft', 'pending_review', 'approved', 'rejected', 'applied']);
+const AI_ACTION_PRIORITIES = new Set(['low', 'medium', 'high', 'critical']);
+
+function normalizeAIActionDraftType(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return AI_ACTION_DRAFT_TYPES.has(normalized) ? normalized : 'other';
+}
+
+function normalizeAIActionTargetModule(value, draftType = 'other') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (AI_ACTION_TARGET_MODULES.has(normalized)) return normalized;
+  if (draftType === 'article') return 'articles';
+  if (draftType === 'prayer') return 'prayers';
+  if (draftType === 'anniversary_notice') return 'events';
+  if (draftType === 'webview_fix') return 'webview';
+  if (draftType === 'missing_data_checklist') return 'genealogy';
+  if (draftType === 'zalo_rule') return 'zalo';
+  return 'other';
+}
+
+function normalizeAIActionSourceType(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return AI_ACTION_SOURCE_TYPES.has(normalized) ? normalized : 'manual';
+}
+
+function normalizeAIActionStatus(value, fallback = 'draft') {
+  const normalized = String(value || '').trim().toLowerCase();
+  return AI_ACTION_STATUSES.has(normalized) ? normalized : fallback;
+}
+
+function normalizeAIActionPriority(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return AI_ACTION_PRIORITIES.has(normalized) ? normalized : 'medium';
+}
+
+function slugifyAIActionText(value) {
+  return normalizeKnowledgeText(value)
+    .replace(/[^a-z0-9\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .slice(0, 90) || `ban-nhap-ai-${Date.now()}`;
+}
+
+function parseArrayInput(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item || '').trim()).filter(Boolean);
+  const text = String(value || '').trim();
+  return text ? [text] : [];
+}
+
+function publicAIActionDraft(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    draftType: row.draft_type,
+    title: row.title,
+    summary: row.summary,
+    content: row.content,
+    targetModule: row.target_module,
+    targetId: row.target_id,
+    sourceType: row.source_type,
+    sourceId: row.source_id,
+    relatedMemberIds: safeJsonParse(row.related_member_ids_json, []),
+    relatedSourceIds: safeJsonParse(row.related_source_ids_json, []),
+    relatedChunkIds: safeJsonParse(row.related_chunk_ids_json, []),
+    status: row.status,
+    priority: row.priority,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    reviewedBy: row.reviewed_by,
+    reviewedAt: row.reviewed_at,
+    appliedBy: row.applied_by,
+    appliedAt: row.applied_at,
+    metadata: safeJsonParse(row.metadata_json, {})
+  };
+}
+
+function publicAIActionDraftLog(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    draftId: row.draft_id,
+    action: row.action,
+    oldValue: row.old_value,
+    newValue: row.new_value,
+    adminUser: row.admin_user,
+    createdAt: row.created_at
+  };
+}
+
+function insertAIActionDraftLog(database, draftId, action, { oldValue = '', newValue = '', adminUser = '' } = {}) {
+  const id = `actionlog_${randomToken(12)}`;
+  database.prepare(`
+    INSERT INTO ai_action_draft_logs (id, draft_id, action, old_value, new_value, admin_user, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+  `).run(id, draftId, action, compactText(oldValue, 1600), compactText(newValue, 1600), adminUser);
+  return publicAIActionDraftLog(database.prepare('SELECT * FROM ai_action_draft_logs WHERE id = ?').get(id));
+}
+
+async function listAIActionDrafts({ status = '', type = '', q = '', limit = 100 } = {}) {
+  const database = await getDatabase();
+  const where = [];
+  const params = [];
+  const normalizedStatus = String(status || '').trim();
+  const normalizedType = String(type || '').trim();
+  if (normalizedStatus && AI_ACTION_STATUSES.has(normalizedStatus)) {
+    where.push('status = ?');
+    params.push(normalizedStatus);
+  }
+  if (normalizedType && AI_ACTION_DRAFT_TYPES.has(normalizedType)) {
+    where.push('draft_type = ?');
+    params.push(normalizedType);
+  }
+  if (q) {
+    where.push('(title LIKE ? OR summary LIKE ? OR content LIKE ? OR target_module LIKE ? OR source_type LIKE ?)');
+    const like = `%${String(q)}%`;
+    params.push(like, like, like, like, like);
+  }
+  let sql = 'SELECT * FROM ai_action_drafts';
+  if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
+  sql += " ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at DESC LIMIT ?";
+  params.push(Math.max(1, Math.min(300, Number(limit) || 100)));
+  return database.prepare(sql).all(...params).map(publicAIActionDraft);
+}
+
+async function getAIActionDraftLogs(id, { limit = 80 } = {}) {
+  const database = await getDatabase();
+  return database.prepare('SELECT * FROM ai_action_draft_logs WHERE draft_id = ? ORDER BY created_at DESC LIMIT ?')
+    .all(String(id || ''), Math.max(1, Math.min(200, Number(limit) || 80)))
+    .map(publicAIActionDraftLog);
+}
+
+function buildAIActionDraftPayload(body = {}, adminUser = {}) {
+  const draftType = normalizeAIActionDraftType(body.draftType || body.draft_type);
+  const targetModule = normalizeAIActionTargetModule(body.targetModule || body.target_module, draftType);
+  const title = compactText(String(body.title || '').trim(), 180);
+  const content = String(body.content || '').trim();
+  if (!title || !content) {
+    throw Object.assign(new Error('Title and content are required.'), { status: 400 });
+  }
+  return {
+    id: body.id || `action_draft_${randomToken(12)}`,
+    draftType,
+    title,
+    summary: compactText(String(body.summary || content).trim(), 360),
+    content,
+    targetModule,
+    targetId: String(body.targetId || body.target_id || '').trim(),
+    sourceType: normalizeAIActionSourceType(body.sourceType || body.source_type),
+    sourceId: String(body.sourceId || body.source_id || '').trim(),
+    relatedMemberIds: parseArrayInput(body.relatedMemberIds || body.related_member_ids_json),
+    relatedSourceIds: parseArrayInput(body.relatedSourceIds || body.related_source_ids_json),
+    relatedChunkIds: parseArrayInput(body.relatedChunkIds || body.related_chunk_ids_json),
+    status: normalizeAIActionStatus(body.status, 'draft'),
+    priority: normalizeAIActionPriority(body.priority),
+    createdBy: adminUser?.username || adminUser?.fullName || adminUser?.id || 'admin',
+    metadata: body.metadata && typeof body.metadata === 'object' ? body.metadata : {}
+  };
+}
+
+async function createAIActionDraft(body = {}, adminUser = {}) {
+  const draft = buildAIActionDraftPayload(body, adminUser);
+  const database = await getDatabase();
+  database.prepare(`
+    INSERT INTO ai_action_drafts (
+      id, draft_type, title, summary, content, target_module, target_id, source_type, source_id,
+      related_member_ids_json, related_source_ids_json, related_chunk_ids_json, status, priority,
+      created_by, created_at, metadata_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+  `).run(
+    draft.id,
+    draft.draftType,
+    draft.title,
+    draft.summary,
+    draft.content,
+    draft.targetModule,
+    draft.targetId,
+    draft.sourceType,
+    draft.sourceId,
+    JSON.stringify(draft.relatedMemberIds),
+    JSON.stringify(draft.relatedSourceIds),
+    JSON.stringify(draft.relatedChunkIds),
+    draft.status,
+    draft.priority,
+    draft.createdBy,
+    JSON.stringify(draft.metadata)
+  );
+  insertAIActionDraftLog(database, draft.id, 'create', { newValue: JSON.stringify(draft), adminUser: draft.createdBy });
+  return publicAIActionDraft(database.prepare('SELECT * FROM ai_action_drafts WHERE id = ?').get(draft.id));
+}
+
+async function updateAIActionDraft(id, body = {}, adminUser = {}) {
+  const database = await getDatabase();
+  const current = database.prepare('SELECT * FROM ai_action_drafts WHERE id = ?').get(String(id || ''));
+  if (!current) throw Object.assign(new Error('AI action draft not found.'), { status: 404 });
+  const admin = adminUser?.username || adminUser?.fullName || adminUser?.id || 'admin';
+  const next = {
+    draftType: Object.prototype.hasOwnProperty.call(body, 'draftType') ? normalizeAIActionDraftType(body.draftType) : current.draft_type,
+    title: Object.prototype.hasOwnProperty.call(body, 'title') ? compactText(String(body.title || '').trim(), 180) : current.title,
+    summary: Object.prototype.hasOwnProperty.call(body, 'summary') ? compactText(String(body.summary || '').trim(), 360) : current.summary,
+    content: Object.prototype.hasOwnProperty.call(body, 'content') ? String(body.content || '').trim() : current.content,
+    targetModule: Object.prototype.hasOwnProperty.call(body, 'targetModule') ? normalizeAIActionTargetModule(body.targetModule, current.draft_type) : current.target_module,
+    targetId: Object.prototype.hasOwnProperty.call(body, 'targetId') ? String(body.targetId || '').trim() : current.target_id,
+    sourceType: Object.prototype.hasOwnProperty.call(body, 'sourceType') ? normalizeAIActionSourceType(body.sourceType) : current.source_type,
+    sourceId: Object.prototype.hasOwnProperty.call(body, 'sourceId') ? String(body.sourceId || '').trim() : current.source_id,
+    status: Object.prototype.hasOwnProperty.call(body, 'status') ? normalizeAIActionStatus(body.status, current.status) : current.status,
+    priority: Object.prototype.hasOwnProperty.call(body, 'priority') ? normalizeAIActionPriority(body.priority) : current.priority,
+    relatedMemberIds: Object.prototype.hasOwnProperty.call(body, 'relatedMemberIds') ? parseArrayInput(body.relatedMemberIds) : safeJsonParse(current.related_member_ids_json, []),
+    relatedSourceIds: Object.prototype.hasOwnProperty.call(body, 'relatedSourceIds') ? parseArrayInput(body.relatedSourceIds) : safeJsonParse(current.related_source_ids_json, []),
+    relatedChunkIds: Object.prototype.hasOwnProperty.call(body, 'relatedChunkIds') ? parseArrayInput(body.relatedChunkIds) : safeJsonParse(current.related_chunk_ids_json, []),
+    metadata: Object.prototype.hasOwnProperty.call(body, 'metadata') && body.metadata && typeof body.metadata === 'object' ? body.metadata : safeJsonParse(current.metadata_json, {})
+  };
+  if (!next.title || !next.content) throw Object.assign(new Error('Title and content are required.'), { status: 400 });
+  database.prepare(`
+    UPDATE ai_action_drafts
+    SET draft_type = ?, title = ?, summary = ?, content = ?, target_module = ?, target_id = ?,
+      source_type = ?, source_id = ?, related_member_ids_json = ?, related_source_ids_json = ?,
+      related_chunk_ids_json = ?, status = ?, priority = ?, metadata_json = ?
+    WHERE id = ?
+  `).run(
+    next.draftType,
+    next.title,
+    next.summary,
+    next.content,
+    next.targetModule,
+    next.targetId,
+    next.sourceType,
+    next.sourceId,
+    JSON.stringify(next.relatedMemberIds),
+    JSON.stringify(next.relatedSourceIds),
+    JSON.stringify(next.relatedChunkIds),
+    next.status,
+    next.priority,
+    JSON.stringify(next.metadata),
+    current.id
+  );
+  insertAIActionDraftLog(database, current.id, 'update', { oldValue: JSON.stringify(publicAIActionDraft(current)), newValue: JSON.stringify(next), adminUser: admin });
+  return publicAIActionDraft(database.prepare('SELECT * FROM ai_action_drafts WHERE id = ?').get(current.id));
+}
+
+async function setAIActionDraftReviewStatus(id, status, adminUser = {}) {
+  const normalizedStatus = normalizeAIActionStatus(status, '');
+  if (!['approved', 'rejected'].includes(normalizedStatus)) throw Object.assign(new Error('Invalid review status.'), { status: 400 });
+  const database = await getDatabase();
+  const current = database.prepare('SELECT * FROM ai_action_drafts WHERE id = ?').get(String(id || ''));
+  if (!current) throw Object.assign(new Error('AI action draft not found.'), { status: 404 });
+  const admin = adminUser?.username || adminUser?.fullName || adminUser?.id || 'admin';
+  const now = new Date().toISOString();
+  database.prepare('UPDATE ai_action_drafts SET status = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ?')
+    .run(normalizedStatus, admin, now, current.id);
+  insertAIActionDraftLog(database, current.id, normalizedStatus === 'approved' ? 'approve' : 'reject', {
+    oldValue: current.status,
+    newValue: normalizedStatus,
+    adminUser: admin
+  });
+  return publicAIActionDraft(database.prepare('SELECT * FROM ai_action_drafts WHERE id = ?').get(current.id));
+}
+
+function makeDraftArticleFromAction(draft) {
+  return {
+    id: `article_${Date.now()}_${randomToken(4)}`,
+    title: draft.title,
+    slug: slugifyAIActionText(draft.title),
+    category: 'Tin tức họ tộc',
+    author: draft.created_by || 'AI Tổng Quản',
+    summary: draft.summary || compactText(draft.content, 180),
+    content: draft.content,
+    publishDate: new Date().toLocaleDateString('vi-VN'),
+    status: 'Bản nháp',
+    views: 0
+  };
+}
+
+async function applyAIActionDraft(id, body = {}, adminUser = {}) {
+  const database = await getDatabase();
+  const row = database.prepare('SELECT * FROM ai_action_drafts WHERE id = ?').get(String(id || ''));
+  if (!row) throw Object.assign(new Error('AI action draft not found.'), { status: 404 });
+  if (row.status !== 'approved') throw Object.assign(new Error('Draft must be approved before apply.'), { status: 400 });
+  const admin = adminUser?.username || adminUser?.fullName || adminUser?.id || 'admin';
+  let applyResult = {};
+  let oldValue = '';
+  let newValue = '';
+  if (row.draft_type === 'article') {
+    const articles = await readState('dashboard-articles') || [];
+    oldValue = JSON.stringify(articles);
+    const article = makeDraftArticleFromAction(row);
+    const nextArticles = [article, ...(Array.isArray(articles) ? articles : [])];
+    await writeState('dashboard-articles', nextArticles);
+    newValue = JSON.stringify(article);
+    applyResult = { article };
+  } else if (row.draft_type === 'anniversary_notice') {
+    const draftId = `anniv_draft_${randomToken(12)}`;
+    database.prepare(`
+      INSERT INTO anniversary_event_drafts (
+        id, anniversary_key, member_id, member_name, title, message_draft, channel, status, source, created_by, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'dashboard', 'draft', 'ai_action_draft', ?, datetime('now'), datetime('now'))
+    `).run(
+      draftId,
+      row.target_id || row.source_id || row.id,
+      safeJsonParse(row.related_member_ids_json, [])[0] || '',
+      '',
+      row.title,
+      row.content,
+      admin
+    );
+    newValue = JSON.stringify({ anniversaryDraftId: draftId });
+    applyResult = { anniversaryDraft: publicAnniversaryDraft(database.prepare('SELECT * FROM anniversary_event_drafts WHERE id = ?').get(draftId)) };
+  } else if (row.draft_type === 'zalo_rule') {
+    const rules = await readState('dashboard-zalo-rules') || [];
+    oldValue = JSON.stringify(rules);
+    const rule = {
+      id: `rule_${Date.now()}_${randomToken(4)}`,
+      keyword: normalizeKnowledgeText(row.title).split(' ').filter(Boolean).slice(0, 3).join('') || 'giapha',
+      replyType: 'text',
+      replyContent: row.content,
+      usageCount: 0,
+      isActive: false
+    };
+    const nextRules = [rule, ...(Array.isArray(rules) ? rules : [])];
+    await writeState('dashboard-zalo-rules', nextRules);
+    newValue = JSON.stringify(rule);
+    applyResult = { zaloRule: rule };
+  } else if (row.draft_type === 'webview_fix') {
+    if (row.source_type === 'system_audit' && row.source_id) {
+      const suggestion = database.prepare('SELECT * FROM system_audit_suggestions WHERE id = ?').get(row.source_id);
+      if (!suggestion || !['approved', 'applied'].includes(suggestion.status)) {
+        throw Object.assign(new Error('Related system audit suggestion must be approved before applying this webview fix draft.'), { status: 400 });
+      }
+    }
+    applyResult = { note: 'Webview fix draft marked applied; source code changes remain manual.' };
+  } else {
+    const key = row.draft_type === 'prayer' ? 'dashboard-prayer-drafts' : 'dashboard-action-checklists';
+    const existing = await readState(key) || [];
+    oldValue = JSON.stringify(existing);
+    const item = { id: `${row.draft_type}_${Date.now()}_${randomToken(4)}`, title: row.title, summary: row.summary, content: row.content, status: 'draft', sourceDraftId: row.id };
+    await writeState(key, [item, ...(Array.isArray(existing) ? existing : [])]);
+    newValue = JSON.stringify(item);
+    applyResult = { key, item };
+  }
+  const now = new Date().toISOString();
+  database.prepare('UPDATE ai_action_drafts SET status = ?, applied_by = ?, applied_at = ? WHERE id = ?')
+    .run('applied', admin, now, row.id);
+  const log = insertAIActionDraftLog(database, row.id, 'apply', { oldValue, newValue: newValue || JSON.stringify(applyResult), adminUser: admin });
+  return {
+    draft: publicAIActionDraft(database.prepare('SELECT * FROM ai_action_drafts WHERE id = ?').get(row.id)),
+    log,
+    result: applyResult
+  };
+}
+
+function composeAIActionDraft({ draftType, topic, member, sourceTitle = '', auditSuggestion = null }) {
+  const subject = String(topic || '').trim() || 'Nội dung cần admin duyệt';
+  const memberLine = member ? `Nhân vật liên quan: ${member.name}${member.title ? ` - ${member.title}` : ''}.` : '';
+  const sourceLine = sourceTitle ? `Nguồn tham chiếu: ${sourceTitle}.` : 'Nguồn tham chiếu: chưa có nguồn xác minh cụ thể.';
+  const safetyLine = 'Ghi chú an toàn: đây là bản nháp chờ admin duyệt, chưa tự đăng, chưa tự gửi, chưa tự sửa dữ liệu thật.';
+  if (draftType === 'article') {
+    return {
+      title: `Bản nháp bài viết: ${subject}`,
+      summary: `Bản nháp bài viết do AI tạo để admin biên tập và duyệt trước khi đăng.`,
+      content: [`# ${subject}`, sourceLine, memberLine, '', 'Nội dung đề xuất:', `- Mở bài giới thiệu chủ đề ${subject}.`, '- Thân bài cần bám dữ liệu đã xác minh trong kho tri thức và cây phả.', '- Kết bài mời thành viên bổ sung tư liệu nếu còn thiếu.', '', safetyLine].filter(Boolean).join('\n')
+    };
+  }
+  if (draftType === 'anniversary_notice') {
+    return {
+      title: `Bản nhắc ngày giỗ: ${subject}`,
+      summary: 'Bản nhắc ngày giỗ dạng nháp, không gửi tự động.',
+      content: [`Kính thông báo về ${subject}.`, sourceLine, memberLine, 'Nội dung này chỉ dùng làm bản nháp nhắc việc; chưa gửi Zalo/web chat tự động.', safetyLine].filter(Boolean).join('\n')
+    };
+  }
+  if (draftType === 'zalo_rule') {
+    return {
+      title: `Rule Zalo nháp: ${subject}`,
+      summary: 'Rule Zalo ở trạng thái nháp, không bật gửi thật.',
+      content: [`Khi người dùng hỏi về ${subject}, bot trả lời ngắn gọn theo dữ liệu đã xác minh.`, 'Nếu câu hỏi cần dữ liệu riêng tư, hướng dẫn đăng nhập và KYC.', safetyLine].join('\n')
+    };
+  }
+  if (draftType === 'webview_fix') {
+    return {
+      title: `Đề xuất chỉnh webview: ${subject}`,
+      summary: 'Đề xuất chỉnh webview cần admin duyệt, không tự sửa source code.',
+      content: [`Vấn đề/đề xuất: ${subject}.`, auditSuggestion ? `Liên quan system audit: ${auditSuggestion.issue_summary}` : sourceLine, 'Cách xử lý đề xuất: tạo checklist sửa thủ công, kiểm tra UI PC/mobile trước khi deploy.', safetyLine].join('\n')
+    };
+  }
+  if (draftType === 'missing_data_checklist') {
+    return {
+      title: `Checklist dữ liệu thiếu: ${subject}`,
+      summary: 'Checklist quản trị để bổ sung dữ liệu, không tự sửa hồ sơ.',
+      content: [`Checklist cho ${subject}:`, '- Kiểm tra ngày sinh/ngày mất/ngày giỗ âm lịch.', '- Kiểm tra quê quán, mộ chí, chi/ngành.', '- Đối chiếu nguồn TXT/ảnh/doc trước khi apply.', sourceLine, memberLine, safetyLine].filter(Boolean).join('\n')
+    };
+  }
+  return {
+    title: `Bản nháp hành động: ${subject}`,
+    summary: 'Bản nháp hành động AI chờ admin duyệt.',
+    content: [`Chủ đề: ${subject}.`, sourceLine, memberLine, safetyLine].filter(Boolean).join('\n')
+  };
+}
+
+async function generateAIActionDraft(body = {}, adminUser = {}) {
+  const database = await getDatabase();
+  const draftType = normalizeAIActionDraftType(body.draftType);
+  const memberId = String(body.memberId || '').trim();
+  const sourceId = String(body.sourceId || '').trim();
+  const chunkId = String(body.chunkId || '').trim();
+  const systemAuditSuggestionId = String(body.systemAuditSuggestionId || '').trim();
+  const tree = memberId ? await readLineageTreeForAI() : null;
+  const member = tree ? flattenLineageTree(tree).find((item) => item.id === memberId) : null;
+  const source = sourceId ? database.prepare('SELECT id, title FROM knowledge_sources WHERE id = ?').get(sourceId) : null;
+  const auditSuggestion = systemAuditSuggestionId ? database.prepare('SELECT * FROM system_audit_suggestions WHERE id = ?').get(systemAuditSuggestionId) : null;
+  const generated = composeAIActionDraft({
+    draftType,
+    topic: body.topic,
+    member,
+    sourceTitle: source?.title || '',
+    auditSuggestion
+  });
+  const botType = draftType === 'article' ? 'article_writer' : draftType === 'prayer' ? 'prayer_writer' : 'ai_governor';
+  const created = await createAIActionDraft({
+    ...generated,
+    draftType,
+    targetModule: body.targetModule,
+    targetId: body.targetId || memberId,
+    sourceType: systemAuditSuggestionId ? 'system_audit' : sourceId || chunkId ? 'knowledge' : 'ai_governor',
+    sourceId: systemAuditSuggestionId || sourceId || chunkId || '',
+    relatedMemberIds: memberId ? [memberId] : [],
+    relatedSourceIds: sourceId ? [sourceId] : [],
+    relatedChunkIds: chunkId ? [chunkId] : [],
+    status: body.status || 'pending_review',
+    priority: body.priority || (systemAuditSuggestionId ? 'high' : 'medium'),
+    metadata: {
+      generatedBy: botType,
+      intent: 'action_draft',
+      topic: body.topic || '',
+      safety: 'draft_only_no_publish_no_send_no_auto_fix'
+    }
+  }, adminUser);
+  logAIGatewayRequest({
+    requestId: randomToken(8),
+    route: 'ai-action-drafts-generate',
+    botType,
+    intent: 'action_draft',
+    type: 'action_draft',
+    engine: 'local-composer',
+    provider: 'local',
+    model: 'local-action-draft',
+    status: 200,
+    cached: false,
+    durationMs: 0,
+    requestChars: String(body.topic || '').length,
+    contextChars: generated.content.length,
+    estimatedTokens: Math.ceil(generated.content.length / 4),
+    promptSnippet: `action_draft ${draftType} ${body.topic || ''}`,
+    knowledgeMatchesCount: sourceId || chunkId ? 1 : 0,
+    knowledgeSourceIds: sourceId ? [sourceId] : [],
+    botConfigEngine: 'local-composer',
+    botConfigMaxChunks: 0,
+    botConfigMaxOutputTokens: 0,
+    cacheEnabled: false,
+    configVersion: new Date().toISOString()
+  });
+  return created;
 }
 
 function pickDashboardEngine(aiConfig = {}, intent = 'chat') {
