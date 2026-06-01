@@ -1941,18 +1941,45 @@ export default function AIGovernor({
       const routeX = sourceRect.right + 22;
       const routeY = 24;
       routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: routeY }, { x: end.x, y: routeY }, end];
+    } else if (edge.from === "system_audit" && edge.to === "local_db") {
+      const auditRect = getOperationNodeRect(fromNode);
+      const dataRect = getOperationNodeRect(toNode);
+      const endX = dataRect.left + graphCanvas.nodeWidth * 0.76;
+      const routeX = dataRect.right + 32;
+      const routeY = dataRect.top - 26;
+      routePoints = [
+        { x: auditRect.left, y: auditRect.top + graphCanvas.nodeHeight * 0.46 },
+        { x: routeX, y: auditRect.top + graphCanvas.nodeHeight * 0.46 },
+        { x: routeX, y: routeY },
+        { x: endX, y: routeY },
+        { x: endX, y: dataRect.top }
+      ];
+    } else if (edge.from === "system_audit" && edge.to === "knowledge_search") {
+      const auditRect = getOperationNodeRect(fromNode);
+      const dataRect = getOperationNodeRect(toNode);
+      const routeX = dataRect.right + 56;
+      const routeY = dataRect.bottom + 28;
+      const endX = dataRect.left + graphCanvas.nodeWidth * 0.64;
+      routePoints = [
+        { x: auditRect.left, y: auditRect.top + graphCanvas.nodeHeight * 0.66 },
+        { x: routeX, y: auditRect.top + graphCanvas.nodeHeight * 0.66 },
+        { x: routeX, y: routeY },
+        { x: endX, y: routeY },
+        { x: endX, y: dataRect.bottom }
+      ];
     } else if (edge.to === "response_guard") {
       const sourceRectRaw = getOperationNodeRect(fromNode);
       const guardRect = getOperationNodeRect(toNode);
-      const guardSlots: Record<string, number> = {
-        local_db: 0.28,
-        anniversary_calendar: 0.5,
-        gemini: 0.72
+      const guardSlots: Record<string, { source: number; target: number; lane: number }> = {
+        local_db: { source: 0.38, target: 0.28, lane: 0.18 },
+        anniversary_calendar: { source: 0.5, target: 0.5, lane: 0.5 },
+        gemini: { source: 0.6, target: 0.72, lane: 0.82 }
       };
-      const slot = guardSlots[edge.from] || 0.5;
-      const start = { x: sourceRectRaw.right, y: sourceRectRaw.top + graphCanvas.nodeHeight * slot };
-      const end = { x: guardRect.left, y: guardRect.top + graphCanvas.nodeHeight * slot };
-      routePoints = [start, end];
+      const slots = guardSlots[edge.from] || { source: 0.5, target: 0.5, lane: 0.5 };
+      const start = { x: sourceRectRaw.right, y: sourceRectRaw.top + graphCanvas.nodeHeight * slots.source };
+      const end = { x: guardRect.left, y: guardRect.top + graphCanvas.nodeHeight * slots.target };
+      const routeX = sourceRectRaw.right + 34 + slots.lane * Math.max(32, guardRect.left - sourceRectRaw.right - 68);
+      routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: end.y }, end];
     } else if (edge.from === "response_guard" && edge.to === "ai_logs") {
       const guardRect = getOperationNodeRect(fromNode);
       const logsRect = getOperationNodeRect(toNode);
