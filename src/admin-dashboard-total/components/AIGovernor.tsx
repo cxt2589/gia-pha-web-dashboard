@@ -1743,15 +1743,52 @@ export default function AIGovernor({
   const getOperationAnchor = (
     node: AIOperationGraphNode,
     side: "left" | "right" | "top" | "bottom",
-    lane = 0
+    slot = 0.5
   ) => {
     const pos = getOperationNodePosition(node);
-    const halfWidth = graphCanvas.nodeWidth / 2;
-    const halfHeight = graphCanvas.nodeHeight / 2;
-    if (side === "left") return { x: pos.x - 10, y: pos.y + halfHeight + lane };
-    if (side === "right") return { x: pos.x + graphCanvas.nodeWidth + 10, y: pos.y + halfHeight + lane };
-    if (side === "top") return { x: pos.x + halfWidth + lane, y: pos.y - 10 };
-    return { x: pos.x + halfWidth + lane, y: pos.y + graphCanvas.nodeHeight + 10 };
+    const insetX = 22;
+    const insetY = 16;
+    const normalizedSlot = Math.min(0.88, Math.max(0.12, slot));
+    if (side === "left") return { x: pos.x, y: pos.y + insetY + (graphCanvas.nodeHeight - insetY * 2) * normalizedSlot };
+    if (side === "right") return { x: pos.x + graphCanvas.nodeWidth, y: pos.y + insetY + (graphCanvas.nodeHeight - insetY * 2) * normalizedSlot };
+    if (side === "top") return { x: pos.x + insetX + (graphCanvas.nodeWidth - insetX * 2) * normalizedSlot, y: pos.y };
+    return { x: pos.x + insetX + (graphCanvas.nodeWidth - insetX * 2) * normalizedSlot, y: pos.y + graphCanvas.nodeHeight };
+  };
+  const getPreferredOperationSides = (edge: AIOperationGraphEdge): {
+    fromSide: "left" | "right" | "top" | "bottom";
+    toSide: "left" | "right" | "top" | "bottom";
+  } => {
+    if (edge.to === "ai_gateway") {
+      if (edge.from === "webview_chat" || edge.from === "dashboard_helper") return { fromSide: "right", toSide: "top" };
+      if (edge.from === "article_writer" || edge.from === "prayer_writer") return { fromSide: "right", toSide: "bottom" };
+      return { fromSide: "right", toSide: "left" };
+    }
+    if (edge.from === "ai_governor" && edge.to === "system_audit") return { fromSide: "right", toSide: "top" };
+    const fromNode = aiOperationGraph.nodes.find((node) => node.id === edge.from);
+    const toNode = aiOperationGraph.nodes.find((node) => node.id === edge.to);
+    if (!fromNode || !toNode) return { fromSide: "right", toSide: "left" };
+    const fromPos = getOperationNodePosition(fromNode);
+    const toPos = getOperationNodePosition(toNode);
+    const dx = toPos.x - fromPos.x;
+    const dy = toPos.y - fromPos.y;
+    if (Math.abs(dx) >= Math.abs(dy)) {
+      return { fromSide: dx >= 0 ? "right" : "left", toSide: dx >= 0 ? "left" : "right" };
+    }
+    return { fromSide: dy >= 0 ? "bottom" : "top", toSide: dy >= 0 ? "top" : "bottom" };
+  };
+  const getOperationAnchorSlot = (
+    edge: AIOperationGraphEdge,
+    nodeId: string,
+    side: "left" | "right" | "top" | "bottom",
+    endpoint: "from" | "to"
+  ) => {
+    const peers = aiOperationGraph.edges.filter((item) => {
+      const preferred = getPreferredOperationSides(item);
+      return item[endpoint] === nodeId && preferred[endpoint === "from" ? "fromSide" : "toSide"] === side;
+    });
+    const index = peers.findIndex((item) => item === edge);
+    if (peers.length <= 1 || index < 0) return 0.5;
+    return (index + 1) / (peers.length + 1);
   };
   const operationSegmentIntersectsRect = (
     a: { x: number; y: number },
@@ -1818,17 +1855,33 @@ export default function AIGovernor({
     const candidates: Array<{ points: Array<{ x: number; y: number }>; score: number }> = [];
     let routePoints: Array<{ x: number; y: number }> | null = null;
 
-    if (edge.from === "ai_governor" && edge.to === "system_audit") {
-      const start = getOperationAnchor(fromNode, "right");
-      const end = getOperationAnchor(toNode, "top", lane);
+    if (edge.to === "ai_gateway" && fromNode.type === "bot") {
+      const preferred = getPreferredOperationSides(edge);
+      const start = getOperationAnchor(fromNode, preferred.fromSide, getOperationAnchorSlot(edge, fromNode.id, preferred.fromSide, "from"));
+      const end = getOperationAnchor(toNode, preferred.toSide, getOperationAnchorSlot(edge, toNode.id, preferred.toSide, "to"));
+      if (preferred.toSide === "top") {
+        const routeX = Math.min(start.x + 32, end.x - 16);
+        const routeY = end.y - 28;
+        routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: routeY }, { x: end.x, y: routeY }, end];
+      } else if (preferred.toSide === "bottom") {
+        const routeX = Math.min(start.x + 32, end.x - 16);
+        const routeY = end.y + 28;
+        routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: routeY }, { x: end.x, y: routeY }, end];
+      } else {
+        const routeX = end.x - 30 - Math.abs(lane);
+        routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: end.y }, end];
+      }
+    } else if (edge.from === "ai_governor" && edge.to === "system_audit") {
+      const start = getOperationAnchor(fromNode, "right", getOperationAnchorSlot(edge, fromNode.id, "right", "from"));
+      const end = getOperationAnchor(toNode, "top", getOperationAnchorSlot(edge, toNode.id, "top", "to"));
       const routeX = sourceRect.right + 22;
       const routeY = 24 + Math.max(0, lane);
       routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: routeY }, { x: end.x, y: routeY }, end];
     }
 
     if (!routePoints) sidePairs.forEach(([fromSide, toSide]) => {
-      const start = getOperationAnchor(fromNode, fromSide, fromSide === "top" || fromSide === "bottom" ? lane : 0);
-      const end = getOperationAnchor(toNode, toSide, toSide === "top" || toSide === "bottom" ? lane : 0);
+      const start = getOperationAnchor(fromNode, fromSide, getOperationAnchorSlot(edge, fromNode.id, fromSide, "from"));
+      const end = getOperationAnchor(toNode, toSide, getOperationAnchorSlot(edge, toNode.id, toSide, "to"));
       const midX = Math.round((start.x + end.x) / 2) + lane;
       const midY = Math.round((start.y + end.y) / 2) + lane;
       const pointSets: Array<Array<{ x: number; y: number }>> = [
@@ -2163,11 +2216,11 @@ export default function AIGovernor({
                     aria-hidden="true"
                   >
                     <defs>
-                      <marker id="ai-flow-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="strokeWidth">
-                        <path d="M 0 0 L 7 3.5 L 0 7 z" fill="context-stroke" />
+                      <marker id="ai-flow-arrow" markerWidth="5.5" markerHeight="5.5" refX="5.1" refY="2.75" orient="auto" markerUnits="strokeWidth">
+                        <path d="M 0 0 L 5.5 2.75 L 0 5.5 z" fill="context-stroke" />
                       </marker>
-                      <marker id="ai-flow-arrow-active" markerWidth="8" markerHeight="8" refX="6.8" refY="4" orient="auto" markerUnits="strokeWidth">
-                        <path d="M 0 0 L 8 4 L 0 8 z" fill="context-stroke" />
+                      <marker id="ai-flow-arrow-active" markerWidth="6.5" markerHeight="6.5" refX="6" refY="3.25" orient="auto" markerUnits="strokeWidth">
+                        <path d="M 0 0 L 6.5 3.25 L 0 6.5 z" fill="context-stroke" />
                       </marker>
                     </defs>
                     {operationGraphEdges.map((edge) => {
@@ -2185,7 +2238,7 @@ export default function AIGovernor({
                             d={edge.path}
                             fill="none"
                             stroke={edgeStroke}
-                            strokeWidth={isRelated ? 1.8 : 1.05}
+                            strokeWidth={isRelated ? 1.45 : 0.85}
                             strokeDasharray={edge.from === "zalo_bot" ? "5 5" : undefined}
                             strokeLinecap="round"
                             strokeLinejoin="round"
