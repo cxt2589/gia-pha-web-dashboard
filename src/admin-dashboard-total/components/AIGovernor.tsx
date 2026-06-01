@@ -11,8 +11,11 @@ import {
   GitBranch,
   Globe2,
   MessageSquare,
+  Move,
   PenLine,
   RefreshCw,
+  RotateCcw,
+  Save,
   Send,
   Settings,
   Sparkles,
@@ -68,6 +71,7 @@ const KNOWLEDGE_CATEGORY: KnowledgeBaseDocument["category"] = "Gia phả học";
 const DRAFT_CATEGORY: WebArticle["category"] = "Tin tức họ tộc";
 const DRAFT_STATUS: WebArticle["status"] = "Bản nháp";
 const AI_OPERATION_LOG_PAGE_SIZE = 4;
+const AI_OPERATION_GRAPH_LAYOUT_KEY = "ai-operation-graph-layout";
 
 type KnowledgeStatus = {
   ok?: boolean;
@@ -244,6 +248,12 @@ type AIOperationGraphEdge = {
   from: string;
   to: string;
   label?: string;
+};
+
+type AIOperationGraphLayout = {
+  version: number;
+  nodes: Record<string, { x: number; y: number }>;
+  updatedAt?: string;
 };
 
 type ZaloBotStatus = {
@@ -574,6 +584,17 @@ export default function AIGovernor({
   const [operationLogPage, setOperationLogPage] = useState(1);
   const [isOperationDetailOpen, setIsOperationDetailOpen] = useState(false);
   const [isOperationGraphExpanded, setIsOperationGraphExpanded] = useState(false);
+  const [operationGraphLayout, setOperationGraphLayout] = useState<AIOperationGraphLayout>({ version: 1, nodes: {} });
+  const [isOperationGraphEditing, setIsOperationGraphEditing] = useState(false);
+  const [operationGraphLayoutNote, setOperationGraphLayoutNote] = useState("");
+  const [operationGraphNodeDrag, setOperationGraphNodeDrag] = useState<{
+    nodeId: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+  } | null>(null);
   const operationGraphScrollRef = useRef<HTMLDivElement>(null);
   const operationGraphDragRef = useRef({ dragging: false, x: 0, y: 0, left: 0, top: 0 });
   const [systemAuditSuggestions, setSystemAuditSuggestions] = useState<SystemAuditSuggestion[]>([]);
@@ -1133,6 +1154,65 @@ export default function AIGovernor({
     }
   };
 
+  const loadOperationGraphLayout = async () => {
+    try {
+      const response = await fetch(`/api/state/${AI_OPERATION_GRAPH_LAYOUT_KEY}`);
+      if (response.status === 404) {
+        setOperationGraphLayout({ version: 1, nodes: {} });
+        return;
+      }
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Could not read graph layout.");
+      const value = data.value || {};
+      setOperationGraphLayout({
+        version: Number(value.version) || 1,
+        nodes: value.nodes && typeof value.nodes === "object" ? value.nodes : {},
+        updatedAt: value.updatedAt
+      });
+      setOperationGraphLayoutNote("");
+    } catch (err: any) {
+      setOperationGraphLayoutNote(`Could not read graph layout: ${err?.message || "unknown error"}`);
+    }
+  };
+
+  const saveOperationGraphLayout = async () => {
+    const value: AIOperationGraphLayout = {
+      version: 1,
+      nodes: operationGraphLayout.nodes,
+      updatedAt: new Date().toISOString()
+    };
+    try {
+      const response = await fetch(`/api/state/${AI_OPERATION_GRAPH_LAYOUT_KEY}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Could not save graph layout.");
+      setOperationGraphLayout(value);
+      setOperationGraphLayoutNote("Graph layout saved.");
+    } catch (err: any) {
+      setOperationGraphLayoutNote(`Could not save graph layout: ${err?.message || "unknown error"}`);
+    }
+  };
+
+  const resetOperationGraphLayout = async () => {
+    const value: AIOperationGraphLayout = { version: 1, nodes: {}, updatedAt: new Date().toISOString() };
+    setOperationGraphLayout(value);
+    try {
+      const response = await fetch(`/api/state/${AI_OPERATION_GRAPH_LAYOUT_KEY}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Could not reset graph layout.");
+      setOperationGraphLayoutNote("Graph layout reset to default.");
+    } catch (err: any) {
+      setOperationGraphLayoutNote(`Could not reset graph layout: ${err?.message || "unknown error"}`);
+    }
+  };
+
   const loadSystemAuditPanel = async () => {
     setIsSystemAuditLoading(true);
     try {
@@ -1374,6 +1454,7 @@ export default function AIGovernor({
     void loadAIEvalCases();
     void loadZaloBotPanel();
     void loadAIBotConfigs();
+    void loadOperationGraphLayout();
     void loadSystemAuditPanel();
     void loadAIActionDrafts();
   }, []);
@@ -1884,10 +1965,20 @@ export default function AIGovernor({
     action: "Nháp"
   };
   const graphCanvas = { width: 1640, height: 800, nodeWidth: 172, nodeHeight: 76 };
-  const getOperationNodePosition = (node: AIOperationGraphNode) => ({
+  const getDefaultOperationNodePosition = (node: AIOperationGraphNode) => ({
     x: 44 + (node.column - 1) * 266,
     y: 48 + (node.row - 1) * 110
   });
+  const clampOperationNodePosition = (position: { x: number; y: number }) => ({
+    x: Math.min(graphCanvas.width - graphCanvas.nodeWidth - 24, Math.max(24, Math.round(position.x))),
+    y: Math.min(graphCanvas.height - graphCanvas.nodeHeight - 24, Math.max(24, Math.round(position.y)))
+  });
+  const getOperationNodePosition = (node: AIOperationGraphNode) => {
+    const customPosition = operationGraphLayout.nodes[node.id];
+    return customPosition
+      ? clampOperationNodePosition(customPosition)
+      : getDefaultOperationNodePosition(node);
+  };
   const operationEdgeLane = (edge: AIOperationGraphEdge, index: number) => {
     const siblingEdges = aiOperationGraph.edges.filter((item) => item.to === edge.to || item.from === edge.from);
     const siblingIndex = siblingEdges.findIndex((item) => item === edge);
@@ -2281,6 +2372,48 @@ export default function AIGovernor({
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
   };
+  const handleOperationNodePointerDown = (event: React.PointerEvent<HTMLButtonElement>, node: AIOperationGraphNode) => {
+    if (!isOperationGraphEditing) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const position = getOperationNodePosition(node);
+    setSelectedOperationNodeId(node.id);
+    setOperationGraphNodeDrag({
+      nodeId: node.id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: position.x,
+      originY: position.y
+    });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const handleOperationNodePointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (!operationGraphNodeDrag || operationGraphNodeDrag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const nextPosition = clampOperationNodePosition({
+      x: operationGraphNodeDrag.originX + event.clientX - operationGraphNodeDrag.startX,
+      y: operationGraphNodeDrag.originY + event.clientY - operationGraphNodeDrag.startY
+    });
+    setOperationGraphLayout((prev) => ({
+      ...prev,
+      nodes: {
+        ...prev.nodes,
+        [operationGraphNodeDrag.nodeId]: nextPosition
+      }
+    }));
+    setOperationGraphLayoutNote("Layout has unsaved changes.");
+  };
+  const handleOperationNodePointerEnd = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (operationGraphNodeDrag?.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setOperationGraphNodeDrag(null);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
 
   return (
     <div className="space-y-5 text-stone-850">
@@ -2514,10 +2647,30 @@ export default function AIGovernor({
                 >
                   {isOperationGraphExpanded ? "Thu gọn" : "Mở rộng ngang"}
                 </button>
+                <button type="button" onClick={() => setIsOperationGraphEditing((value) => !value)} className={`inline-flex items-center gap-1 rounded-full border px-3 py-1 font-bold ${isOperationGraphEditing ? "border-amber-300 bg-amber-50 text-amber-900" : "border-stone-200 bg-white text-stone-600 hover:bg-stone-50"}`}>
+                  <Move className="h-3.5 w-3.5" />
+                  {isOperationGraphEditing ? "Editing" : "Edit layout"}
+                </button>
+                <button type="button" onClick={() => void saveOperationGraphLayout()} disabled={!isOperationGraphEditing} className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 font-bold text-emerald-800 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50">
+                  <Save className="h-3.5 w-3.5" />
+                  Save layout
+                </button>
+                <button type="button" onClick={() => void resetOperationGraphLayout()} className="inline-flex items-center gap-1 rounded-full border border-stone-200 bg-white px-3 py-1 font-bold text-stone-600 hover:bg-stone-50">
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  Reset
+                </button>
               </div>
             </div>
 
             <div className="mt-5">
+              {(isOperationGraphEditing || operationGraphLayoutNote) && (
+                <p className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-900">
+                  {isOperationGraphEditing
+                    ? "Edit mode is on: drag nodes inside the graph, then click Save layout. Edges route again from the new node positions."
+                    : operationGraphLayoutNote}
+                  {isOperationGraphEditing && operationGraphLayoutNote ? ` ${operationGraphLayoutNote}` : ""}
+                </p>
+              )}
               <div className="mb-2 flex flex-wrap gap-3 text-[11px] font-semibold text-stone-500">
                 <span className="inline-flex items-center gap-1"><span className="h-0.5 w-5 rounded bg-slate-500" />Luồng thường</span>
                 <span className="inline-flex items-center gap-1"><span className="h-0.5 w-5 rounded bg-blue-600" />Liên quan kiểm tra</span>
@@ -2607,12 +2760,20 @@ export default function AIGovernor({
                         key={node.id}
                         type="button"
                         onClick={() => {
+                          if (isOperationGraphEditing) {
+                            setSelectedOperationNodeId(node.id);
+                            return;
+                          }
                           setSelectedOperationNodeId(node.id);
                           setIsOperationDetailOpen(true);
                         }}
+                        onPointerDown={(event) => handleOperationNodePointerDown(event, node)}
+                        onPointerMove={handleOperationNodePointerMove}
+                        onPointerUp={handleOperationNodePointerEnd}
+                        onPointerCancel={handleOperationNodePointerEnd}
                         className={`absolute z-10 rounded-xl border bg-white p-3 text-left text-xs shadow-sm transition hover:-translate-y-0.5 hover:border-amber-300 hover:shadow-md ${
                           isSelected ? "border-red-300 ring-2 ring-red-100" : "border-stone-200"
-                        }`}
+                        } ${isOperationGraphEditing ? "cursor-move" : ""}`}
                         style={{
                           left: pos.x,
                           top: pos.y,
