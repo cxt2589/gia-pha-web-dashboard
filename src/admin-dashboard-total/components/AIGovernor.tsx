@@ -1764,6 +1764,9 @@ export default function AIGovernor({
       return { fromSide: "right", toSide: "left" };
     }
     if (edge.from === "ai_governor" && edge.to === "system_audit") return { fromSide: "right", toSide: "top" };
+    if (edge.from === "ai_gateway" && edge.to === "intent_router") return { fromSide: "bottom", toSide: "top" };
+    if (edge.from === "system_audit" && edge.to === "bot_config") return { fromSide: "left", toSide: "right" };
+    if (edge.from === "intent_router") return { fromSide: "right", toSide: "left" };
     const fromNode = aiOperationGraph.nodes.find((node) => node.id === edge.from);
     const toNode = aiOperationGraph.nodes.find((node) => node.id === edge.to);
     if (!fromNode || !toNode) return { fromSide: "right", toSide: "left" };
@@ -1859,18 +1862,35 @@ export default function AIGovernor({
       const preferred = getPreferredOperationSides(edge);
       const start = getOperationAnchor(fromNode, preferred.fromSide, getOperationAnchorSlot(edge, fromNode.id, preferred.fromSide, "from"));
       const end = getOperationAnchor(toNode, preferred.toSide, getOperationAnchorSlot(edge, toNode.id, preferred.toSide, "to"));
+      const fromSlot = getOperationAnchorSlot(edge, fromNode.id, preferred.fromSide, "from");
+      const toSlot = getOperationAnchorSlot(edge, toNode.id, preferred.toSide, "to");
       if (preferred.toSide === "top") {
-        const routeX = Math.min(start.x + 32, end.x - 16);
-        const routeY = end.y - 28;
+        const routeX = Math.min(start.x + 20 + fromSlot * 84, end.x - 22 - toSlot * 16);
+        const routeY = end.y - 26 - toSlot * 34;
         routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: routeY }, { x: end.x, y: routeY }, end];
       } else if (preferred.toSide === "bottom") {
-        const routeX = Math.min(start.x + 32, end.x - 16);
-        const routeY = end.y + 28;
+        const routeX = Math.min(start.x + 20 + fromSlot * 84, end.x - 22 - toSlot * 16);
+        const routeY = end.y + 26 + (1 - toSlot) * 34;
         routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: routeY }, { x: end.x, y: routeY }, end];
       } else {
-        const routeX = end.x - 30 - Math.abs(lane);
+        const routeX = end.x - 28 - Math.abs(lane);
         routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: end.y }, end];
       }
+    } else if (edge.from === "ai_gateway" && edge.to === "intent_router") {
+      const start = getOperationAnchor(fromNode, "bottom", getOperationAnchorSlot(edge, fromNode.id, "bottom", "from"));
+      const end = getOperationAnchor(toNode, "top", getOperationAnchorSlot(edge, toNode.id, "top", "to"));
+      const routeY = Math.min(end.y - 28, start.y + 28);
+      routePoints = [start, { x: start.x, y: routeY }, { x: end.x, y: routeY }, end];
+    } else if (edge.from === "system_audit" && edge.to === "bot_config") {
+      const start = getOperationAnchor(fromNode, "left", getOperationAnchorSlot(edge, fromNode.id, "left", "from"));
+      const end = getOperationAnchor(toNode, "right", getOperationAnchorSlot(edge, toNode.id, "right", "to"));
+      routePoints = [start, end];
+    } else if (edge.from === "intent_router") {
+      const start = getOperationAnchor(fromNode, "right", getOperationAnchorSlot(edge, fromNode.id, "right", "from"));
+      const end = getOperationAnchor(toNode, "left", getOperationAnchorSlot(edge, toNode.id, "left", "to"));
+      const fromSlot = getOperationAnchorSlot(edge, fromNode.id, "right", "from");
+      const routeX = Math.max(start.x + 34 + fromSlot * 28, Math.min(start.x + 124, end.x - 34));
+      routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: end.y }, end];
     } else if (edge.from === "ai_governor" && edge.to === "system_audit") {
       const start = getOperationAnchor(fromNode, "right", getOperationAnchorSlot(edge, fromNode.id, "right", "from"));
       const end = getOperationAnchor(toNode, "top", getOperationAnchorSlot(edge, toNode.id, "top", "to"));
