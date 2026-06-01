@@ -523,6 +523,44 @@ async function getDatabase() {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS system_audit_suggestions (
+      id TEXT PRIMARY KEY,
+      suggestion_hash TEXT NOT NULL UNIQUE,
+      source_type TEXT NOT NULL DEFAULT 'other',
+      source_path TEXT NOT NULL DEFAULT '',
+      location_label TEXT NOT NULL DEFAULT '',
+      current_value TEXT NOT NULL DEFAULT '',
+      issue_type TEXT NOT NULL DEFAULT 'other',
+      issue_summary TEXT NOT NULL DEFAULT '',
+      suggested_value TEXT NOT NULL DEFAULT '',
+      suggested_action TEXT NOT NULL DEFAULT 'needs_manual_review',
+      priority TEXT NOT NULL DEFAULT 'medium',
+      evidence TEXT NOT NULL DEFAULT '',
+      related_source_ids_json TEXT NOT NULL DEFAULT '[]',
+      related_chunk_ids_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_by TEXT NOT NULL DEFAULT 'system',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      reviewed_by TEXT NOT NULL DEFAULT '',
+      reviewed_at TEXT NOT NULL DEFAULT '',
+      applied_by TEXT NOT NULL DEFAULT '',
+      applied_at TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS system_audit_apply_logs (
+      id TEXT PRIMARY KEY,
+      suggestion_id TEXT NOT NULL DEFAULT '',
+      action TEXT NOT NULL DEFAULT '',
+      source_type TEXT NOT NULL DEFAULT '',
+      source_path TEXT NOT NULL DEFAULT '',
+      old_value TEXT NOT NULL DEFAULT '',
+      new_value TEXT NOT NULL DEFAULT '',
+      admin_user TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT '',
+      error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS extracted_anniversary_audit_logs (
       id TEXT PRIMARY KEY,
       candidate_id TEXT NOT NULL,
@@ -617,6 +655,9 @@ async function getDatabase() {
     CREATE INDEX IF NOT EXISTS idx_entity_aliases_ascii ON entity_aliases(alias_ascii);
     CREATE INDEX IF NOT EXISTS idx_ai_request_logs_created ON ai_request_logs(created_at);
     CREATE INDEX IF NOT EXISTS idx_extracted_ann_person ON extracted_anniversary_candidates(person_name_norm);
+    CREATE INDEX IF NOT EXISTS idx_system_audit_status ON system_audit_suggestions(status);
+    CREATE INDEX IF NOT EXISTS idx_system_audit_issue ON system_audit_suggestions(issue_type);
+    CREATE INDEX IF NOT EXISTS idx_system_audit_logs_created ON system_audit_apply_logs(created_at);
     CREATE INDEX IF NOT EXISTS idx_extracted_ann_source ON extracted_anniversary_candidates(source_id);
     CREATE INDEX IF NOT EXISTS idx_extracted_ann_status ON extracted_anniversary_candidates(status);
     CREATE INDEX IF NOT EXISTS idx_extracted_ann_audit_candidate ON extracted_anniversary_audit_logs(candidate_id);
@@ -3249,6 +3290,59 @@ app.get('/api/ai/bot-configs', async (req, res) => {
   }
 });
 
+app.get('/api/system-audit/suggestions', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json({ ok: true, suggestions: await listSystemAuditSuggestions(req.query || {}) });
+  } catch (err) {
+    console.error('Failed to list system audit suggestions:', err);
+    res.status(500).json({ error: 'Failed to list system audit suggestions.' });
+  }
+});
+
+app.post('/api/system-audit/scan', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json(await runSystemAuditScan(admin.authUser));
+  } catch (err) {
+    console.error('Failed to scan system audit:', err);
+    res.status(500).json({ error: err.message || 'Failed to scan system audit.' });
+  }
+});
+
+app.patch('/api/system-audit/suggestions/:id', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json({ ok: true, suggestion: await updateSystemAuditSuggestion(req.params.id, req.body || {}, admin.authUser) });
+  } catch (err) {
+    console.error('Failed to update system audit suggestion:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to update system audit suggestion.' });
+  }
+});
+
+app.post('/api/system-audit/suggestions/:id/apply', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json({ ok: true, result: await applySystemAuditSuggestion(req.params.id, req.body || {}, admin.authUser) });
+  } catch (err) {
+    console.error('Failed to apply system audit suggestion:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to apply system audit suggestion.' });
+  }
+});
+
+app.get('/api/system-audit/logs', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json({ ok: true, logs: await listSystemAuditApplyLogs(req.query || {}) });
+  } catch (err) {
+    console.error('Failed to list system audit logs:', err);
+    res.status(500).json({ error: 'Failed to list system audit logs.' });
+  }
+});
+
 app.get('/api/ai/operation-graph', async (req, res) => {
   try {
     if (!await requireAdmin(req, res)) return;
@@ -3259,6 +3353,17 @@ app.get('/api/ai/operation-graph', async (req, res) => {
     ]);
     const configByBot = new Map(configs.map((config) => [config.botType, config]));
     const botCount = (botType) => summary.topBotTypes?.find((item) => item.name === botType)?.count || 0;
+    const auditRows = getDatabase().prepare(`
+      SELECT status, priority, COUNT(*) AS count
+      FROM system_audit_suggestions
+      GROUP BY status, priority
+    `).all();
+    const auditMetric = (status) => auditRows
+      .filter((row) => row.status === status)
+      .reduce((sum, row) => sum + Number(row.count || 0), 0);
+    const auditCritical = auditRows
+      .filter((row) => ['critical', 'high'].includes(String(row.priority || '')))
+      .reduce((sum, row) => sum + Number(row.count || 0), 0);
     const botNode = (id, label, row, description) => {
       const config = configByBot.get(id);
       return {
@@ -3293,6 +3398,7 @@ app.get('/api/ai/operation-graph', async (req, res) => {
         { id: 'local_db', label: 'Cây phả & Database', type: 'data', status: 'active', column: 4, row: 3, description: 'Nguồn local-first cho nhân vật, đời, chi/ngành và dữ liệu applied.' },
         { id: 'anniversary_calendar', label: 'Lịch giỗ xác minh', type: 'data', status: 'active', column: 4, row: 4, description: 'Tra ngày giỗ verified/applied trước khi diễn đạt.' },
         { id: 'knowledge_search', label: 'Kho tri thức', type: 'data', status: 'active', column: 4, row: 5, description: 'Tìm top chunks từ tài liệu Cao Tộc và alias.', metrics: { sources: knowledge.sources, chunks: knowledge.chunks, aliases: knowledge.aliases } },
+        { id: 'system_audit', label: 'Kiểm tra hệ thống', type: 'audit', status: auditCritical ? 'error' : 'active', column: 5, row: 2, description: 'Scanner local-first phát hiện lỗi font, dữ liệu mẫu, danh xưng sai, rủi ro riêng tư và tạo đề xuất chờ admin duyệt.', metrics: { pending: auditMetric('pending'), applied: auditMetric('applied'), rejected: auditMetric('rejected'), critical: auditCritical } },
         { id: 'gemini', label: 'Gemini', type: 'model', status: 'active', column: 5, row: 4, description: 'Chỉ dùng khi local/knowledge chưa đủ hoặc cần sinh nội dung dài.' },
         { id: 'response_guard', label: 'Response Guard', type: 'guard', status: 'active', column: 6, row: 3, description: 'Chặn bịa dữ liệu, phân biệt pending/applied và giới hạn output.' },
         { id: 'ai_logs', label: 'Logs / Token', type: 'logs', status: 'active', column: 6, row: 5, description: 'Theo dõi request, cache, lỗi, token và nguồn theo từng bot.', metrics: { tokens: summary.estimatedTokens, avg: `${summary.avgDurationMs}ms` } }
@@ -3310,10 +3416,15 @@ app.get('/api/ai/operation-graph', async (req, res) => {
         { from: 'intent_router', to: 'local_db', label: 'local-first' },
         { from: 'intent_router', to: 'anniversary_calendar', label: 'ngày giỗ' },
         { from: 'intent_router', to: 'knowledge_search', label: 'search' },
+        { from: 'ai_governor', to: 'system_audit', label: 'system_audit' },
+        { from: 'system_audit', to: 'bot_config', label: 'prompt/config' },
+        { from: 'system_audit', to: 'local_db', label: 'scan' },
+        { from: 'system_audit', to: 'knowledge_search', label: 'scan' },
         { from: 'knowledge_search', to: 'gemini', label: 'khi cần' },
         { from: 'local_db', to: 'response_guard' },
         { from: 'anniversary_calendar', to: 'response_guard' },
         { from: 'gemini', to: 'response_guard' },
+        { from: 'system_audit', to: 'ai_logs', label: 'audit log' },
         { from: 'response_guard', to: 'ai_logs', label: 'ghi log' }
       ]
     });
@@ -3808,6 +3919,410 @@ async function updateAIBotConfig(botType, body = {}, adminUser = {}) {
     current.bot_type
   );
   return publicAIBotConfig(database.prepare('SELECT * FROM ai_bot_configs WHERE bot_type = ?').get(current.bot_type));
+}
+
+const SYSTEM_AUDIT_MOJIBAKE_RE = new RegExp([
+  'T\\u00c3\\u00a1',
+  'T\\u00c3\\u00a1\\u00c2\\u00ba',
+  'T\\u00c3\\u00a1\\u00c2\\u00bb',
+  '\\u00c3\\u0084',
+  '\\u00c3\\u00a1\\u00c2\\u00bb',
+  '\\u00c3\\u00a2',
+  '\\u00c2\\u00ba',
+  '\\u00c2\\u00bb',
+  '\\u00e2\\u20ac',
+  '\\u00c4\\u0090',
+  '\\u00c6\\u00b0',
+  '\\u00c3'
+].join('|'), 'i');
+const SYSTEM_AUDIT_SAMPLE_RE = /(demo|sample|placeholder|lorem|unsplash|dữ liệu mẫu|du lieu mau|bản mẫu|ban mau)/i;
+const SYSTEM_AUDIT_PRIVACY_RE = /(số điện thoại|so dien thoai|cccd|cmnd|địa chỉ riêng|dia chi rieng|email cá nhân|email ca nhan)/i;
+
+function publicSystemAuditSuggestion(row) {
+  return {
+    id: row.id,
+    sourceType: row.source_type,
+    sourcePath: row.source_path,
+    location: row.location_label,
+    locationLabel: row.location_label,
+    currentValue: row.current_value,
+    issueType: row.issue_type,
+    summary: row.issue_summary,
+    issueSummary: row.issue_summary,
+    suggestedValue: row.suggested_value,
+    action: row.suggested_action,
+    suggestedAction: row.suggested_action,
+    priority: row.priority,
+    evidence: row.evidence,
+    relatedSourceIds: safeJsonParse(row.related_source_ids_json, []),
+    relatedChunkIds: safeJsonParse(row.related_chunk_ids_json, []),
+    status: row.status,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    reviewedBy: row.reviewed_by,
+    reviewedAt: row.reviewed_at,
+    appliedBy: row.applied_by,
+    appliedAt: row.applied_at
+  };
+}
+
+function publicSystemAuditApplyLog(row) {
+  return {
+    id: row.id,
+    suggestionId: row.suggestion_id,
+    action: row.action,
+    sourceType: row.source_type,
+    sourcePath: row.source_path,
+    oldValue: row.old_value,
+    newValue: row.new_value,
+    adminUser: row.admin_user,
+    status: row.status,
+    error: row.error,
+    createdAt: row.created_at
+  };
+}
+
+async function listSystemAuditSuggestions({ status = '', type = '', q = '', priority = '', sourceType = '', limit = 100 } = {}) {
+  const database = await getDatabase();
+  const where = [];
+  const params = [];
+  if (status) {
+    where.push('status = ?');
+    params.push(String(status));
+  }
+  if (type) {
+    where.push('issue_type = ?');
+    params.push(String(type));
+  }
+  if (priority) {
+    where.push('priority = ?');
+    params.push(String(priority));
+  }
+  if (sourceType) {
+    where.push('source_type = ?');
+    params.push(String(sourceType));
+  }
+  if (q) {
+    where.push('(source_path LIKE ? OR location_label LIKE ? OR issue_summary LIKE ? OR current_value LIKE ? OR evidence LIKE ?)');
+    const like = `%${String(q)}%`;
+    params.push(like, like, like, like, like);
+  }
+  let sql = 'SELECT * FROM system_audit_suggestions';
+  if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
+  sql += " ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at DESC LIMIT ?";
+  params.push(Math.max(1, Math.min(300, Number(limit) || 100)));
+  return database.prepare(sql).all(...params).map(publicSystemAuditSuggestion);
+}
+
+async function listSystemAuditApplyLogs({ limit = 80 } = {}) {
+  const database = await getDatabase();
+  return database.prepare('SELECT * FROM system_audit_apply_logs ORDER BY created_at DESC LIMIT ?')
+    .all(Math.max(1, Math.min(300, Number(limit) || 80)))
+    .map(publicSystemAuditApplyLog);
+}
+
+function buildSystemAuditCandidate({ sourceType, sourcePath, locationLabel, currentValue, issueType, issueSummary, suggestedValue = '', suggestedAction = 'needs_manual_review', priority = 'medium', evidence = '', relatedSourceIds = [], relatedChunkIds = [] }) {
+  const cleanCurrent = compactText(currentValue || '', 1200);
+  return {
+    sourceType,
+    sourcePath,
+    locationLabel,
+    currentValue: cleanCurrent,
+    issueType,
+    issueSummary,
+    suggestedValue: compactText(suggestedValue || '', 1200),
+    suggestedAction,
+    priority,
+    evidence: compactText(evidence || cleanCurrent, 1200),
+    relatedSourceIds,
+    relatedChunkIds,
+    hash: sha256Hex(JSON.stringify({ sourceType, sourcePath, currentValue: cleanCurrent, issueType }))
+  };
+}
+
+function detectSystemAuditCandidatesForText({ sourceType, sourcePath, locationLabel, text, relatedSourceIds = [], relatedChunkIds = [] }) {
+  const value = String(text || '');
+  if (!value) return [];
+  const candidates = [];
+  const excerptFor = (pattern) => {
+    const match = value.match(pattern);
+    if (!match) return compactText(value, 260);
+    const index = Math.max(0, match.index || 0);
+    return compactText(value.slice(Math.max(0, index - 90), index + 180), 320);
+  };
+  if (SYSTEM_AUDIT_MOJIBAKE_RE.test(value)) {
+    candidates.push(buildSystemAuditCandidate({
+      sourceType,
+      sourcePath,
+      locationLabel,
+      currentValue: excerptFor(SYSTEM_AUDIT_MOJIBAKE_RE),
+      issueType: 'mojibake',
+      issueSummary: 'Phát hiện dấu hiệu lỗi font/encoding trong nội dung.',
+      suggestedAction: 'needs_manual_review',
+      priority: 'high',
+      evidence: excerptFor(SYSTEM_AUDIT_MOJIBAKE_RE),
+      relatedSourceIds,
+      relatedChunkIds
+    }));
+  }
+  if (/Cao\s*Tổ\s*đời\s*0|Cao\s*To\s*doi\s*0/i.test(value)) {
+    const currentValue = excerptFor(/Cao\s*Tổ\s*đời\s*0|Cao\s*To\s*doi\s*0/i);
+    candidates.push(buildSystemAuditCandidate({
+      sourceType,
+      sourcePath,
+      locationLabel,
+      currentValue,
+      issueType: 'wrong_title',
+      issueSummary: 'Danh xưng Cao Tổ còn kèm “đời 0” trong nội dung hiển thị.',
+      suggestedValue: currentValue.replace(/Cao\s*Tổ\s*đời\s*0/gi, 'Cao Tổ').replace(/Cao\s*To\s*doi\s*0/gi, 'Cao To'),
+      suggestedAction: sourceType === 'config' || sourcePath.startsWith('app_state:') ? 'replace_text' : 'needs_manual_review',
+      priority: 'high',
+      evidence: currentValue,
+      relatedSourceIds,
+      relatedChunkIds
+    }));
+  }
+  if (SYSTEM_AUDIT_SAMPLE_RE.test(value)) {
+    candidates.push(buildSystemAuditCandidate({
+      sourceType,
+      sourcePath,
+      locationLabel,
+      currentValue: excerptFor(SYSTEM_AUDIT_SAMPLE_RE),
+      issueType: 'sample_data',
+      issueSummary: 'Nội dung có dấu hiệu dữ liệu mẫu/demo/placeholder.',
+      suggestedAction: 'create_todo',
+      priority: 'medium',
+      evidence: excerptFor(SYSTEM_AUDIT_SAMPLE_RE),
+      relatedSourceIds,
+      relatedChunkIds
+    }));
+  }
+  if (/Cao\s+Ninh\s+Bình|Cao\s+Ninh\s+Binh/i.test(value)) {
+    candidates.push(buildSystemAuditCandidate({
+      sourceType,
+      sourcePath,
+      locationLabel,
+      currentValue: excerptFor(/Cao\s+Ninh\s+Bình|Cao\s+Ninh\s+Binh/i),
+      issueType: 'unsupported_claim',
+      issueSummary: 'Nội dung “họ Cao Ninh Bình” cần nguồn xác minh trước khi dùng.',
+      suggestedAction: 'needs_manual_review',
+      priority: 'high',
+      evidence: excerptFor(/Cao\s+Ninh\s+Bình|Cao\s+Ninh\s+Binh/i),
+      relatedSourceIds,
+      relatedChunkIds
+    }));
+  }
+  if (/Cao\s*Đình\s*Lạng[^.\n]{0,80}Cao\s*Tổ|Cao\s*Dinh\s*Lang[^.\n]{0,80}Cao\s*To/i.test(value)) {
+    candidates.push(buildSystemAuditCandidate({
+      sourceType,
+      sourcePath,
+      locationLabel,
+      currentValue: excerptFor(/Cao\s*Đình\s*Lạng[^.\n]{0,80}Cao\s*Tổ|Cao\s*Dinh\s*Lang[^.\n]{0,80}Cao\s*To/i),
+      issueType: 'wrong_title',
+      issueSummary: 'Có dấu hiệu gán Cao Đình Lạng là Cao Tổ; chuẩn hiện tại là Thủy Tổ.',
+      suggestedAction: 'needs_manual_review',
+      priority: 'critical',
+      evidence: excerptFor(/Cao\s*Đình\s*Lạng[^.\n]{0,80}Cao\s*Tổ|Cao\s*Dinh\s*Lang[^.\n]{0,80}Cao\s*To/i),
+      relatedSourceIds,
+      relatedChunkIds
+    }));
+  }
+  if (SYSTEM_AUDIT_PRIVACY_RE.test(value)) {
+    candidates.push(buildSystemAuditCandidate({
+      sourceType,
+      sourcePath,
+      locationLabel,
+      currentValue: excerptFor(SYSTEM_AUDIT_PRIVACY_RE),
+      issueType: 'privacy_risk',
+      issueSummary: 'Nội dung có dấu hiệu dữ liệu riêng tư, cần kiểm tra KYC/visibility.',
+      suggestedAction: 'needs_manual_review',
+      priority: 'critical',
+      evidence: excerptFor(SYSTEM_AUDIT_PRIVACY_RE),
+      relatedSourceIds,
+      relatedChunkIds
+    }));
+  }
+  return candidates;
+}
+
+async function insertSystemAuditCandidates(candidates = []) {
+  const database = await getDatabase();
+  const insert = database.prepare(`
+    INSERT OR IGNORE INTO system_audit_suggestions (
+      id, suggestion_hash, source_type, source_path, location_label, current_value,
+      issue_type, issue_summary, suggested_value, suggested_action, priority, evidence,
+      related_source_ids_json, related_chunk_ids_json, status, created_by, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'system', datetime('now'))
+  `);
+  let inserted = 0;
+  for (const item of candidates) {
+    const info = insert.run(
+      `audit_${randomToken(12)}`,
+      item.hash,
+      item.sourceType,
+      item.sourcePath,
+      item.locationLabel,
+      item.currentValue,
+      item.issueType,
+      item.issueSummary,
+      item.suggestedValue,
+      item.suggestedAction,
+      item.priority,
+      item.evidence,
+      JSON.stringify(item.relatedSourceIds || []),
+      JSON.stringify(item.relatedChunkIds || [])
+    );
+    inserted += Number(info.changes || 0);
+  }
+  return inserted;
+}
+
+async function runSystemAuditScan(adminUser = {}) {
+  const database = await getDatabase();
+  const candidates = [];
+  const stateRows = database.prepare('SELECT key, value FROM app_state').all();
+  for (const row of stateRows) {
+    candidates.push(...detectSystemAuditCandidatesForText({
+      sourceType: ['dashboard-articles', 'dashboard-events', 'dashboard-knowledge'].includes(row.key) ? row.key.replace('dashboard-', '').replace('articles', 'article').replace('events', 'event').replace('knowledge', 'knowledge') : 'config',
+      sourcePath: `app_state:${row.key}`,
+      locationLabel: `app_state / ${row.key}`,
+      text: row.value
+    }));
+  }
+  const configRows = database.prepare('SELECT * FROM ai_bot_configs').all();
+  for (const row of configRows) {
+    candidates.push(...detectSystemAuditCandidatesForText({
+      sourceType: 'ai_prompt',
+      sourcePath: `ai_bot_configs:${row.bot_type}`,
+      locationLabel: `Bot config / ${row.bot_type}`,
+      text: [row.label, row.paused_reason, row.system_prompt_short].join('\n')
+    }));
+  }
+  const sourceRows = database.prepare('SELECT id, title, content FROM knowledge_sources LIMIT 500').all();
+  for (const row of sourceRows) {
+    candidates.push(...detectSystemAuditCandidatesForText({
+      sourceType: 'knowledge',
+      sourcePath: `knowledge_sources:${row.id}`,
+      locationLabel: `Knowledge source / ${row.title}`,
+      text: [row.title, row.content].join('\n'),
+      relatedSourceIds: [row.id]
+    }));
+  }
+  const chunkRows = database.prepare('SELECT id, source_id, title, content FROM knowledge_chunks LIMIT 800').all();
+  for (const row of chunkRows) {
+    candidates.push(...detectSystemAuditCandidatesForText({
+      sourceType: 'knowledge',
+      sourcePath: `knowledge_chunks:${row.id}`,
+      locationLabel: `Knowledge chunk / ${row.title || row.id}`,
+      text: [row.title, row.content].join('\n'),
+      relatedSourceIds: [row.source_id],
+      relatedChunkIds: [row.id]
+    }));
+  }
+  const inserted = await insertSystemAuditCandidates(candidates);
+  logAIGatewayRequest({
+    requestId: randomToken(8),
+    route: 'system-audit-scan',
+    botType: 'ai_governor',
+    intent: 'system_audit',
+    type: 'system_audit',
+    engine: 'local-scanner',
+    provider: 'local',
+    model: 'system-audit-local',
+    status: 200,
+    cached: false,
+    durationMs: 0,
+    requestChars: 0,
+    contextChars: candidates.reduce((sum, item) => sum + String(item.currentValue || '').length, 0),
+    estimatedTokens: 0,
+    promptSnippet: `system_audit_scan candidates=${candidates.length} inserted=${inserted}`,
+    knowledgeMatchesCount: 0,
+    knowledgeSourceIds: [],
+    botConfigEngine: 'local-scanner',
+    botConfigMaxChunks: 0,
+    botConfigMaxOutputTokens: 0,
+    cacheEnabled: false,
+    configVersion: new Date().toISOString()
+  });
+  return {
+    ok: true,
+    scanned: stateRows.length + configRows.length + sourceRows.length + chunkRows.length,
+    candidates: candidates.length,
+    inserted,
+    duplicates: candidates.length - inserted,
+    suggestions: await listSystemAuditSuggestions({ status: 'pending', limit: 100 })
+  };
+}
+
+async function updateSystemAuditSuggestion(id, body = {}, adminUser = {}) {
+  const database = await getDatabase();
+  const row = database.prepare('SELECT * FROM system_audit_suggestions WHERE id = ?').get(String(id || ''));
+  if (!row) throw Object.assign(new Error('System audit suggestion not found.'), { status: 404 });
+  const allowed = new Set(['pending', 'approved', 'rejected', 'applied']);
+  const status = allowed.has(String(body.status || '')) ? String(body.status) : row.status;
+  const admin = adminUser?.username || adminUser?.fullName || adminUser?.id || 'admin';
+  database.prepare(`
+    UPDATE system_audit_suggestions
+    SET status = ?, reviewed_by = ?, reviewed_at = ?
+    WHERE id = ?
+  `).run(status, ['approved', 'rejected'].includes(status) ? admin : row.reviewed_by, ['approved', 'rejected'].includes(status) ? new Date().toISOString() : row.reviewed_at, row.id);
+  return publicSystemAuditSuggestion(database.prepare('SELECT * FROM system_audit_suggestions WHERE id = ?').get(row.id));
+}
+
+async function applySystemAuditSuggestion(id, body = {}, adminUser = {}) {
+  const database = await getDatabase();
+  const row = database.prepare('SELECT * FROM system_audit_suggestions WHERE id = ?').get(String(id || ''));
+  if (!row) throw Object.assign(new Error('System audit suggestion not found.'), { status: 404 });
+  if (row.status !== 'approved') throw Object.assign(new Error('Suggestion must be approved before apply.'), { status: 400 });
+  if (row.suggested_action !== 'replace_text' && row.suggested_action !== 'update_config') {
+    throw Object.assign(new Error('Suggestion requires manual review and cannot be auto-applied.'), { status: 400 });
+  }
+  const admin = adminUser?.username || adminUser?.fullName || adminUser?.id || 'admin';
+  let oldValue = '';
+  let newValue = '';
+  if (row.source_path.startsWith('app_state:')) {
+    const key = row.source_path.slice('app_state:'.length);
+    const state = database.prepare('SELECT value FROM app_state WHERE key = ?').get(key);
+    if (!state) throw Object.assign(new Error('Source app_state key no longer exists.'), { status: 404 });
+    oldValue = state.value;
+    if (!oldValue.includes(row.current_value) && body.confirmOverwrite !== true) {
+      throw Object.assign(new Error('Source value changed. Re-scan or pass confirmOverwrite=true.'), { status: 409 });
+    }
+    newValue = oldValue.includes(row.current_value)
+      ? oldValue.replace(row.current_value, row.suggested_value)
+      : row.suggested_value;
+    database.prepare("UPDATE app_state SET value = ?, updated_at = datetime('now') WHERE key = ?").run(newValue, key);
+  } else if (row.source_path.startsWith('ai_bot_configs:')) {
+    const botType = row.source_path.slice('ai_bot_configs:'.length);
+    const config = database.prepare('SELECT system_prompt_short FROM ai_bot_configs WHERE bot_type = ?').get(botType);
+    if (!config) throw Object.assign(new Error('Bot config no longer exists.'), { status: 404 });
+    oldValue = config.system_prompt_short || '';
+    if (!oldValue.includes(row.current_value) && body.confirmOverwrite !== true) {
+      throw Object.assign(new Error('Bot config changed. Re-scan or pass confirmOverwrite=true.'), { status: 409 });
+    }
+    newValue = oldValue.includes(row.current_value)
+      ? oldValue.replace(row.current_value, row.suggested_value)
+      : row.suggested_value;
+    database.prepare("UPDATE ai_bot_configs SET system_prompt_short = ?, updated_at = datetime('now'), updated_by = ? WHERE bot_type = ?").run(newValue, admin, botType);
+  } else {
+    throw Object.assign(new Error('This source cannot be auto-applied.'), { status: 400 });
+  }
+  const now = new Date().toISOString();
+  database.prepare(`
+    UPDATE system_audit_suggestions
+    SET status = 'applied', applied_by = ?, applied_at = ?
+    WHERE id = ?
+  `).run(admin, now, row.id);
+  const logId = `auditlog_${randomToken(12)}`;
+  database.prepare(`
+    INSERT INTO system_audit_apply_logs (
+      id, suggestion_id, action, source_type, source_path, old_value, new_value, admin_user, status, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'applied', ?)
+  `).run(logId, row.id, row.suggested_action, row.source_type, row.source_path, compactText(oldValue, 1600), compactText(newValue, 1600), admin, now);
+  return {
+    suggestion: publicSystemAuditSuggestion(database.prepare('SELECT * FROM system_audit_suggestions WHERE id = ?').get(row.id)),
+    log: publicSystemAuditApplyLog(database.prepare('SELECT * FROM system_audit_apply_logs WHERE id = ?').get(logId))
+  };
 }
 
 function pickDashboardEngine(aiConfig = {}, intent = 'chat') {

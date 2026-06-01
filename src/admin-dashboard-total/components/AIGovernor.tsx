@@ -159,12 +159,46 @@ type AIBotConfig = {
   updatedBy: string;
 };
 
+type SystemAuditSuggestion = {
+  id: string;
+  sourceType: string;
+  sourcePath: string;
+  location?: string;
+  currentValue?: string;
+  issueType: string;
+  summary: string;
+  suggestedValue?: string;
+  action: string;
+  priority: string;
+  evidence?: string;
+  relatedSourceIds?: string[];
+  relatedChunkIds?: string[];
+  status: "pending" | "approved" | "rejected" | "applied";
+  createdAt?: string;
+  reviewedAt?: string;
+  appliedAt?: string;
+};
+
+type SystemAuditApplyLog = {
+  id: string;
+  suggestionId: string;
+  action: string;
+  sourceType: string;
+  sourcePath: string;
+  oldValue?: string;
+  newValue?: string;
+  adminUser?: string;
+  status: string;
+  error?: string;
+  createdAt?: string;
+};
+
 type AIOperationGraphNodeStatus = "active" | "paused" | "disabled" | "error";
 
 type AIOperationGraphNode = {
   id: string;
   label: string;
-  type: "bot" | "gateway" | "config" | "router" | "data" | "model" | "guard" | "logs";
+  type: "bot" | "gateway" | "config" | "router" | "data" | "model" | "guard" | "logs" | "audit";
   status: AIOperationGraphNodeStatus;
   description: string;
   column: number;
@@ -423,7 +457,7 @@ export default function AIGovernor({
   onSetAIInitialPrompt
 }: AIGovernorProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [activeMode, setActiveMode] = useState<"overview" | "operations" | "knowledge" | "content" | "channels">("overview");
+  const [activeMode, setActiveMode] = useState<"overview" | "operations" | "system-audit" | "knowledge" | "content" | "channels">("overview");
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGeneratingTemplate, setIsGeneratingTemplate] = useState(false);
   const [isScanningSystem, setIsScanningSystem] = useState(false);
@@ -506,6 +540,13 @@ export default function AIGovernor({
   const [operationLogPage, setOperationLogPage] = useState(1);
   const [isOperationDetailOpen, setIsOperationDetailOpen] = useState(false);
   const [isOperationGraphExpanded, setIsOperationGraphExpanded] = useState(false);
+  const [systemAuditSuggestions, setSystemAuditSuggestions] = useState<SystemAuditSuggestion[]>([]);
+  const [systemAuditLogs, setSystemAuditLogs] = useState<SystemAuditApplyLog[]>([]);
+  const [systemAuditStatusFilter, setSystemAuditStatusFilter] = useState("pending");
+  const [systemAuditTypeFilter, setSystemAuditTypeFilter] = useState("");
+  const [systemAuditQuery, setSystemAuditQuery] = useState("");
+  const [systemAuditNote, setSystemAuditNote] = useState("");
+  const [isSystemAuditLoading, setIsSystemAuditLoading] = useState(false);
   const [zaloBotStatus, setZaloBotStatus] = useState<ZaloBotStatus | null>(null);
   const [zaloWebhookStatus, setZaloWebhookStatus] = useState<ZaloWebhookStatus | null>(null);
   const [zaloBotEvents, setZaloBotEvents] = useState<ZaloBotEvent[]>([]);
@@ -1043,6 +1084,89 @@ export default function AIGovernor({
     }
   };
 
+  const loadSystemAuditPanel = async () => {
+    setIsSystemAuditLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (systemAuditStatusFilter) params.set("status", systemAuditStatusFilter);
+      if (systemAuditTypeFilter) params.set("type", systemAuditTypeFilter);
+      if (systemAuditQuery.trim()) params.set("q", systemAuditQuery.trim());
+      params.set("limit", "80");
+      const [suggestionsResponse, logsResponse] = await Promise.all([
+        fetch(`/api/system-audit/suggestions?${params.toString()}`),
+        fetch("/api/system-audit/logs?limit=20")
+      ]);
+      const suggestionsData = await suggestionsResponse.json().catch(() => ({}));
+      const logsData = await logsResponse.json().catch(() => ({}));
+      if (!suggestionsResponse.ok) throw new Error(suggestionsData.error || "Không đọc được đề xuất kiểm tra hệ thống.");
+      if (!logsResponse.ok) throw new Error(logsData.error || "Không đọc được log áp dụng.");
+      setSystemAuditSuggestions(Array.isArray(suggestionsData.suggestions) ? suggestionsData.suggestions : []);
+      setSystemAuditLogs(Array.isArray(logsData.logs) ? logsData.logs : []);
+      setSystemAuditNote("");
+    } catch (err: any) {
+      setSystemAuditNote(`Không đọc được kiểm tra hệ thống: ${err?.message || "lỗi không xác định"}`);
+    } finally {
+      setIsSystemAuditLoading(false);
+    }
+  };
+
+  const runSystemAuditScan = async () => {
+    setIsSystemAuditLoading(true);
+    setSystemAuditNote("");
+    try {
+      const response = await fetch("/api/system-audit/scan", { method: "POST" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không chạy được scanner hệ thống.");
+      setSystemAuditNote(`Đã quét ${data.scanned || 0} vùng dữ liệu, tạo mới ${data.inserted || 0} đề xuất, trùng ${data.duplicates || 0}.`);
+      await loadSystemAuditPanel();
+      await loadAIRequestLogs();
+    } catch (err: any) {
+      setSystemAuditNote(`Lỗi quét hệ thống: ${err?.message || "không xác định"}`);
+    } finally {
+      setIsSystemAuditLoading(false);
+    }
+  };
+
+  const patchSystemAuditSuggestion = async (id: string, patch: Partial<SystemAuditSuggestion>) => {
+    setIsSystemAuditLoading(true);
+    setSystemAuditNote("");
+    try {
+      const response = await fetch(`/api/system-audit/suggestions/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch)
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không cập nhật được đề xuất.");
+      setSystemAuditSuggestions((items) => items.map((item) => item.id === id ? data.suggestion : item));
+      setSystemAuditNote("Đã cập nhật trạng thái đề xuất.");
+    } catch (err: any) {
+      setSystemAuditNote(`Lỗi cập nhật đề xuất: ${err?.message || "không xác định"}`);
+    } finally {
+      setIsSystemAuditLoading(false);
+    }
+  };
+
+  const applySystemAuditSuggestion = async (id: string) => {
+    setIsSystemAuditLoading(true);
+    setSystemAuditNote("");
+    try {
+      const response = await fetch(`/api/system-audit/suggestions/${encodeURIComponent(id)}/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không áp dụng được đề xuất.");
+      setSystemAuditNote(`Đã áp dụng đề xuất vào ${data.result?.sourcePath || "nguồn dữ liệu"}.`);
+      await loadSystemAuditPanel();
+    } catch (err: any) {
+      setSystemAuditNote(`Lỗi áp dụng đề xuất: ${err?.message || "không xác định"}`);
+    } finally {
+      setIsSystemAuditLoading(false);
+    }
+  };
+
   const markZaloEventReviewed = async (eventId: string) => {
     setIsZaloBotLoading(true);
     setZaloBotNote("");
@@ -1112,7 +1236,12 @@ export default function AIGovernor({
     void loadAIEvalCases();
     void loadZaloBotPanel();
     void loadAIBotConfigs();
+    void loadSystemAuditPanel();
   }, []);
+
+  useEffect(() => {
+    void loadSystemAuditPanel();
+  }, [systemAuditStatusFilter, systemAuditTypeFilter]);
 
   const handleScanWholeSystem = async () => {
     setIsScanningSystem(true);
@@ -1353,6 +1482,12 @@ export default function AIGovernor({
   const aiOperationGraph = useMemo<{ nodes: AIOperationGraphNode[]; edges: AIOperationGraphEdge[] }>(() => {
     const configByBot = new Map<string, AIBotConfig>(aiBotConfigs.map((config) => [config.botType, config]));
     const botMetric = (botType: string) => aiLogSummary?.topBotTypes?.find((item) => item.name === botType)?.count || 0;
+    const auditSummary = {
+      pending: systemAuditSuggestions.filter((item) => item.status === "pending").length,
+      applied: systemAuditSuggestions.filter((item) => item.status === "applied").length,
+      rejected: systemAuditSuggestions.filter((item) => item.status === "rejected").length,
+      critical: systemAuditSuggestions.filter((item) => ["critical", "high"].includes(item.priority)).length
+    };
     const botStatus = (botType: string): AIOperationGraphNodeStatus => {
       const config = configByBot.get(botType);
       if (!config) return "error";
@@ -1470,6 +1605,16 @@ export default function AIGovernor({
           }
         },
         {
+          id: "system_audit",
+          label: "Kiểm tra hệ thống",
+          type: "audit",
+          status: auditSummary.critical ? "error" : "active",
+          column: 5,
+          row: 2,
+          description: "Scanner local-first tạo đề xuất sửa lỗi font, dữ liệu mẫu, danh xưng sai, claim thiếu nguồn và rủi ro riêng tư. Admin duyệt trước khi áp dụng.",
+          metrics: auditSummary
+        },
+        {
           id: "gemini",
           label: "Gemini",
           type: "model",
@@ -1513,14 +1658,19 @@ export default function AIGovernor({
         { from: "intent_router", to: "local_db", label: "local-first" },
         { from: "intent_router", to: "anniversary_calendar", label: "ngày giỗ" },
         { from: "intent_router", to: "knowledge_search", label: "search" },
+        { from: "ai_governor", to: "system_audit", label: "system_audit" },
+        { from: "system_audit", to: "bot_config", label: "prompt/config" },
+        { from: "system_audit", to: "local_db", label: "scan" },
+        { from: "system_audit", to: "knowledge_search", label: "scan" },
         { from: "knowledge_search", to: "gemini", label: "khi cần" },
         { from: "local_db", to: "response_guard" },
         { from: "anniversary_calendar", to: "response_guard" },
         { from: "gemini", to: "response_guard" },
+        { from: "system_audit", to: "ai_logs", label: "audit log" },
         { from: "response_guard", to: "ai_logs", label: "ghi log" }
       ]
     };
-  }, [aiBotConfigs, aiConfig.modelName, aiLogSummary, events.length, knowledgeStatus, members.length]);
+  }, [aiBotConfigs, aiConfig.modelName, aiLogSummary, events.length, knowledgeStatus, members.length, systemAuditSuggestions]);
 
   const selectedOperationNode =
     aiOperationGraph.nodes.find((node) => node.id === selectedOperationNodeId) || aiOperationGraph.nodes[0];
@@ -1565,7 +1715,8 @@ export default function AIGovernor({
     data: "Dữ liệu",
     model: "Model",
     guard: "Guard",
-    logs: "Log"
+    logs: "Log",
+    audit: "Audit"
   };
   const graphCanvas = { width: 1360, height: 560, nodeWidth: 172, nodeHeight: 76 };
   const getOperationNodePosition = (node: AIOperationGraphNode) => ({
@@ -1632,6 +1783,7 @@ export default function AIGovernor({
         {[
           ["overview", "Tổng quan AI", BrainCircuit],
           ["operations", "Sơ đồ vận hành", GitBranch],
+          ["system-audit", "Kiểm tra hệ thống", AlertTriangle],
           ["knowledge", "Kho tri thức", UploadCloud],
           ["content", "Rà soát & viết bài", FileSearch],
           ["channels", "Kênh trả lời", MessageSquare]
@@ -1965,6 +2117,19 @@ export default function AIGovernor({
                       </div>
                     )}
 
+                    {selectedOperationNode.id === "system_audit" && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsOperationDetailOpen(false);
+                          setActiveMode("system-audit");
+                        }}
+                        className="mt-4 rounded bg-red-900 px-3 py-2 text-xs font-bold text-white hover:bg-red-950"
+                      >
+                        Mở danh sách đề xuất
+                      </button>
+                    )}
+
                     {selectedOperationBotConfig && (
                       <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50/40 p-4">
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -2214,6 +2379,179 @@ export default function AIGovernor({
                 </div>
               </aside>
             </div>
+          </section>
+        </div>
+      )}
+
+      {activeMode === "system-audit" && (
+        <div className="space-y-5">
+          <section className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <h3 className="flex items-center gap-2 font-serif text-xl font-bold text-red-950">
+                  <AlertTriangle className="h-5 w-5 text-amber-700" />
+                  Kiểm tra hệ thống
+                </h3>
+                <p className="mt-1 max-w-3xl text-sm leading-relaxed text-stone-500">
+                  Scanner local-first rà dữ liệu dashboard, cấu hình bot và kho tri thức để tạo đề xuất sửa. AI chỉ đề xuất, admin duyệt rồi mới áp dụng các sửa an toàn.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void runSystemAuditScan()}
+                  disabled={isSystemAuditLoading}
+                  className="inline-flex items-center gap-2 rounded bg-red-900 px-4 py-2 text-xs font-bold text-white hover:bg-red-950 disabled:opacity-60"
+                >
+                  <Search className="h-4 w-4" />
+                  Quét hệ thống
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void loadSystemAuditPanel()}
+                  disabled={isSystemAuditLoading}
+                  className="inline-flex items-center gap-2 rounded border border-stone-200 px-4 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-60"
+                >
+                  <RefreshCw className={`h-4 w-4 ${isSystemAuditLoading ? "animate-spin" : ""}`} />
+                  Tải lại
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+              {[
+                ["Pending", systemAuditSuggestions.filter((item) => item.status === "pending").length],
+                ["Approved", systemAuditSuggestions.filter((item) => item.status === "approved").length],
+                ["Applied", systemAuditSuggestions.filter((item) => item.status === "applied").length],
+                ["Critical/High", systemAuditSuggestions.filter((item) => ["critical", "high"].includes(item.priority)).length]
+              ].map(([label, value]) => (
+                <p key={label as string} className="rounded-lg bg-stone-50 p-3">
+                  <span className="block text-[10px] font-bold uppercase tracking-wide text-stone-400">{label}</span>
+                  <strong className="mt-1 block text-red-950">{value}</strong>
+                </p>
+              ))}
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-[160px_180px_1fr_auto]">
+              <select
+                value={systemAuditStatusFilter}
+                onChange={(event) => setSystemAuditStatusFilter(event.target.value)}
+                className="rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs"
+              >
+                <option value="">Mọi trạng thái</option>
+                <option value="pending">pending</option>
+                <option value="approved">approved</option>
+                <option value="rejected">rejected</option>
+                <option value="applied">applied</option>
+              </select>
+              <select
+                value={systemAuditTypeFilter}
+                onChange={(event) => setSystemAuditTypeFilter(event.target.value)}
+                className="rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs"
+              >
+                <option value="">Mọi loại lỗi</option>
+                <option value="mojibake">mojibake</option>
+                <option value="wrong_title">wrong_title</option>
+                <option value="sample_data">sample_data</option>
+                <option value="unsupported_claim">unsupported_claim</option>
+                <option value="privacy_risk">privacy_risk</option>
+              </select>
+              <input
+                value={systemAuditQuery}
+                onChange={(event) => setSystemAuditQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void loadSystemAuditPanel();
+                }}
+                placeholder="Tìm theo nguồn, nội dung, bằng chứng..."
+                className="rounded-lg border border-stone-200 px-3 py-2 text-xs"
+              />
+              <button
+                type="button"
+                onClick={() => void loadSystemAuditPanel()}
+                className="rounded bg-stone-900 px-4 py-2 text-xs font-bold text-white hover:bg-black"
+              >
+                Lọc
+              </button>
+            </div>
+            {systemAuditNote && <p className="mt-3 rounded bg-amber-50 p-3 text-xs text-amber-900">{systemAuditNote}</p>}
+          </section>
+
+          <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+            <div className="space-y-3 xl:col-span-2">
+              {systemAuditSuggestions.map((item) => (
+                <article key={item.id} className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <div className="flex flex-wrap gap-2 text-[10px] font-bold uppercase tracking-wide">
+                        <span className="rounded bg-stone-100 px-2 py-1 text-stone-600">{item.issueType}</span>
+                        <span className={`rounded px-2 py-1 ${
+                          ["critical", "high"].includes(item.priority) ? "bg-red-50 text-red-800" : "bg-amber-50 text-amber-800"
+                        }`}>{item.priority}</span>
+                        <span className="rounded bg-blue-50 px-2 py-1 text-blue-800">{item.status}</span>
+                      </div>
+                      <h4 className="mt-2 font-bold text-red-950">{item.summary}</h4>
+                      <p className="mt-1 text-xs text-stone-500">{item.sourceType} · {item.sourcePath}</p>
+                      {item.location && <p className="mt-1 text-[11px] text-stone-400">{item.location}</p>}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {item.status === "pending" && (
+                        <>
+                          <button type="button" onClick={() => void patchSystemAuditSuggestion(item.id, { status: "approved" })} className="rounded bg-emerald-700 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-800">Duyệt</button>
+                          <button type="button" onClick={() => void patchSystemAuditSuggestion(item.id, { status: "rejected" })} className="rounded border border-stone-200 px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50">Từ chối</button>
+                        </>
+                      )}
+                      {item.status === "approved" && (
+                        <>
+                          <button type="button" onClick={() => void applySystemAuditSuggestion(item.id)} className="rounded bg-red-900 px-3 py-2 text-xs font-bold text-white hover:bg-red-950">Áp dụng</button>
+                          <button type="button" onClick={() => void patchSystemAuditSuggestion(item.id, { status: "pending" })} className="rounded border border-stone-200 px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50">Về pending</button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <details className="mt-3 rounded-lg border border-stone-100 bg-[#fbfaf6] p-3 text-xs">
+                    <summary className="cursor-pointer font-bold text-stone-700">Chi tiết đề xuất</summary>
+                    <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                      <div>
+                        <p className="text-[10px] font-bold uppercase text-stone-400">Giá trị hiện tại</p>
+                        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-white p-2 text-[11px] text-stone-700">{item.currentValue || "-"}</pre>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold uppercase text-stone-400">Giá trị đề xuất</p>
+                        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-white p-2 text-[11px] text-stone-700">{item.suggestedValue || "-"}</pre>
+                      </div>
+                    </div>
+                    {item.evidence && <p className="mt-3 rounded bg-white p-2 text-[11px] text-stone-600">Bằng chứng: {item.evidence}</p>}
+                    <p className="mt-2 text-[11px] text-stone-500">Action: {item.action}</p>
+                  </details>
+                </article>
+              ))}
+              {!systemAuditSuggestions.length && (
+                <div className="rounded-xl border border-dashed border-stone-200 bg-white p-8 text-center text-sm text-stone-500">
+                  Chưa có đề xuất theo bộ lọc hiện tại. Có thể bấm “Quét hệ thống” để tạo đề xuất mới.
+                </div>
+              )}
+            </div>
+
+            <aside className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
+              <h4 className="flex items-center gap-2 font-serif text-lg font-bold text-red-950">
+                <ClipboardList className="h-5 w-5 text-amber-700" />
+                Log áp dụng gần đây
+              </h4>
+              <div className="mt-3 space-y-2 text-xs">
+                {systemAuditLogs.map((log) => (
+                  <div key={log.id} className="rounded-lg border border-stone-100 bg-[#fbfaf6] p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-red-950">{log.action}</span>
+                      <span className="text-[10px] text-stone-400">{log.createdAt || "-"}</span>
+                    </div>
+                    <p className="mt-1 text-stone-500">{log.sourcePath}</p>
+                    <p className="mt-1 text-[10px] font-bold uppercase text-emerald-700">{log.status}</p>
+                  </div>
+                ))}
+                {!systemAuditLogs.length && <p className="rounded bg-stone-50 p-3 text-stone-500">Chưa có log áp dụng.</p>}
+              </div>
+            </aside>
           </section>
         </div>
       )}
