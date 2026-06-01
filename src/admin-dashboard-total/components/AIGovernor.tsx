@@ -540,6 +540,8 @@ export default function AIGovernor({
   const [operationLogPage, setOperationLogPage] = useState(1);
   const [isOperationDetailOpen, setIsOperationDetailOpen] = useState(false);
   const [isOperationGraphExpanded, setIsOperationGraphExpanded] = useState(false);
+  const operationGraphScrollRef = useRef<HTMLDivElement>(null);
+  const operationGraphDragRef = useRef({ dragging: false, x: 0, y: 0, left: 0, top: 0 });
   const [systemAuditSuggestions, setSystemAuditSuggestions] = useState<SystemAuditSuggestion[]>([]);
   const [systemAuditLogs, setSystemAuditLogs] = useState<SystemAuditApplyLog[]>([]);
   const [systemAuditStatusFilter, setSystemAuditStatusFilter] = useState("pending");
@@ -1718,16 +1720,25 @@ export default function AIGovernor({
     logs: "Log",
     audit: "Audit"
   };
-  const graphCanvas = { width: 1680, height: 880, nodeWidth: 172, nodeHeight: 76 };
+  const graphCanvas = { width: 1500, height: 800, nodeWidth: 172, nodeHeight: 76 };
   const getOperationNodePosition = (node: AIOperationGraphNode) => ({
-    x: 44 + (node.column - 1) * 270,
-    y: 52 + (node.row - 1) * 122
+    x: 44 + (node.column - 1) * 238,
+    y: 48 + (node.row - 1) * 110
   });
   const operationEdgeLane = (edge: AIOperationGraphEdge, index: number) => {
     const siblingEdges = aiOperationGraph.edges.filter((item) => item.to === edge.to || item.from === edge.from);
     const siblingIndex = siblingEdges.findIndex((item) => item === edge);
-    if (siblingIndex < 0) return ((index % 3) - 1) * 8;
-    return (siblingIndex - (siblingEdges.length - 1) / 2) * 10;
+    if (siblingIndex < 0) return ((index % 3) - 1) * 6;
+    return (siblingIndex - (siblingEdges.length - 1) / 2) * 7;
+  };
+  const getOperationNodeRect = (node: AIOperationGraphNode, padding = 0) => {
+    const pos = getOperationNodePosition(node);
+    return {
+      left: pos.x - padding,
+      right: pos.x + graphCanvas.nodeWidth + padding,
+      top: pos.y - padding,
+      bottom: pos.y + graphCanvas.nodeHeight + padding
+    };
   };
   const getOperationAnchor = (
     node: AIOperationGraphNode,
@@ -1737,42 +1748,110 @@ export default function AIGovernor({
     const pos = getOperationNodePosition(node);
     const halfWidth = graphCanvas.nodeWidth / 2;
     const halfHeight = graphCanvas.nodeHeight / 2;
-    if (side === "left") return { x: pos.x - 12, y: pos.y + halfHeight + lane };
-    if (side === "right") return { x: pos.x + graphCanvas.nodeWidth + 12, y: pos.y + halfHeight + lane };
-    if (side === "top") return { x: pos.x + halfWidth + lane, y: pos.y - 12 };
-    return { x: pos.x + halfWidth + lane, y: pos.y + graphCanvas.nodeHeight + 12 };
+    if (side === "left") return { x: pos.x - 10, y: pos.y + halfHeight + lane };
+    if (side === "right") return { x: pos.x + graphCanvas.nodeWidth + 10, y: pos.y + halfHeight + lane };
+    if (side === "top") return { x: pos.x + halfWidth + lane, y: pos.y - 10 };
+    return { x: pos.x + halfWidth + lane, y: pos.y + graphCanvas.nodeHeight + 10 };
   };
+  const operationSegmentIntersectsRect = (
+    a: { x: number; y: number },
+    b: { x: number; y: number },
+    rect: { left: number; right: number; top: number; bottom: number }
+  ) => {
+    if (a.x === b.x) {
+      const minY = Math.min(a.y, b.y);
+      const maxY = Math.max(a.y, b.y);
+      return a.x >= rect.left && a.x <= rect.right && maxY >= rect.top && minY <= rect.bottom;
+    }
+    if (a.y === b.y) {
+      const minX = Math.min(a.x, b.x);
+      const maxX = Math.max(a.x, b.x);
+      return a.y >= rect.top && a.y <= rect.bottom && maxX >= rect.left && minX <= rect.right;
+    }
+    return false;
+  };
+  const operationPolylineLength = (points: Array<{ x: number; y: number }>) =>
+    points.slice(1).reduce((total, point, index) => {
+      const previous = points[index];
+      return total + Math.abs(point.x - previous.x) + Math.abs(point.y - previous.y);
+    }, 0);
+  const operationPathFromPoints = (points: Array<{ x: number; y: number }>) =>
+    points.reduce((path, point, index) => {
+      if (index === 0) return `M ${point.x} ${point.y}`;
+      const previous = points[index - 1];
+      if (point.x === previous.x) return `${path} V ${point.y}`;
+      if (point.y === previous.y) return `${path} H ${point.x}`;
+      return `${path} L ${point.x} ${point.y}`;
+    }, "");
   const operationGraphEdges = aiOperationGraph.edges.map((edge, index) => {
     const fromNode = aiOperationGraph.nodes.find((node) => node.id === edge.from);
     const toNode = aiOperationGraph.nodes.find((node) => node.id === edge.to);
     if (!fromNode || !toNode) return null;
-    const from = getOperationNodePosition(fromNode);
-    const to = getOperationNodePosition(toNode);
-    const fromCenter = {
-      x: from.x + graphCanvas.nodeWidth / 2,
-      y: from.y + graphCanvas.nodeHeight / 2
-    };
-    const toCenter = {
-      x: to.x + graphCanvas.nodeWidth / 2,
-      y: to.y + graphCanvas.nodeHeight / 2
-    };
-    const dx = toCenter.x - fromCenter.x;
-    const dy = toCenter.y - fromCenter.y;
     const lane = operationEdgeLane(edge, index);
-    const horizontal = Math.abs(dx) >= Math.abs(dy) || Math.abs(dx) > graphCanvas.nodeWidth;
-    const fromSide = horizontal ? (dx >= 0 ? "right" : "left") : (dy >= 0 ? "bottom" : "top");
-    const toSide = horizontal ? (dx >= 0 ? "left" : "right") : (dy >= 0 ? "top" : "bottom");
-    const start = getOperationAnchor(fromNode, fromSide, horizontal ? lane : 0);
-    const end = getOperationAnchor(toNode, toSide, horizontal ? lane : 0);
-    const midX = horizontal
-      ? Math.round((start.x + end.x) / 2) + lane
-      : start.x;
-    const midY = horizontal
-      ? end.y
-      : Math.round((start.y + end.y) / 2) + lane;
-    const path = horizontal
-      ? `M ${start.x} ${start.y} H ${midX} V ${end.y} H ${end.x}`
-      : `M ${start.x} ${start.y} V ${midY} H ${end.x} V ${end.y}`;
+    const sourceRect = getOperationNodeRect(fromNode, 14);
+    const targetRect = getOperationNodeRect(toNode, 14);
+    const obstacles = aiOperationGraph.nodes
+      .filter((node) => node.id !== edge.from && node.id !== edge.to)
+      .map((node) => getOperationNodeRect(node, 18));
+    const sidePairs: Array<["left" | "right" | "top" | "bottom", "left" | "right" | "top" | "bottom"]> = [
+      ["right", "left"],
+      ["top", "top"],
+      ["bottom", "bottom"],
+      ["right", "top"],
+      ["top", "left"],
+      ["bottom", "left"],
+      ["left", "right"],
+      ["top", "bottom"],
+      ["bottom", "top"]
+    ];
+    const routePadding = 30;
+    const routeXValues = [
+      Math.round((sourceRect.right + targetRect.left) / 2) + lane,
+      Math.max(sourceRect.right, targetRect.right) + routePadding + Math.abs(lane),
+      Math.min(sourceRect.left, targetRect.left) - routePadding - Math.abs(lane)
+    ];
+    const routeYValues = [
+      Math.round((sourceRect.top + targetRect.top) / 2) + lane,
+      Math.min(sourceRect.top, targetRect.top) - routePadding - Math.abs(lane),
+      Math.max(sourceRect.bottom, targetRect.bottom) + routePadding + Math.abs(lane)
+    ];
+    const candidates: Array<{ points: Array<{ x: number; y: number }>; score: number }> = [];
+    let routePoints: Array<{ x: number; y: number }> | null = null;
+
+    if (edge.from === "ai_governor" && edge.to === "system_audit") {
+      const start = getOperationAnchor(fromNode, "right");
+      const end = getOperationAnchor(toNode, "top", lane);
+      const routeX = sourceRect.right + 22;
+      const routeY = 24 + Math.max(0, lane);
+      routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: routeY }, { x: end.x, y: routeY }, end];
+    }
+
+    if (!routePoints) sidePairs.forEach(([fromSide, toSide]) => {
+      const start = getOperationAnchor(fromNode, fromSide, fromSide === "top" || fromSide === "bottom" ? lane : 0);
+      const end = getOperationAnchor(toNode, toSide, toSide === "top" || toSide === "bottom" ? lane : 0);
+      const midX = Math.round((start.x + end.x) / 2) + lane;
+      const midY = Math.round((start.y + end.y) / 2) + lane;
+      const pointSets: Array<Array<{ x: number; y: number }>> = [
+        [start, { x: midX, y: start.y }, { x: midX, y: end.y }, end],
+        [start, { x: start.x, y: midY }, { x: end.x, y: midY }, end],
+        ...routeXValues.map((routeX) => [start, { x: routeX, y: start.y }, { x: routeX, y: end.y }, end]),
+        ...routeYValues.map((routeY) => [start, { x: start.x, y: routeY }, { x: end.x, y: routeY }, end])
+      ];
+      pointSets.forEach((points) => {
+        const intersections = points.slice(1).reduce((count, point, pointIndex) => {
+          const previous = points[pointIndex];
+          return count + obstacles.filter((rect) => operationSegmentIntersectsRect(previous, point, rect)).length;
+        }, 0);
+        const outsidePenalty = points.some((point) => point.x < 12 || point.y < 12 || point.x > graphCanvas.width - 12 || point.y > graphCanvas.height - 12) ? 3000 : 0;
+        const topBottomBonus = (fromSide === "top" || fromSide === "bottom" || toSide === "top" || toSide === "bottom") ? -80 : 0;
+        const score = operationPolylineLength(points) + intersections * 10000 + outsidePenalty + points.length * 12 + topBottomBonus;
+        candidates.push({ points, score });
+      });
+    });
+    const bestRoute = candidates.sort((a, b) => a.score - b.score)[0];
+    routePoints = routePoints || bestRoute?.points || [];
+    const path = operationPathFromPoints(routePoints);
+    const middlePoint = routePoints[Math.max(1, Math.floor(routePoints.length / 2))] || { x: 0, y: 0 };
     const label = edge.label === "botType" ? "" : edge.label || "";
     const labelWidth = Math.min(104, Math.max(42, label.length * 6 + 18));
     return {
@@ -1782,8 +1861,8 @@ export default function AIGovernor({
       toNode,
       path,
       labelWidth,
-      labelX: horizontal ? midX : end.x,
-      labelY: horizontal ? Math.round((start.y + end.y) / 2) - 10 : midY - 10
+      labelX: middlePoint.x,
+      labelY: middlePoint.y - 10
     };
   }).filter(Boolean) as Array<AIOperationGraphEdge & {
     fromNode: AIOperationGraphNode;
@@ -1796,6 +1875,32 @@ export default function AIGovernor({
   const operationShellClass = isOperationGraphExpanded
     ? "fixed inset-4 z-50 overflow-hidden rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl"
     : "rounded-xl border border-stone-200 bg-white p-5 shadow-sm";
+  const handleOperationGraphPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) return;
+    const container = operationGraphScrollRef.current;
+    if (!container) return;
+    operationGraphDragRef.current = {
+      dragging: true,
+      x: event.clientX,
+      y: event.clientY,
+      left: container.scrollLeft,
+      top: container.scrollTop
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const handleOperationGraphPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!operationGraphDragRef.current.dragging) return;
+    const container = operationGraphScrollRef.current;
+    if (!container) return;
+    container.scrollLeft = operationGraphDragRef.current.left - (event.clientX - operationGraphDragRef.current.x);
+    container.scrollTop = operationGraphDragRef.current.top - (event.clientY - operationGraphDragRef.current.y);
+  };
+  const handleOperationGraphPointerEnd = (event: React.PointerEvent<HTMLDivElement>) => {
+    operationGraphDragRef.current.dragging = false;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
 
   return (
     <div className="space-y-5 text-stone-850">
@@ -2032,10 +2137,23 @@ export default function AIGovernor({
             </div>
 
             <div className="mt-5">
-              <div className={`rounded-xl border border-stone-200 bg-[#fbfaf6] ${isOperationGraphExpanded ? "h-[calc(100vh-180px)]" : "max-h-[680px]"} overflow-auto p-3`}>
+              <div className="mb-2 flex flex-wrap gap-3 text-[11px] font-semibold text-stone-500">
+                <span className="inline-flex items-center gap-1"><span className="h-0.5 w-5 rounded bg-slate-500" />Luồng thường</span>
+                <span className="inline-flex items-center gap-1"><span className="h-0.5 w-5 rounded bg-blue-600" />Liên quan kiểm tra</span>
+                <span className="inline-flex items-center gap-1"><span className="h-0.5 w-5 rounded bg-red-700" />Node đang chọn</span>
+                <span className="inline-flex items-center gap-1"><span className="h-0.5 w-5 rounded border-t border-dashed border-stone-400" />Tạm dừng</span>
+              </div>
+              <div
+                ref={operationGraphScrollRef}
+                className={`rounded-xl border border-stone-200 bg-[#fbfaf6] ${isOperationGraphExpanded ? "h-[calc(100vh-180px)]" : "max-h-[680px]"} overflow-auto p-3`}
+              >
                 <div
-                  className="relative"
-                  style={{ width: graphCanvas.width, height: graphCanvas.height }}
+                  className="relative cursor-grab active:cursor-grabbing"
+                  style={{ width: graphCanvas.width, height: graphCanvas.height, touchAction: "none" }}
+                  onPointerDown={handleOperationGraphPointerDown}
+                  onPointerMove={handleOperationGraphPointerMove}
+                  onPointerUp={handleOperationGraphPointerEnd}
+                  onPointerCancel={handleOperationGraphPointerEnd}
                 >
                   <svg
                     className="pointer-events-none absolute inset-0 z-0"
@@ -2046,20 +2164,27 @@ export default function AIGovernor({
                   >
                     <defs>
                       <marker id="ai-flow-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="strokeWidth">
-                        <path d="M 0 0 L 7 3.5 L 0 7 z" fill="#b45309" />
+                        <path d="M 0 0 L 7 3.5 L 0 7 z" fill="context-stroke" />
                       </marker>
                       <marker id="ai-flow-arrow-active" markerWidth="8" markerHeight="8" refX="6.8" refY="4" orient="auto" markerUnits="strokeWidth">
-                        <path d="M 0 0 L 8 4 L 0 8 z" fill="#991b1b" />
+                        <path d="M 0 0 L 8 4 L 0 8 z" fill="context-stroke" />
                       </marker>
                     </defs>
                     {operationGraphEdges.map((edge) => {
                       const isRelated = edge.from === selectedOperationNode.id || edge.to === selectedOperationNode.id;
+                      const edgeStroke = isRelated
+                        ? "#991b1b"
+                        : edge.from === "system_audit" || edge.to === "system_audit"
+                          ? "#2563eb"
+                          : edge.from === "zalo_bot"
+                            ? "#9ca3af"
+                            : "#64748b";
                       return (
                         <g key={`${edge.from}-${edge.to}-${edge.label || ""}`}>
                           <path
                             d={edge.path}
                             fill="none"
-                            stroke={isRelated ? "#991b1b" : "#d6a646"}
+                            stroke={edgeStroke}
                             strokeWidth={isRelated ? 1.8 : 1.05}
                             strokeDasharray={edge.from === "zalo_bot" ? "5 5" : undefined}
                             strokeLinecap="round"
@@ -2123,9 +2248,9 @@ export default function AIGovernor({
                             "border-stone-400 bg-stone-300"
                           }`} />
                         </div>
-                        <strong className="mt-1 block line-clamp-2 text-[13px] leading-snug text-red-950">{node.label}</strong>
+                        <strong className="mt-0.5 block line-clamp-2 text-[13px] leading-snug text-red-950">{node.label}</strong>
                         {primaryMetric && (
-                          <span className="mt-2 inline-flex max-w-full rounded bg-stone-100 px-2 py-1 text-[10px] font-semibold text-stone-600">
+                          <span className="mt-1 inline-flex max-w-full rounded bg-stone-100 px-2 py-1 text-[10px] font-semibold text-stone-600">
                             <span className="truncate">{primaryMetric[0]}: {String(primaryMetric[1])}</span>
                           </span>
                         )}
