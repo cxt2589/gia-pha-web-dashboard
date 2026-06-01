@@ -1718,34 +1718,78 @@ export default function AIGovernor({
     logs: "Log",
     audit: "Audit"
   };
-  const graphCanvas = { width: 1360, height: 560, nodeWidth: 172, nodeHeight: 76 };
+  const graphCanvas = { width: 1240, height: 660, nodeWidth: 164, nodeHeight: 76 };
   const getOperationNodePosition = (node: AIOperationGraphNode) => ({
-    x: 32 + (node.column - 1) * 220,
-    y: 24 + (node.row - 1) * 80
+    x: 32 + (node.column - 1) * 190,
+    y: 36 + (node.row - 1) * 92
   });
-  const operationGraphEdges = aiOperationGraph.edges.map((edge) => {
+  const operationEdgeLane = (edge: AIOperationGraphEdge, index: number) => {
+    const siblingEdges = aiOperationGraph.edges.filter((item) => item.to === edge.to || item.from === edge.from);
+    const siblingIndex = siblingEdges.findIndex((item) => item === edge);
+    if (siblingIndex < 0) return ((index % 3) - 1) * 10;
+    return (siblingIndex - (siblingEdges.length - 1) / 2) * 12;
+  };
+  const getOperationAnchor = (
+    node: AIOperationGraphNode,
+    side: "left" | "right" | "top" | "bottom",
+    lane = 0
+  ) => {
+    const pos = getOperationNodePosition(node);
+    const halfWidth = graphCanvas.nodeWidth / 2;
+    const halfHeight = graphCanvas.nodeHeight / 2;
+    if (side === "left") return { x: pos.x - 8, y: pos.y + halfHeight + lane };
+    if (side === "right") return { x: pos.x + graphCanvas.nodeWidth + 8, y: pos.y + halfHeight + lane };
+    if (side === "top") return { x: pos.x + halfWidth + lane, y: pos.y - 8 };
+    return { x: pos.x + halfWidth + lane, y: pos.y + graphCanvas.nodeHeight + 8 };
+  };
+  const operationGraphEdges = aiOperationGraph.edges.map((edge, index) => {
     const fromNode = aiOperationGraph.nodes.find((node) => node.id === edge.from);
     const toNode = aiOperationGraph.nodes.find((node) => node.id === edge.to);
     if (!fromNode || !toNode) return null;
     const from = getOperationNodePosition(fromNode);
     const to = getOperationNodePosition(toNode);
-    const startX = from.x + graphCanvas.nodeWidth;
-    const startY = from.y + graphCanvas.nodeHeight / 2;
-    const endX = to.x;
-    const endY = to.y + graphCanvas.nodeHeight / 2;
-    const middle = Math.max(42, Math.abs(endX - startX) * 0.48);
+    const fromCenter = {
+      x: from.x + graphCanvas.nodeWidth / 2,
+      y: from.y + graphCanvas.nodeHeight / 2
+    };
+    const toCenter = {
+      x: to.x + graphCanvas.nodeWidth / 2,
+      y: to.y + graphCanvas.nodeHeight / 2
+    };
+    const dx = toCenter.x - fromCenter.x;
+    const dy = toCenter.y - fromCenter.y;
+    const lane = operationEdgeLane(edge, index);
+    const horizontal = Math.abs(dx) >= Math.abs(dy) || Math.abs(dx) > graphCanvas.nodeWidth;
+    const fromSide = horizontal ? (dx >= 0 ? "right" : "left") : (dy >= 0 ? "bottom" : "top");
+    const toSide = horizontal ? (dx >= 0 ? "left" : "right") : (dy >= 0 ? "top" : "bottom");
+    const start = getOperationAnchor(fromNode, fromSide, horizontal ? lane : 0);
+    const end = getOperationAnchor(toNode, toSide, horizontal ? lane : 0);
+    const midX = horizontal
+      ? Math.round((start.x + end.x) / 2) + lane
+      : start.x;
+    const midY = horizontal
+      ? end.y
+      : Math.round((start.y + end.y) / 2) + lane;
+    const path = horizontal
+      ? `M ${start.x} ${start.y} H ${midX} V ${end.y} H ${end.x}`
+      : `M ${start.x} ${start.y} V ${midY} H ${end.x} V ${end.y}`;
+    const label = edge.label === "botType" ? "" : edge.label || "";
+    const labelWidth = Math.min(104, Math.max(42, label.length * 6 + 18));
     return {
       ...edge,
+      label,
       fromNode,
       toNode,
-      path: `M ${startX} ${startY} C ${startX + middle} ${startY}, ${endX - middle} ${endY}, ${endX - 8} ${endY}`,
-      labelX: (startX + endX) / 2,
-      labelY: (startY + endY) / 2
+      path,
+      labelWidth,
+      labelX: horizontal ? midX : end.x,
+      labelY: horizontal ? Math.round((start.y + end.y) / 2) - 10 : midY - 10
     };
   }).filter(Boolean) as Array<AIOperationGraphEdge & {
     fromNode: AIOperationGraphNode;
     toNode: AIOperationGraphNode;
     path: string;
+    labelWidth: number;
     labelX: number;
     labelY: number;
   }>;
@@ -1994,15 +2038,18 @@ export default function AIGovernor({
                   style={{ width: graphCanvas.width, height: graphCanvas.height }}
                 >
                   <svg
-                    className="pointer-events-none absolute inset-0"
+                    className="pointer-events-none absolute inset-0 z-0"
                     width={graphCanvas.width}
                     height={graphCanvas.height}
                     viewBox={`0 0 ${graphCanvas.width} ${graphCanvas.height}`}
                     aria-hidden="true"
                   >
                     <defs>
-                      <marker id="ai-flow-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+                      <marker id="ai-flow-arrow" markerWidth="10" markerHeight="10" refX="8.5" refY="5" orient="auto" markerUnits="strokeWidth">
                         <path d="M 0 0 L 10 5 L 0 10 z" fill="#b45309" />
+                      </marker>
+                      <marker id="ai-flow-arrow-active" markerWidth="10" markerHeight="10" refX="8.5" refY="5" orient="auto" markerUnits="strokeWidth">
+                        <path d="M 0 0 L 10 5 L 0 10 z" fill="#991b1b" />
                       </marker>
                     </defs>
                     {operationGraphEdges.map((edge) => {
@@ -2015,17 +2062,29 @@ export default function AIGovernor({
                             stroke={isRelated ? "#991b1b" : "#d6a646"}
                             strokeWidth={isRelated ? 2.6 : 1.6}
                             strokeDasharray={edge.from === "zalo_bot" ? "5 5" : undefined}
-                            markerEnd="url(#ai-flow-arrow)"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            markerEnd={isRelated ? "url(#ai-flow-arrow-active)" : "url(#ai-flow-arrow)"}
                           />
                           {edge.label && (
-                            <text
-                              x={edge.labelX}
-                              y={edge.labelY - 6}
-                              textAnchor="middle"
-                              className="fill-stone-500 text-[10px] font-bold"
-                            >
-                              {edge.label}
-                            </text>
+                            <g className="hidden md:block">
+                              <rect
+                                x={edge.labelX - edge.labelWidth / 2}
+                                y={edge.labelY - 12}
+                                width={edge.labelWidth}
+                                height={18}
+                                rx={6}
+                                className="fill-[#fbfaf6] stroke-stone-200"
+                              />
+                              <text
+                                x={edge.labelX}
+                                y={edge.labelY + 1}
+                                textAnchor="middle"
+                                className="fill-stone-600 text-[10px] font-bold"
+                              >
+                                {edge.label}
+                              </text>
+                            </g>
                           )}
                         </g>
                       );
@@ -2044,7 +2103,7 @@ export default function AIGovernor({
                           setSelectedOperationNodeId(node.id);
                           setIsOperationDetailOpen(true);
                         }}
-                        className={`absolute rounded-xl border bg-white p-3 text-left text-xs shadow-sm transition hover:-translate-y-0.5 hover:border-amber-300 hover:shadow-md ${
+                        className={`absolute z-10 rounded-xl border bg-white p-3 text-left text-xs shadow-sm transition hover:-translate-y-0.5 hover:border-amber-300 hover:shadow-md ${
                           isSelected ? "border-red-300 ring-2 ring-red-100" : "border-stone-200"
                         }`}
                         style={{
