@@ -1900,6 +1900,14 @@ export default function AIGovernor({
       const start = { x: auditRect.left, y: straightY };
       const end = { x: configRect.right, y: straightY };
       routePoints = [start, end];
+    } else if (edge.from === "intent_router" && edge.to === "anniversary_calendar") {
+      const routerRect = getOperationNodeRect(fromNode);
+      const targetRect = getOperationNodeRect(toNode);
+      const straightY = (Math.max(routerRect.top, targetRect.top) + Math.min(routerRect.bottom, targetRect.bottom)) / 2;
+      routePoints = [
+        { x: routerRect.right, y: straightY },
+        { x: targetRect.left, y: straightY }
+      ];
     } else if (edge.from === "intent_router") {
       const start = getOperationAnchor(fromNode, "right", getOperationAnchorSlot(edge, fromNode.id, "right", "from"));
       const end = getOperationAnchor(toNode, "left", getOperationAnchorSlot(edge, toNode.id, "left", "to"));
@@ -1912,8 +1920,8 @@ export default function AIGovernor({
     } else if (edge.from === "ai_governor" && edge.to === "system_audit") {
       const start = getOperationAnchor(fromNode, "right", getOperationAnchorSlot(edge, fromNode.id, "right", "from"));
       const end = getOperationAnchor(toNode, "top", getOperationAnchorSlot(edge, toNode.id, "top", "to"));
-      const routeX = sourceRect.right + 22;
-      const routeY = 24 + Math.max(0, lane);
+      const routeX = sourceRect.right + 44;
+      const routeY = Math.max(18, Math.min(start.y, end.y) - 86);
       routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: routeY }, { x: end.x, y: routeY }, end];
     }
 
