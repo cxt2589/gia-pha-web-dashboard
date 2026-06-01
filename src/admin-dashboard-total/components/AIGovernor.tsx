@@ -1785,13 +1785,24 @@ export default function AIGovernor({
     side: "left" | "right" | "top" | "bottom",
     endpoint: "from" | "to"
   ) => {
+    const sortAxis = side === "top" || side === "bottom" ? "x" : "y";
+    const otherEndpoint = endpoint === "from" ? "to" : "from";
+    const getNodeCenter = (id: string) => {
+      const node = aiOperationGraph.nodes.find((item) => item.id === id);
+      if (!node) return { x: 0, y: 0 };
+      const pos = getOperationNodePosition(node);
+      return {
+        x: pos.x + graphCanvas.nodeWidth / 2,
+        y: pos.y + graphCanvas.nodeHeight / 2
+      };
+    };
     const peers = aiOperationGraph.edges.filter((item) => {
       const preferred = getPreferredOperationSides(item);
       return item[endpoint] === nodeId && preferred[endpoint === "from" ? "fromSide" : "toSide"] === side;
-    });
+    }).sort((a, b) => getNodeCenter(a[otherEndpoint])[sortAxis] - getNodeCenter(b[otherEndpoint])[sortAxis]);
     const index = peers.findIndex((item) => item === edge);
     if (peers.length <= 1 || index < 0) return 0.5;
-    return (index + 1) / (peers.length + 1);
+    return (index * 2 + 1) / (peers.length * 2);
   };
   const operationSegmentIntersectsRect = (
     a: { x: number; y: number },
@@ -1882,8 +1893,14 @@ export default function AIGovernor({
       const routeY = Math.min(end.y - 28, start.y + 28);
       routePoints = [start, { x: start.x, y: routeY }, { x: end.x, y: routeY }, end];
     } else if (edge.from === "system_audit" && edge.to === "bot_config") {
-      const start = getOperationAnchor(fromNode, "left", getOperationAnchorSlot(edge, fromNode.id, "left", "from"));
-      const end = getOperationAnchor(toNode, "right", getOperationAnchorSlot(edge, toNode.id, "right", "to"));
+      const auditRect = getOperationNodeRect(fromNode);
+      const configRect = getOperationNodeRect(toNode);
+      const straightY = Math.max(
+        Math.max(auditRect.top, configRect.top) + graphCanvas.nodeHeight / 2,
+        Math.min(auditRect.bottom, configRect.bottom) - graphCanvas.nodeHeight / 2
+      );
+      const start = { x: auditRect.left, y: straightY };
+      const end = { x: configRect.right, y: straightY };
       routePoints = [start, end];
     } else if (edge.from === "intent_router") {
       const start = getOperationAnchor(fromNode, "right", getOperationAnchorSlot(edge, fromNode.id, "right", "from"));
