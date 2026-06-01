@@ -684,6 +684,51 @@ async function getDatabase() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS excel_import_sessions (
+      id TEXT PRIMARY KEY,
+      file_name TEXT NOT NULL DEFAULT '',
+      file_size INTEGER NOT NULL DEFAULT 0,
+      file_type TEXT NOT NULL DEFAULT '',
+      file_hash TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'uploaded',
+      row_count INTEGER NOT NULL DEFAULT 0,
+      column_count INTEGER NOT NULL DEFAULT 0,
+      warnings_json TEXT NOT NULL DEFAULT '[]',
+      created_by TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      metadata_json TEXT NOT NULL DEFAULT '{}'
+    );
+
+    CREATE TABLE IF NOT EXISTS excel_import_column_mappings (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL DEFAULT '',
+      column_index INTEGER NOT NULL DEFAULT 0,
+      column_letter TEXT NOT NULL DEFAULT '',
+      original_header TEXT NOT NULL DEFAULT '',
+      normalized_header TEXT NOT NULL DEFAULT '',
+      mapped_field TEXT NOT NULL DEFAULT '',
+      confidence REAL NOT NULL DEFAULT 0,
+      warning TEXT NOT NULL DEFAULT '',
+      approved INTEGER NOT NULL DEFAULT 0,
+      approved_by TEXT NOT NULL DEFAULT '',
+      approved_at TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS excel_import_validation_issues (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL DEFAULT '',
+      row_index INTEGER NOT NULL DEFAULT 0,
+      column_index INTEGER NOT NULL DEFAULT 0,
+      issue_type TEXT NOT NULL DEFAULT 'other',
+      severity TEXT NOT NULL DEFAULT 'warning',
+      message TEXT NOT NULL DEFAULT '',
+      suggested_fix TEXT NOT NULL DEFAULT '',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_norm ON knowledge_chunks(content_norm);
     CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm ON entity_aliases(alias_norm);
     CREATE INDEX IF NOT EXISTS idx_entity_aliases_ascii ON entity_aliases(alias_ascii);
@@ -705,6 +750,10 @@ async function getDatabase() {
     CREATE INDEX IF NOT EXISTS idx_zalo_bot_events_event_id ON zalo_bot_events(event_id);
     CREATE INDEX IF NOT EXISTS idx_zalo_bot_events_status ON zalo_bot_events(status);
     CREATE INDEX IF NOT EXISTS idx_zalo_bot_replies_created ON zalo_bot_replies(created_at);
+    CREATE INDEX IF NOT EXISTS idx_excel_import_sessions_status ON excel_import_sessions(status);
+    CREATE INDEX IF NOT EXISTS idx_excel_import_sessions_created ON excel_import_sessions(created_at);
+    CREATE INDEX IF NOT EXISTS idx_excel_import_mappings_session ON excel_import_column_mappings(session_id);
+    CREATE INDEX IF NOT EXISTS idx_excel_import_issues_session ON excel_import_validation_issues(session_id);
   `);
   ensureTableColumn(db, 'knowledge_sources', 'summary', "ALTER TABLE knowledge_sources ADD COLUMN summary TEXT NOT NULL DEFAULT ''");
   ensureTableColumn(db, 'knowledge_sources', 'tags_json', "ALTER TABLE knowledge_sources ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'");
@@ -1580,6 +1629,452 @@ function safeJsonParse(value, fallback) {
   } catch {
     return fallback;
   }
+}
+
+const EXCEL_IMPORT_FIELD_REFERENCE = [
+  ['id', 'Ma dinh danh ca nhan', true],
+  ['name', 'Ho va ten day du', true],
+  ['gender', 'Gioi tinh', false],
+  ['bio.alias', 'Ten thuong goi / Bi danh / Ten tu', false],
+  ['phone1', 'So dien thoai', false],
+  ['phone2', 'So dien thoai phu', false],
+  ['residence', 'Noi o', false],
+  ['email', 'Email', false],
+  ['solarBirthDate / birthYear', 'Ngay sinh tren giay to', false],
+  ['isLiving / isDeceased', 'Tinh trang con song/da mat', false],
+  ['solarDeathDate / deathYear', 'Ngay thang nam mat duong lich', false],
+  ['lunarAnniversary / deathAnniversaryLunar', 'Ngay mat theo am lich / Ky nhat', false],
+  ['burialPlace / graveLocation', 'Noi an tang', false],
+  ['generation', 'Doi thu may', true],
+  ['father.name', 'Ho va ten Cha ruot', false],
+  ['father.residence', 'Noi o cua cha ruot', false],
+  ['father.phone', 'So dien thoai cua cha', false],
+  ['father.birthDate', 'Ngay sinh cua cha', false],
+  ['father.isLiving', 'Tinh trang cua cha', false],
+  ['father.deathDate', 'Ngay mat cua cha', false],
+  ['father.lunarAnniversary', 'Ngay mat am lich cua cha', false],
+  ['father.burialPlace', 'Noi an tang cua cha', false],
+  ['parentId', 'Ma dinh danh cua cha', false],
+  ['motherName', 'Ho va ten Me ruot', false],
+  ['mother.residence', 'Noi o cua me', false],
+  ['mother.phone', 'So dien thoai cua me', false],
+  ['mother.birthDate', 'Ngay sinh cua me', false],
+  ['mother.isLiving', 'Tinh trang cua me', false],
+  ['mother.deathDate', 'Ngay mat cua me', false],
+  ['mother.lunarAnniversary', 'Ngay mat am lich cua me', false],
+  ['mother.burialPlace', 'Noi an tang cua me', false],
+  ['spouse / spouseDetails[0].name', 'Ho va ten vo/chong', false],
+  ['spouseDetails[0].residence', 'Noi o cua vo/chong', false],
+  ['spouseDetails[0].phone1', 'So dien thoai cua vo/chong', false],
+  ['spouseDetails[0].solarBirthDate', 'Ngay sinh cua vo/chong', false],
+  ['spouseDetails[0].isLiving', 'Tinh trang cua vo/chong', false],
+  ['spouseDetails[0].solarDeathDate', 'Ngay mat cua vo/chong', false],
+  ['spouseDetails[0].lunarAnniversary', 'Ngay ky am lich cua vo/chong', false],
+  ['spouseDetails[0].burialPlace', 'Noi an tang cua vo/chong', false],
+  ['children[0].name', 'Ho ten con thu 1', false],
+  ['children[0].gender', 'Gioi tinh con thu 1', false],
+  ['children[1].name', 'Ho ten con thu 2', false],
+  ['children[1].gender', 'Gioi tinh con thu 2', false],
+  ['children[2].name', 'Ho ten con thu 3', false],
+  ['children[2].gender', 'Gioi tinh con thu 3', false],
+  ['children[3].name', 'Ho ten con thu 4', false],
+  ['children[3].gender', 'Gioi tinh con thu 4', false],
+  ['children[4].name', 'Ho ten con thu 5', false],
+  ['children[4].gender', 'Gioi tinh con thu 5', false],
+  ['children[5].name', 'Ho ten con thu 6', false],
+  ['children[5].gender', 'Gioi tinh con thu 6', false],
+  ['children[6].name', 'Ho ten con thu 7', false],
+  ['children[6].gender', 'Gioi tinh con thu 7', false],
+  ['children[7].name', 'Ho ten con thu 8', false],
+  ['children[7].gender', 'Gioi tinh con thu 8', false]
+].map(([field, label, required], index) => ({ index, field, label, required: Boolean(required) }));
+
+const EXCEL_IMPORT_ALLOWED_EXTENSIONS = new Set(['csv', 'xlsx', 'xls']);
+const EXCEL_IMPORT_MAX_FILE_MB = Number(process.env.EXCEL_IMPORT_MAX_FILE_MB || 10);
+const EXCEL_IMPORT_MAX_FILE_BYTES = EXCEL_IMPORT_MAX_FILE_MB * 1024 * 1024;
+
+function normalizeExcelImportHeader(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\u0111/g, 'd')
+    .replace(/\u0110/g, 'D')
+    .replace(/[^a-zA-Z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function excelColumnLetter(index) {
+  let n = Number(index) + 1;
+  let letters = '';
+  while (n > 0) {
+    const mod = (n - 1) % 26;
+    letters = String.fromCharCode(65 + mod) + letters;
+    n = Math.floor((n - mod) / 26);
+  }
+  return letters || 'A';
+}
+
+function getExcelImportFieldReference() {
+  return EXCEL_IMPORT_FIELD_REFERENCE.map((item) => ({
+    index: item.index,
+    field: item.field,
+    label: item.label,
+    required: item.required
+  }));
+}
+
+function normalizeExcelImportStatus(status, fallback = 'structure_review') {
+  const allowed = new Set(['uploaded', 'structure_review', 'mapping_approved', 'validation_failed', 'ready_to_import', 'imported', 'rejected']);
+  return allowed.has(String(status || '')) ? String(status) : fallback;
+}
+
+function normalizeExcelImportExtension(fileName = '', fileType = '') {
+  const nameExt = String(fileName || '').split('.').pop()?.toLowerCase() || '';
+  if (EXCEL_IMPORT_ALLOWED_EXTENSIONS.has(nameExt)) return nameExt;
+  const type = String(fileType || '').toLowerCase();
+  if (type.includes('csv')) return 'csv';
+  if (type.includes('spreadsheet') || type.includes('excel') || type.includes('sheet')) return 'xlsx';
+  return nameExt;
+}
+
+function buildExcelImportSafetyWarnings(payload = {}) {
+  const warnings = [];
+  const fileName = String(payload.fileName || payload.file_name || '').trim();
+  const fileSize = Number(payload.fileSize || payload.file_size || 0);
+  const fileType = String(payload.fileType || payload.file_type || '').trim();
+  const extension = normalizeExcelImportExtension(fileName, fileType);
+  if (!fileName) warnings.push({ type: 'unsafe_file', severity: 'critical', message: 'Thieu ten file.' });
+  if (!fileSize || fileSize <= 0) warnings.push({ type: 'unsafe_file', severity: 'critical', message: 'File rong hoac khong co kich thuoc hop le.' });
+  if (fileSize > EXCEL_IMPORT_MAX_FILE_BYTES) warnings.push({ type: 'unsafe_file', severity: 'critical', message: `File vuot gioi han ${EXCEL_IMPORT_MAX_FILE_MB}MB.` });
+  if (!EXCEL_IMPORT_ALLOWED_EXTENSIONS.has(extension)) warnings.push({ type: 'unsafe_file', severity: 'critical', message: 'Chi chap nhan .csv, .xlsx hoac .xls.' });
+  warnings.push({ type: 'trusted_source', severity: 'info', message: 'Chi import file Excel/CSV tu nguon tin cay. He thong khong ghi vao cay pha khi chua duyet mapping va validate.' });
+  return warnings;
+}
+
+function scoreExcelHeaderToField(header, fieldRef) {
+  const normalized = normalizeExcelImportHeader(header);
+  const label = normalizeExcelImportHeader(fieldRef.label);
+  const field = normalizeExcelImportHeader(fieldRef.field);
+  if (!normalized) return { score: 0, warning: 'Cot khong co header.' };
+  if (normalized === label || normalized === field) return { score: 0.98, warning: '' };
+  if (normalized.includes(label) || label.includes(normalized)) return { score: 0.86, warning: '' };
+  const terms = normalized.split(' ').filter(Boolean);
+  const labelTerms = new Set(label.split(' ').filter(Boolean));
+  const matched = terms.filter((term) => labelTerms.has(term)).length;
+  const score = terms.length ? matched / Math.max(terms.length, labelTerms.size) : 0;
+  return { score, warning: score >= 0.45 ? 'Can admin kiem tra lai mapping goi y.' : 'Cot chua ro mapping.' };
+}
+
+function suggestExcelColumnMapping(header, index) {
+  const refs = getExcelImportFieldReference();
+  const expected = refs[index];
+  const expectedScore = expected ? scoreExcelHeaderToField(header, expected) : { score: 0, warning: 'Ngoai bo 55 cot dac ta.' };
+  const best = refs
+    .map((ref) => ({ ref, ...scoreExcelHeaderToField(header, ref) }))
+    .sort((a, b) => b.score - a.score)[0];
+  const chosen = expectedScore.score >= 0.7 || !best || expectedScore.score >= best.score - 0.08
+    ? { ref: expected, ...expectedScore }
+    : best;
+  const confidence = Number(Math.max(0, Math.min(0.99, chosen?.score || 0)).toFixed(2));
+  return {
+    mappedField: chosen?.ref?.field || '',
+    confidence,
+    warning: confidence >= 0.75 ? '' : (chosen?.warning || 'Mapping confidence thap, khong auto approve.')
+  };
+}
+
+function normalizePreviewRows(rows, limit = 30) {
+  if (!Array.isArray(rows)) return [];
+  return rows.slice(0, limit).map((row) => Array.isArray(row)
+    ? row.slice(0, 80).map((value) => String(value ?? '').slice(0, 300))
+    : Object.fromEntries(Object.entries(row || {}).slice(0, 80).map(([key, value]) => [key, String(value ?? '').slice(0, 300)]))
+  );
+}
+
+function publicExcelImportSession(row) {
+  return {
+    id: row.id,
+    fileName: row.file_name,
+    fileSize: row.file_size,
+    fileType: row.file_type,
+    fileHash: row.file_hash,
+    status: row.status,
+    rowCount: row.row_count,
+    columnCount: row.column_count,
+    warnings: safeJsonParse(row.warnings_json, []),
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    metadata: safeJsonParse(row.metadata_json, {})
+  };
+}
+
+function publicExcelImportMapping(row) {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    columnIndex: row.column_index,
+    columnLetter: row.column_letter,
+    originalHeader: row.original_header,
+    normalizedHeader: row.normalized_header,
+    mappedField: row.mapped_field,
+    confidence: row.confidence,
+    warning: row.warning,
+    approved: Boolean(row.approved),
+    approvedBy: row.approved_by,
+    approvedAt: row.approved_at
+  };
+}
+
+function publicExcelImportIssue(row) {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    rowIndex: row.row_index,
+    columnIndex: row.column_index,
+    issueType: row.issue_type,
+    severity: row.severity,
+    message: row.message,
+    suggestedFix: row.suggested_fix,
+    metadata: safeJsonParse(row.metadata_json, {})
+  };
+}
+
+async function createExcelImportSession(payload = {}, authUser = null) {
+  const database = await getDatabase();
+  const headers = Array.isArray(payload.headers) ? payload.headers.map((value) => String(value ?? '').slice(0, 240)) : [];
+  const previewRows = normalizePreviewRows(payload.previewRows || payload.preview_rows || []);
+  const fileName = String(payload.fileName || payload.file_name || '').trim().slice(0, 260);
+  const fileSize = Number(payload.fileSize || payload.file_size || 0);
+  const fileType = String(payload.fileType || payload.file_type || '').trim().slice(0, 120);
+  const rowCount = Number(payload.rowCount ?? payload.row_count ?? previewRows.length);
+  const columnCount = Number(payload.columnCount ?? payload.column_count ?? headers.length);
+  const warnings = buildExcelImportSafetyWarnings({ fileName, fileSize, fileType });
+  const duplicateHeaders = new Map();
+  headers.forEach((header) => {
+    const normalized = normalizeExcelImportHeader(header);
+    if (normalized) duplicateHeaders.set(normalized, (duplicateHeaders.get(normalized) || 0) + 1);
+  });
+  const hash = crypto.createHash('sha256').update(JSON.stringify({ fileName, fileSize, headers, previewRows })).digest('hex');
+  const id = `excel_import_${randomToken(16)}`;
+  const metadata = {
+    headers,
+    previewRows,
+    importMode: payload.importMode || payload.import_mode || 'append',
+    safety: { maxFileMb: EXCEL_IMPORT_MAX_FILE_MB },
+    note: 'Phase 2U review gate only. No direct tree write from upload.'
+  };
+  database.prepare(`
+    INSERT INTO excel_import_sessions (id, file_name, file_size, file_type, file_hash, status, row_count, column_count, warnings_json, created_by, metadata_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    fileName,
+    fileSize,
+    fileType,
+    hash,
+    'structure_review',
+    rowCount,
+    columnCount || headers.length,
+    JSON.stringify(warnings),
+    authUser?.username || authUser?.email || authUser?.id || 'admin',
+    JSON.stringify(metadata)
+  );
+  const mappingInsert = database.prepare(`
+    INSERT INTO excel_import_column_mappings (id, session_id, column_index, column_letter, original_header, normalized_header, mapped_field, confidence, warning, approved)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  headers.forEach((header, index) => {
+    const suggestion = suggestExcelColumnMapping(header, index);
+    const normalized = normalizeExcelImportHeader(header);
+    const duplicateWarning = normalized && duplicateHeaders.get(normalized) > 1 ? 'Header trung lap. ' : '';
+    mappingInsert.run(
+      `excel_map_${randomToken(12)}`,
+      id,
+      index,
+      excelColumnLetter(index),
+      header,
+      normalized,
+      suggestion.mappedField,
+      suggestion.confidence,
+      `${duplicateWarning}${suggestion.warning}`.trim(),
+      suggestion.confidence >= 0.9 && !duplicateWarning ? 1 : 0
+    );
+  });
+  await validateExcelImportSession(id, { mode: 'structure' });
+  return getExcelImportSessionDetail(id);
+}
+
+async function listExcelImportSessions({ limit = 50 } = {}) {
+  const database = await getDatabase();
+  return database.prepare('SELECT * FROM excel_import_sessions ORDER BY created_at DESC LIMIT ?').all(Number(limit) || 50).map(publicExcelImportSession);
+}
+
+async function getExcelImportSessionDetail(id) {
+  const database = await getDatabase();
+  const session = database.prepare('SELECT * FROM excel_import_sessions WHERE id = ?').get(id);
+  if (!session) {
+    const err = new Error('Excel import session not found.');
+    err.status = 404;
+    throw err;
+  }
+  return {
+    session: publicExcelImportSession(session),
+    mappings: database.prepare('SELECT * FROM excel_import_column_mappings WHERE session_id = ? ORDER BY column_index ASC').all(id).map(publicExcelImportMapping),
+    issues: database.prepare('SELECT * FROM excel_import_validation_issues WHERE session_id = ? ORDER BY severity DESC, row_index ASC, column_index ASC').all(id).map(publicExcelImportIssue)
+  };
+}
+
+async function updateExcelImportSession(id, payload = {}) {
+  const database = await getDatabase();
+  const current = database.prepare('SELECT * FROM excel_import_sessions WHERE id = ?').get(id);
+  if (!current) {
+    const err = new Error('Excel import session not found.');
+    err.status = 404;
+    throw err;
+  }
+  const status = normalizeExcelImportStatus(payload.status, current.status);
+  database.prepare("UPDATE excel_import_sessions SET status = ?, updated_at = datetime('now') WHERE id = ?").run(status, id);
+  return getExcelImportSessionDetail(id);
+}
+
+async function updateExcelImportMappings(id, payload = {}, authUser = null) {
+  const database = await getDatabase();
+  const mappings = Array.isArray(payload.mappings) ? payload.mappings : [];
+  const update = database.prepare(`
+    UPDATE excel_import_column_mappings
+    SET mapped_field = ?, confidence = ?, warning = ?, approved = ?, approved_by = ?, approved_at = CASE WHEN ? THEN datetime('now') ELSE approved_at END, updated_at = datetime('now')
+    WHERE session_id = ? AND column_index = ?
+  `);
+  for (const mapping of mappings) {
+    const approved = Boolean(mapping.approved);
+    update.run(
+      String(mapping.mappedField || mapping.mapped_field || ''),
+      Number(mapping.confidence ?? 1),
+      String(mapping.warning || ''),
+      approved ? 1 : 0,
+      approved ? (authUser?.username || authUser?.email || authUser?.id || 'admin') : '',
+      approved ? 1 : 0,
+      id,
+      Number(mapping.columnIndex ?? mapping.column_index)
+    );
+  }
+  const remaining = database.prepare('SELECT COUNT(*) AS count FROM excel_import_column_mappings WHERE session_id = ? AND approved = 0 AND mapped_field != ?').get(id, '__skip')?.count || 0;
+  if (!remaining) database.prepare("UPDATE excel_import_sessions SET status = 'mapping_approved', updated_at = datetime('now') WHERE id = ?").run(id);
+  return getExcelImportSessionDetail(id);
+}
+
+function addExcelImportIssue(database, sessionId, issue) {
+  database.prepare(`
+    INSERT INTO excel_import_validation_issues (id, session_id, row_index, column_index, issue_type, severity, message, suggested_fix, metadata_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    `excel_issue_${randomToken(12)}`,
+    sessionId,
+    Number(issue.rowIndex || issue.row_index || 0),
+    Number(issue.columnIndex ?? issue.column_index ?? -1),
+    issue.issueType || issue.issue_type || 'other',
+    issue.severity || 'warning',
+    String(issue.message || ''),
+    String(issue.suggestedFix || issue.suggested_fix || ''),
+    JSON.stringify(issue.metadata || {})
+  );
+}
+
+async function validateExcelImportSession(id, { mode = 'full' } = {}) {
+  const database = await getDatabase();
+  const current = database.prepare('SELECT * FROM excel_import_sessions WHERE id = ?').get(id);
+  if (!current) {
+    const err = new Error('Excel import session not found.');
+    err.status = 404;
+    throw err;
+  }
+  database.prepare('DELETE FROM excel_import_validation_issues WHERE session_id = ?').run(id);
+  const session = publicExcelImportSession(current);
+  const metadata = safeJsonParse(current.metadata_json, {});
+  const headers = Array.isArray(metadata.headers) ? metadata.headers : [];
+  const previewRows = Array.isArray(metadata.previewRows) ? metadata.previewRows : [];
+  const mappings = database.prepare('SELECT * FROM excel_import_column_mappings WHERE session_id = ? ORDER BY column_index ASC').all(id);
+  for (const warning of session.warnings || []) {
+    if (warning.severity === 'critical') addExcelImportIssue(database, id, { issueType: warning.type || 'unsafe_file', severity: 'critical', message: warning.message });
+  }
+  const seenHeaders = new Map();
+  headers.forEach((header, index) => {
+    const normalized = normalizeExcelImportHeader(header);
+    if (!normalized) return;
+    seenHeaders.set(normalized, [...(seenHeaders.get(normalized) || []), index]);
+  });
+  for (const [, indexes] of seenHeaders.entries()) {
+    if (indexes.length > 1) {
+      indexes.forEach((index) => addExcelImportIssue(database, id, { columnIndex: index, issueType: 'duplicate_header', severity: 'warning', message: `Cot ${excelColumnLetter(index)} co header trung lap.`, suggestedFix: 'Doi ten header hoac bo qua cot trung lap.' }));
+    }
+  }
+  mappings.forEach((mapping) => {
+    if (!mapping.mapped_field) addExcelImportIssue(database, id, { columnIndex: mapping.column_index, issueType: 'unknown_column', severity: 'warning', message: `Cot ${mapping.column_letter} chua co mapping.`, suggestedFix: 'Chon field dashboard hoac danh dau bo qua.' });
+    if (Number(mapping.confidence) < 0.75 && !mapping.approved) addExcelImportIssue(database, id, { columnIndex: mapping.column_index, issueType: 'unknown_column', severity: 'warning', message: `Cot ${mapping.column_letter} confidence thap, can admin duyet.`, suggestedFix: 'Duyet mapping thu cong truoc khi import.' });
+  });
+  const fields = new Set(mappings.filter((mapping) => mapping.approved && mapping.mapped_field !== '__skip').map((mapping) => mapping.mapped_field));
+  for (const ref of EXCEL_IMPORT_FIELD_REFERENCE.filter((item) => item.required)) {
+    if (!fields.has(ref.field)) addExcelImportIssue(database, id, { issueType: 'missing_required', severity: 'error', message: `Thieu field bat buoc: ${ref.label}.`, suggestedFix: 'Map mot cot vao field nay hoac bo sung cot trong file.' });
+  }
+  const mappedByField = new Map(mappings.map((mapping) => [mapping.mapped_field, mapping.column_index]));
+  previewRows.forEach((row, rowIndex) => {
+    const values = Array.isArray(row) ? row : headers.map((header) => row?.[header] || '');
+    const nameIndex = mappedByField.get('name');
+    const generationIndex = mappedByField.get('generation');
+    const name = nameIndex !== undefined ? String(values[nameIndex] || '').trim() : '';
+    const generation = generationIndex !== undefined ? String(values[generationIndex] || '').trim() : '';
+    if (!name) addExcelImportIssue(database, id, { rowIndex: rowIndex + 2, columnIndex: nameIndex ?? -1, issueType: 'missing_required', severity: 'error', message: `Dong ${rowIndex + 2} thieu ho ten.`, suggestedFix: 'Bo sung ho ten hoac loai bo dong trong.' });
+    if (generation && !/\d+/.test(generation)) addExcelImportIssue(database, id, { rowIndex: rowIndex + 2, columnIndex: generationIndex ?? -1, issueType: 'invalid_generation', severity: 'error', message: `Dong ${rowIndex + 2} doi/generation khong hop le.`, suggestedFix: 'Nhap so doi hoac de trong neu chua xac minh.' });
+    values.forEach((value, columnIndex) => {
+      const text = String(value || '');
+      const field = mappings[columnIndex]?.mapped_field || '';
+      if ((field.includes('phone') || field.includes('email')) && text.trim()) {
+        addExcelImportIssue(database, id, { rowIndex: rowIndex + 2, columnIndex, issueType: 'other', severity: 'info', message: `Dong ${rowIndex + 2} co du lieu rieng tu (${field}).`, suggestedFix: 'Kiem tra quyen xem/KYC truoc khi cong bo.' });
+      }
+    });
+  });
+  const counts = database.prepare('SELECT severity, COUNT(*) AS count FROM excel_import_validation_issues WHERE session_id = ? GROUP BY severity').all(id);
+  const errorCount = counts.filter((row) => ['critical', 'error'].includes(row.severity)).reduce((sum, row) => sum + Number(row.count || 0), 0);
+  const unapproved = database.prepare('SELECT COUNT(*) AS count FROM excel_import_column_mappings WHERE session_id = ? AND approved = 0 AND mapped_field != ?').get(id, '__skip')?.count || 0;
+  const nextStatus = errorCount ? 'validation_failed' : (mode === 'structure' ? 'structure_review' : (unapproved ? 'mapping_approved' : 'ready_to_import'));
+  database.prepare("UPDATE excel_import_sessions SET status = ?, updated_at = datetime('now') WHERE id = ?").run(nextStatus, id);
+  return getExcelImportSessionDetail(id);
+}
+
+async function importExcelImportSession(id, payload = {}, authUser = null) {
+  const database = await getDatabase();
+  const session = database.prepare('SELECT * FROM excel_import_sessions WHERE id = ?').get(id);
+  if (!session) {
+    const err = new Error('Excel import session not found.');
+    err.status = 404;
+    throw err;
+  }
+  if (session.status !== 'ready_to_import') {
+    const err = new Error('Excel import session must be ready_to_import before import.');
+    err.status = 400;
+    throw err;
+  }
+  if (!payload.confirmImport) {
+    const err = new Error('confirmImport is required.');
+    err.status = 400;
+    throw err;
+  }
+  const metadata = safeJsonParse(session.metadata_json, {});
+  metadata.importConfirmed = {
+    by: authUser?.username || authUser?.email || authUser?.id || 'admin',
+    at: new Date().toISOString(),
+    note: 'Phase 2U gate passed. Actual tree write remains controlled by dashboard import flow.'
+  };
+  database.prepare("UPDATE excel_import_sessions SET status = 'imported', metadata_json = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(metadata), id);
+  return {
+    session: (await getExcelImportSessionDetail(id)).session,
+    applied: false,
+    previewOnly: true,
+    note: 'Excel import gate confirmed. Dashboard must still perform the controlled tree write.'
+  };
 }
 
 function formatKnowledgeContextForAI(searchResult) {
@@ -3491,6 +3986,95 @@ app.get('/api/ai-action-drafts/:id/logs', async (req, res) => {
   }
 });
 
+app.get('/api/excel-import/field-reference', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json({
+      ok: true,
+      maxFileMb: EXCEL_IMPORT_MAX_FILE_MB,
+      allowedExtensions: Array.from(EXCEL_IMPORT_ALLOWED_EXTENSIONS),
+      fields: getExcelImportFieldReference()
+    });
+  } catch (err) {
+    console.error('Failed to get Excel import field reference:', err);
+    res.status(500).json({ error: 'Failed to get Excel import field reference.' });
+  }
+});
+
+app.get('/api/excel-import/sessions', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json({ ok: true, sessions: await listExcelImportSessions(req.query || {}) });
+  } catch (err) {
+    console.error('Failed to list Excel import sessions:', err);
+    res.status(500).json({ error: 'Failed to list Excel import sessions.' });
+  }
+});
+
+app.post('/api/excel-import/sessions', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json({ ok: true, ...(await createExcelImportSession(req.body || {}, admin.authUser)) });
+  } catch (err) {
+    console.error('Failed to create Excel import session:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to create Excel import session.' });
+  }
+});
+
+app.get('/api/excel-import/sessions/:id', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json({ ok: true, ...(await getExcelImportSessionDetail(req.params.id)) });
+  } catch (err) {
+    console.error('Failed to get Excel import session:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to get Excel import session.' });
+  }
+});
+
+app.patch('/api/excel-import/sessions/:id', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json({ ok: true, ...(await updateExcelImportSession(req.params.id, req.body || {}, admin.authUser)) });
+  } catch (err) {
+    console.error('Failed to update Excel import session:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to update Excel import session.' });
+  }
+});
+
+app.patch('/api/excel-import/sessions/:id/mappings', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json({ ok: true, ...(await updateExcelImportMappings(req.params.id, req.body || {}, admin.authUser)) });
+  } catch (err) {
+    console.error('Failed to update Excel import mappings:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to update Excel import mappings.' });
+  }
+});
+
+app.post('/api/excel-import/sessions/:id/validate', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json({ ok: true, ...(await validateExcelImportSession(req.params.id, req.body || {})) });
+  } catch (err) {
+    console.error('Failed to validate Excel import session:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to validate Excel import session.' });
+  }
+});
+
+app.post('/api/excel-import/sessions/:id/import', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json({ ok: true, ...(await importExcelImportSession(req.params.id, req.body || {}, admin.authUser)) });
+  } catch (err) {
+    console.error('Failed to import Excel session:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to import Excel session.' });
+  }
+});
+
 app.get('/api/ai/operation-graph', async (req, res) => {
   try {
     if (!await requireAdmin(req, res)) return;
@@ -3512,6 +4096,11 @@ app.get('/api/ai/operation-graph', async (req, res) => {
     const auditCritical = auditRows
       .filter((row) => ['critical', 'high'].includes(String(row.priority || '')))
       .reduce((sum, row) => sum + Number(row.count || 0), 0);
+    const excelRows = getDatabase().prepare('SELECT status, COUNT(*) AS count FROM excel_import_sessions GROUP BY status').all();
+    const excelMetric = (status) => excelRows
+      .filter((row) => row.status === status)
+      .reduce((sum, row) => sum + Number(row.count || 0), 0);
+    const excelErrorCount = getDatabase().prepare("SELECT COUNT(*) AS count FROM excel_import_validation_issues WHERE severity IN ('critical', 'error')").get()?.count || 0;
     const botNode = (id, label, row, description) => {
       const config = configByBot.get(id);
       return {
@@ -3549,6 +4138,7 @@ app.get('/api/ai/operation-graph', async (req, res) => {
         { id: 'system_audit', label: 'Kiểm tra hệ thống', type: 'audit', status: auditCritical ? 'error' : 'active', column: 5, row: 2, description: 'Scanner local-first phát hiện lỗi font, dữ liệu mẫu, danh xưng sai, rủi ro riêng tư và tạo đề xuất chờ admin duyệt.', metrics: { pending: auditMetric('pending'), applied: auditMetric('applied'), rejected: auditMetric('rejected'), critical: auditCritical } },
         { id: 'gemini', label: 'Gemini', type: 'model', status: 'active', column: 5, row: 4, description: 'Chỉ dùng khi local/knowledge chưa đủ hoặc cần sinh nội dung dài.' },
         { id: 'response_guard', label: 'Response Guard', type: 'guard', status: 'active', column: 6, row: 3, description: 'Chặn bịa dữ liệu, phân biệt pending/applied và giới hạn output.' },
+        { id: 'excel_import_gate', label: 'Duyệt cấu trúc Excel', type: 'guard', status: excelErrorCount ? 'error' : 'active', column: 5, row: 6, description: 'Cổng duyệt file Excel/CSV: kiểm tra an toàn, mapping 55 cột, preview và validation trước khi import.', metrics: { pending: excelMetric('structure_review') + excelMetric('mapping_approved'), ready: excelMetric('ready_to_import'), errors: excelErrorCount } },
         { id: 'ai_logs', label: 'Logs / Token', type: 'logs', status: 'active', column: 6, row: 5, description: 'Theo dõi request, cache, lỗi, token và nguồn theo từng bot.', metrics: { tokens: summary.estimatedTokens, avg: `${summary.avgDurationMs}ms` } }
       ],
       edges: [
@@ -3568,6 +4158,9 @@ app.get('/api/ai/operation-graph', async (req, res) => {
         { from: 'system_audit', to: 'bot_config', label: 'prompt/config' },
         { from: 'system_audit', to: 'local_db', label: 'scan' },
         { from: 'system_audit', to: 'knowledge_search', label: 'scan' },
+        { from: 'ai_governor', to: 'excel_import_gate', label: 'mapping' },
+        { from: 'excel_import_gate', to: 'local_db', label: 'confirm import' },
+        { from: 'excel_import_gate', to: 'system_audit', label: 'validation' },
         { from: 'knowledge_search', to: 'gemini', label: 'khi cần' },
         { from: 'local_db', to: 'response_guard' },
         { from: 'anniversary_calendar', to: 'response_guard' },

@@ -1,4 +1,4 @@
-﻿import React, { useState, useMemo, useRef } from "react";
+﻿import React, { useEffect, useState, useMemo, useRef } from "react";
 import * as XLSX from "xlsx";
 import { motion, AnimatePresence } from "motion/react";
 import { Search, Filter, ShieldAlert, User, UserCheck, Award, Heart, Edit3, Plus, ArrowRight, X, Calendar, MapPin, Eye, Database, Copy, Check, Upload, Download, AlertCircle } from "lucide-react";
@@ -34,6 +34,43 @@ type ComputedBranch = {
   memberIds: string[];
   parentId?: string;
   isAuto: true;
+};
+
+type ExcelImportSession = {
+  id: string;
+  fileName: string;
+  fileSize: number;
+  fileType: string;
+  fileHash: string;
+  status: string;
+  rowCount: number;
+  columnCount: number;
+  warnings: { severity?: string; message?: string; type?: string }[];
+  createdAt: string;
+  updatedAt: string;
+  metadata?: Record<string, any>;
+};
+
+type ExcelImportMapping = {
+  id: string;
+  sessionId: string;
+  columnIndex: number;
+  columnLetter: string;
+  originalHeader: string;
+  mappedField: string;
+  confidence: number;
+  warning: string;
+  approved: boolean;
+};
+
+type ExcelImportIssue = {
+  id: string;
+  rowIndex: number;
+  columnIndex: number;
+  issueType: string;
+  severity: string;
+  message: string;
+  suggestedFix?: string;
 };
 
 export default function Genealogy({ members, onAddMember, onUpdateMember, onBulkImport }: GenealogyProps) {
@@ -83,6 +120,12 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   }[]>([]);
   const [columnFieldOverrides, setColumnFieldOverrides] = useState<Record<number, string>>({});
   const [validatedImportTree, setValidatedImportTree] = useState<any | null>(null);
+  const [excelImportSession, setExcelImportSession] = useState<ExcelImportSession | null>(null);
+  const [excelImportMappings, setExcelImportMappings] = useState<ExcelImportMapping[]>([]);
+  const [excelImportIssues, setExcelImportIssues] = useState<ExcelImportIssue[]>([]);
+  const [excelImportSessions, setExcelImportSessions] = useState<ExcelImportSession[]>([]);
+  const [excelImportBusy, setExcelImportBusy] = useState(false);
+  const [excelImportGateNote, setExcelImportGateNote] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
 
@@ -283,6 +326,144 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
       return decodeURIComponent(escape(text));
     } catch {
       return text;
+    }
+  };
+
+  const loadExcelImportSessions = async () => {
+    try {
+      const res = await fetch("/api/excel-import/sessions?limit=8", { credentials: "include" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setExcelImportSessions(Array.isArray(data.sessions) ? data.sessions : []);
+    } catch {
+      // Import gate is an admin convenience panel; parsing can still show local errors if API is unavailable.
+    }
+  };
+
+  useEffect(() => {
+    if (isExcelOpen) void loadExcelImportSessions();
+  }, [isExcelOpen]);
+
+  const applyExcelImportDetail = (detail: any) => {
+    setExcelImportSession(detail?.session || null);
+    setExcelImportMappings(Array.isArray(detail?.mappings) ? detail.mappings : []);
+    setExcelImportIssues(Array.isArray(detail?.issues) ? detail.issues : []);
+    void loadExcelImportSessions();
+  };
+
+  const createExcelImportGateSession = async (payload: {
+    fileName: string;
+    fileSize: number;
+    fileType: string;
+    headers: string[];
+    previewRows: any[][];
+    rowCount: number;
+    columnCount: number;
+  }) => {
+    setExcelImportBusy(true);
+    setExcelImportGateNote("Đang tạo phiên duyệt cấu trúc Excel/CSV...");
+    try {
+      const res = await fetch("/api/excel-import/sessions", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...payload, importMode })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Không tạo được phiên duyệt Excel.");
+      applyExcelImportDetail(data);
+      setExcelImportGateNote("Đã tạo phiên duyệt. Cần duyệt mapping và validate trước khi import.");
+      return data;
+    } catch (err: any) {
+      setExcelImportGateNote(err.message || "Không tạo được phiên duyệt Excel.");
+      setExcelImportSession(null);
+      setExcelImportMappings([]);
+      setExcelImportIssues([]);
+      throw err;
+    } finally {
+      setExcelImportBusy(false);
+    }
+  };
+
+  const approveExcelImportMappings = async () => {
+    if (!excelImportSession) return;
+    setExcelImportBusy(true);
+    setExcelImportGateNote("Đang duyệt mapping và validate dữ liệu xem trước...");
+    try {
+      const mapped = excelImportMappings.map((mapping) => ({
+        columnIndex: mapping.columnIndex,
+        mappedField: mapping.mappedField || "__skip",
+        confidence: mapping.confidence || 1,
+        warning: mapping.warning || "",
+        approved: Boolean(mapping.mappedField)
+      }));
+      const patchRes = await fetch(`/api/excel-import/sessions/${excelImportSession.id}/mappings`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mappings: mapped })
+      });
+      const patchData = await patchRes.json().catch(() => ({}));
+      if (!patchRes.ok) throw new Error(patchData.error || "Không duyệt được mapping.");
+      const validateRes = await fetch(`/api/excel-import/sessions/${excelImportSession.id}/validate`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "full" })
+      });
+      const validateData = await validateRes.json().catch(() => ({}));
+      if (!validateRes.ok) throw new Error(validateData.error || "Validate phiên import thất bại.");
+      applyExcelImportDetail(validateData);
+      setExcelImportGateNote(validateData.session?.status === "ready_to_import"
+        ? "Phiên đã sẵn sàng. Cần bấm xác nhận cổng import trước khi ghi vào cây phả."
+        : "Phiên còn lỗi/cảnh báo. Hãy kiểm tra danh sách issue trước khi import.");
+    } catch (err: any) {
+      setExcelImportGateNote(err.message || "Không validate được phiên import.");
+    } finally {
+      setExcelImportBusy(false);
+    }
+  };
+
+  const rejectExcelImportSession = async () => {
+    if (!excelImportSession) return;
+    setExcelImportBusy(true);
+    try {
+      const res = await fetch(`/api/excel-import/sessions/${excelImportSession.id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "rejected" })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Không từ chối được phiên import.");
+      applyExcelImportDetail(data);
+      setExcelImportGateNote("Đã từ chối phiên import. Không ghi dữ liệu vào cây phả.");
+    } catch (err: any) {
+      setExcelImportGateNote(err.message || "Không từ chối được phiên import.");
+    } finally {
+      setExcelImportBusy(false);
+    }
+  };
+
+  const confirmExcelImportGate = async () => {
+    if (!excelImportSession) return;
+    setExcelImportBusy(true);
+    setExcelImportGateNote("Đang xác nhận cổng import an toàn...");
+    try {
+      const res = await fetch(`/api/excel-import/sessions/${excelImportSession.id}/import`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmImport: true })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Phiên chưa đủ điều kiện import.");
+      applyExcelImportDetail({ ...data, mappings: excelImportMappings, issues: excelImportIssues });
+      setExcelImportGateNote("Cổng duyệt đã xác nhận. Có thể bấm nút đồng bộ để ghi dữ liệu đã xem trước.");
+    } catch (err: any) {
+      setExcelImportGateNote(err.message || "Không xác nhận được cổng import.");
+    } finally {
+      setExcelImportBusy(false);
     }
   };
 
@@ -883,17 +1064,39 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const extension = file.name.split(".").pop()?.toLowerCase() || "";
+    const maxFileBytes = 10 * 1024 * 1024;
+    if (!["csv", "xlsx", "xls"].includes(extension)) {
+      setImportError("Cổng duyệt chỉ nhận .csv, .xlsx hoặc .xls.");
+      return;
+    }
+    if (!file.size || file.size > maxFileBytes) {
+      setImportError("File rỗng hoặc vượt giới hạn 10MB. Không tạo phiên import.");
+      return;
+    }
     setUploadFileName(file.name);
+    setExcelImportSession(null);
+    setExcelImportMappings([]);
+    setExcelImportIssues([]);
     
     const fileReader = new FileReader();
-    fileReader.onload = (event) => {
+    fileReader.onload = async (event) => {
       try {
         const binData = event.target?.result;
-        if (file.name.endsWith(".csv")) {
+        if (file.name.toLowerCase().endsWith(".csv")) {
           const decodedText = new TextDecoder("utf-8").decode(new Uint8Array(binData as ArrayBuffer));
           const csvRows = parseCSVToObjects(decodedText);
           const previewHeaders = csvRows[0]?._headers || Object.keys(csvRows[0] || {});
           const previewValues = csvRows[0]?._rawValues || Object.values(csvRows[0] || {});
+          await createExcelImportGateSession({
+            fileName: file.name,
+            fileSize: file.size,
+            fileType: file.type || "text/csv",
+            headers: previewHeaders.map(String),
+            previewRows: csvRows.slice(0, 30).map((row: any) => row._rawValues || previewHeaders.map((header: string) => row[header] || "")),
+            rowCount: csvRows.length,
+            columnCount: previewHeaders.length
+          });
           runFormatVerification(previewHeaders, previewValues);
           prepareStandardImportRows(csvRows, file.name);
         } else {
@@ -901,6 +1104,15 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
           const firstSheetName = workbook.SheetNames[0];
           const worksheet = workbook.Sheets[firstSheetName];
           const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
+          await createExcelImportGateSession({
+            fileName: file.name,
+            fileSize: file.size,
+            fileType: file.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers: (rawRows[0] || []).map(String),
+            previewRows: rawRows.slice(1, 31),
+            rowCount: Math.max(0, rawRows.length - 1),
+            columnCount: (rawRows[0] || []).length
+          });
           runFormatVerification(rawRows[0] || [], rawRows[1] || []);
           prepareStandardImportRows(parseWorksheetToRows(worksheet), `${file.name} / ${firstSheetName}`);
         }
@@ -912,7 +1124,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   };
 
   // Direct clipboard text blocks parsing
-  const handleParseBulk = () => {
+  const handleParseBulk = async () => {
     if (!bulkText.trim()) return;
     try {
       const lines = bulkText.split("\n");
@@ -925,6 +1137,15 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
       
       setUploadFileName("Vùng văn bản dán Excel (Clipboard Temp)");
       const worksheet = XLSX.utils.aoa_to_sheet(sheetRows);
+      await createExcelImportGateSession({
+        fileName: "clipboard-excel.csv",
+        fileSize: new Blob([bulkText]).size,
+        fileType: "text/csv",
+        headers: (sheetRows[0] || []).map(String),
+        previewRows: sheetRows.slice(1, 31),
+        rowCount: Math.max(0, sheetRows.length - 1),
+        columnCount: (sheetRows[0] || []).length
+      });
       runFormatVerification(sheetRows[0] || [], sheetRows[1] || []);
       prepareStandardImportRows(parseWorksheetToRows(worksheet), "Vùng dán Excel");
     } catch (err: any) {
@@ -935,6 +1156,10 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   // Push results into main state
   const handleCommitBulkImport = () => {
     if (parsedPreview.length === 0) return;
+    if (!excelImportSession || excelImportSession.status !== "imported") {
+      setImportError("Cần đi qua cổng duyệt Excel/CSV: tạo phiên, duyệt mapping, validate và xác nhận import trước khi ghi vào cây phả.");
+      return;
+    }
     if (validatedImportTree) {
       savePersistedTreeData(validatedImportTree);
     }
@@ -977,6 +1202,10 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     setValidationScore(null);
     setColumnMatches([]);
     setValidatedImportTree(null);
+    setExcelImportSession(null);
+    setExcelImportMappings([]);
+    setExcelImportIssues([]);
+    setExcelImportGateNote("");
     setIsExcelOpen(false);
   };
 
@@ -2137,6 +2366,10 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                     setUploadFileName("");
                     setValidationScore(null);
                     setColumnMatches([]);
+                    setExcelImportSession(null);
+                    setExcelImportMappings([]);
+                    setExcelImportIssues([]);
+                    setExcelImportGateNote("");
                   }}
                   className="rounded-full hover:bg-white/10 p-1 text-stone-200 transition-all cursor-pointer"
                 >
@@ -2443,6 +2676,130 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                   </div>
                 )}
 
+                {(excelImportSession || excelImportSessions.length > 0) && (
+                  <div className="space-y-3 border border-sky-200 bg-sky-50/60 rounded-xl p-4 text-left">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-sky-100 pb-2">
+                      <div>
+                        <h4 className="font-black text-sky-950 text-[12px] uppercase">Cổng duyệt Excel/CSV an toàn</h4>
+                        <p className="text-[10px] text-sky-800">
+                          File chỉ được ghi vào cây phả sau khi admin duyệt mapping, validate preview và xác nhận import.
+                        </p>
+                      </div>
+                      {excelImportSession && (
+                        <span className="self-start rounded-full border border-sky-200 bg-white px-2.5 py-1 text-[10px] font-black text-sky-900">
+                          {excelImportSession.status}
+                        </span>
+                      )}
+                    </div>
+
+                    {excelImportSession && (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px]">
+                        <div className="rounded-lg bg-white border border-sky-100 p-2">
+                          <span className="block text-stone-450 font-bold">File</span>
+                          <strong className="text-stone-850 break-words">{excelImportSession.fileName}</strong>
+                        </div>
+                        <div className="rounded-lg bg-white border border-sky-100 p-2">
+                          <span className="block text-stone-450 font-bold">Dòng / cột</span>
+                          <strong className="text-stone-850">{excelImportSession.rowCount} / {excelImportSession.columnCount}</strong>
+                        </div>
+                        <div className="rounded-lg bg-white border border-sky-100 p-2">
+                          <span className="block text-stone-450 font-bold">Mapping</span>
+                          <strong className="text-stone-850">{excelImportMappings.filter((m) => m.approved).length}/{excelImportMappings.length} đã duyệt</strong>
+                        </div>
+                        <div className="rounded-lg bg-white border border-sky-100 p-2">
+                          <span className="block text-stone-450 font-bold">Issue</span>
+                          <strong className="text-stone-850">{excelImportIssues.length} mục</strong>
+                        </div>
+                      </div>
+                    )}
+
+                    {excelImportSession?.warnings?.length ? (
+                      <div className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-[10px] text-amber-900">
+                        {excelImportSession.warnings.slice(0, 3).map((warning, index) => (
+                          <div key={index}>• {warning.message}</div>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    {excelImportMappings.length > 0 && (
+                      <div className="max-h-44 overflow-y-auto rounded-lg border border-sky-100 bg-white">
+                        <table className="w-full text-[9.5px]">
+                          <thead className="bg-sky-50 text-sky-950">
+                            <tr>
+                              <th className="p-1.5 text-left">Cột</th>
+                              <th className="p-1.5 text-left">Header</th>
+                              <th className="p-1.5 text-left">Field</th>
+                              <th className="p-1.5 text-left">Tin cậy</th>
+                              <th className="p-1.5 text-left">Duyệt</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-stone-100">
+                            {excelImportMappings.slice(0, 16).map((mapping) => (
+                              <tr key={mapping.id}>
+                                <td className="p-1.5 font-mono">{mapping.columnLetter}</td>
+                                <td className="p-1.5 font-semibold text-stone-800">{mapping.originalHeader || "Không tiêu đề"}</td>
+                                <td className="p-1.5 text-stone-650">{mapping.mappedField || "Chưa map"}</td>
+                                <td className="p-1.5 font-mono">{Math.round((mapping.confidence || 0) * 100)}%</td>
+                                <td className="p-1.5">{mapping.approved ? "Đã duyệt" : "Chờ duyệt"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    {excelImportIssues.length > 0 && (
+                      <div className="max-h-32 overflow-y-auto rounded-lg border border-red-100 bg-white p-2 text-[10px]">
+                        {excelImportIssues.slice(0, 8).map((issue) => (
+                          <div key={issue.id} className="mb-1 text-stone-750">
+                            <strong className={issue.severity === "error" || issue.severity === "critical" ? "text-red-800" : "text-amber-800"}>
+                              {issue.severity}
+                            </strong>
+                            {" · "}{issue.rowIndex ? `Dòng ${issue.rowIndex}: ` : ""}{issue.message}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {excelImportGateNote && (
+                      <p className="text-[10px] font-semibold text-sky-900">{excelImportGateNote}</p>
+                    )}
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={approveExcelImportMappings}
+                        disabled={!excelImportSession || excelImportBusy || ["imported", "rejected"].includes(excelImportSession.status)}
+                        className="rounded-lg bg-sky-800 px-3 py-1.5 text-[10px] font-black text-white disabled:bg-stone-200 disabled:text-stone-500"
+                      >
+                        Duyệt mapping & validate
+                      </button>
+                      <button
+                        type="button"
+                        onClick={confirmExcelImportGate}
+                        disabled={!excelImportSession || excelImportSession.status !== "ready_to_import" || excelImportBusy}
+                        className="rounded-lg bg-emerald-750 px-3 py-1.5 text-[10px] font-black text-white disabled:bg-stone-200 disabled:text-stone-500"
+                      >
+                        Xác nhận cổng import
+                      </button>
+                      <button
+                        type="button"
+                        onClick={rejectExcelImportSession}
+                        disabled={!excelImportSession || excelImportBusy || excelImportSession.status === "rejected"}
+                        className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-[10px] font-black text-red-800 disabled:text-stone-400"
+                      >
+                        Từ chối phiên
+                      </button>
+                    </div>
+
+                    {excelImportSessions.length > 0 && (
+                      <div className="text-[10px] text-stone-500">
+                        Phiên gần đây: {excelImportSessions.slice(0, 4).map((session) => `${session.fileName} (${session.status})`).join(" · ")}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {importError && (
                   <div className="p-3 bg-red-50 border border-red-250 rounded-lg text-red-800 flex items-start gap-2">
                     <AlertCircle className="h-4 w-4 shrink-0 text-red-700 mt-0.5" />
@@ -2492,8 +2849,11 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                       <button 
                         type="button"
                         onClick={handleCommitBulkImport}
+                        disabled={excelImportSession?.status !== "imported"}
                         className={`font-black px-5 py-2.5 rounded-lg text-xs cursor-pointer shadow-md transition-all text-white ${
-                          importMode === "replace" ? "bg-red-700 hover:bg-red-950" : "bg-emerald-700 hover:bg-emerald-950"
+                          excelImportSession?.status !== "imported"
+                            ? "bg-stone-250 text-stone-500 cursor-not-allowed"
+                            : importMode === "replace" ? "bg-red-700 hover:bg-red-950" : "bg-emerald-700 hover:bg-emerald-950"
                         }`}
                       >
                         {importMode === "replace" ? "⚠️ XOÁ SẠCH PHẢ ĐỒ & GHI MỚI" : "ĐỒNG BỘ BỔ SUNG GIA PHẢ"} ({parsedPreview.length} TỘC NHÂN)
