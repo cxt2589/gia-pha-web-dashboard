@@ -1720,9 +1720,9 @@ export default function AIGovernor({
     logs: "Log",
     audit: "Audit"
   };
-  const graphCanvas = { width: 1500, height: 800, nodeWidth: 172, nodeHeight: 76 };
+  const graphCanvas = { width: 1640, height: 800, nodeWidth: 172, nodeHeight: 76 };
   const getOperationNodePosition = (node: AIOperationGraphNode) => ({
-    x: 44 + (node.column - 1) * 238,
+    x: 44 + (node.column - 1) * 266,
     y: 48 + (node.row - 1) * 110
   });
   const operationEdgeLane = (edge: AIOperationGraphEdge, index: number) => {
