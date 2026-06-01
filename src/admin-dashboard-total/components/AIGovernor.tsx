@@ -1881,9 +1881,19 @@ export default function AIGovernor({
     if (edge.to === "ai_gateway" && fromNode.type === "bot") {
       const preferred = getPreferredOperationSides(edge);
       const start = getOperationAnchor(fromNode, preferred.fromSide, getOperationAnchorSlot(edge, fromNode.id, preferred.fromSide, "from"));
-      const end = getOperationAnchor(toNode, preferred.toSide, getOperationAnchorSlot(edge, toNode.id, preferred.toSide, "to"));
+      const gatewayRect = getOperationNodeRect(toNode);
+      const end = edge.from === "ai_governor"
+        ? { x: gatewayRect.left, y: gatewayRect.top + graphCanvas.nodeHeight * 0.34 }
+        : edge.from === "zalo_bot"
+          ? { x: gatewayRect.left, y: gatewayRect.bottom - 10 }
+          : getOperationAnchor(toNode, preferred.toSide, getOperationAnchorSlot(edge, toNode.id, preferred.toSide, "to"));
       if (preferred.toSide === "top" || preferred.toSide === "bottom") {
         routePoints = [start, { x: end.x, y: start.y }, end];
+      } else if (edge.from === "ai_governor") {
+        routePoints = [start, end];
+      } else if (edge.from === "zalo_bot") {
+        const routeX = end.x - 54;
+        routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: end.y }, end];
       } else {
         const routeX = end.x - 28 - Math.abs(lane);
         routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: end.y }, end];
@@ -1951,7 +1961,7 @@ export default function AIGovernor({
     routePoints = routePoints || bestRoute?.points || [];
     const path = operationPathFromPoints(routePoints);
     const middlePoint = routePoints[Math.max(1, Math.floor(routePoints.length / 2))] || { x: 0, y: 0 };
-    const label = edge.label === "botType" ? "" : edge.label || "";
+    const label = edge.label === "botType" || edge.label === "paused" ? "" : edge.label || "";
     const labelWidth = Math.min(104, Math.max(42, label.length * 6 + 18));
     return {
       ...edge,
