@@ -2134,6 +2134,30 @@ export default function AIGovernor({
         { x: endX, y: routeY },
         { x: endX, y: dataRect.bottom }
       ];
+    } else if (edge.from === "system_audit" && edge.to === "action_drafts") {
+      const auditRect = getOperationNodeRect(fromNode);
+      const actionRect = getOperationNodeRect(toNode);
+      const start = { x: auditRect.right, y: auditRect.top + graphCanvas.nodeHeight * 0.5 };
+      const end = { x: actionRect.right, y: actionRect.top + graphCanvas.nodeHeight * 0.5 };
+      const routeX = Math.max(auditRect.right, actionRect.right) + 54;
+      routePoints = [
+        start,
+        { x: routeX, y: start.y },
+        { x: routeX, y: end.y },
+        end
+      ];
+    } else if (edge.from === "anniversary_calendar" && edge.to === "action_drafts") {
+      const eventRect = getOperationNodeRect(fromNode);
+      const actionRect = getOperationNodeRect(toNode);
+      const start = { x: eventRect.left + graphCanvas.nodeWidth * 0.5, y: eventRect.bottom };
+      const end = { x: actionRect.left, y: actionRect.top + graphCanvas.nodeHeight * 0.55 };
+      const routeY = start.y + Math.max(26, (end.y - start.y) * 0.52);
+      routePoints = [
+        start,
+        { x: start.x, y: routeY },
+        { x: end.x, y: routeY },
+        end
+      ];
     } else if (edge.to === "response_guard") {
       const sourceRectRaw = getOperationNodeRect(fromNode);
       const guardRect = getOperationNodeRect(toNode);
