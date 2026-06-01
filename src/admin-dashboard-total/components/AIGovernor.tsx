@@ -1950,15 +1950,11 @@ export default function AIGovernor({
     } else if (edge.from === "system_audit" && edge.to === "local_db") {
       const auditRect = getOperationNodeRect(fromNode);
       const dataRect = getOperationNodeRect(toNode);
-      const endX = dataRect.left + graphCanvas.nodeWidth * 0.76;
-      const routeX = dataRect.right + 32;
-      const routeY = dataRect.top - 26;
+      const endX = dataRect.left + graphCanvas.nodeWidth * 0.5;
       const startY = auditRect.top + graphCanvas.nodeHeight * getAuditLeftOutputSlot(edge.to);
       routePoints = [
         { x: auditRect.left, y: startY },
-        { x: routeX, y: startY },
-        { x: routeX, y: routeY },
-        { x: endX, y: routeY },
+        { x: endX, y: startY },
         { x: endX, y: dataRect.top }
       ];
     } else if (edge.from === "system_audit" && edge.to === "knowledge_search") {
@@ -1966,7 +1962,7 @@ export default function AIGovernor({
       const dataRect = getOperationNodeRect(toNode);
       const routeX = dataRect.right + 56;
       const routeY = dataRect.bottom + 28;
-      const endX = dataRect.left + graphCanvas.nodeWidth * 0.64;
+      const endX = dataRect.left + graphCanvas.nodeWidth * 0.5;
       const startY = auditRect.top + graphCanvas.nodeHeight * getAuditLeftOutputSlot(edge.to);
       routePoints = [
         { x: auditRect.left, y: startY },
