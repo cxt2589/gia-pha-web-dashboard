@@ -250,9 +250,20 @@ type AIOperationGraphEdge = {
   label?: string;
 };
 
+type AIOperationGraphSide = "left" | "right" | "top" | "bottom";
+
+type AIOperationGraphEdgeLayout = {
+  fromSide?: AIOperationGraphSide;
+  toSide?: AIOperationGraphSide;
+  routeMode?: "auto" | "straight" | "elbow" | "manual";
+  labelHidden?: boolean;
+  waypoints?: Array<{ x: number; y: number }>;
+};
+
 type AIOperationGraphLayout = {
   version: number;
   nodes: Record<string, { x: number; y: number }>;
+  edges?: Record<string, AIOperationGraphEdgeLayout>;
   updatedAt?: string;
 };
 
@@ -587,6 +598,7 @@ export default function AIGovernor({
   const [operationGraphLayout, setOperationGraphLayout] = useState<AIOperationGraphLayout>({ version: 1, nodes: {} });
   const [isOperationGraphEditing, setIsOperationGraphEditing] = useState(false);
   const [operationGraphLayoutNote, setOperationGraphLayoutNote] = useState("");
+  const [selectedOperationEdgeKey, setSelectedOperationEdgeKey] = useState("");
   const [operationGraphNodeDrag, setOperationGraphNodeDrag] = useState<{
     nodeId: string;
     pointerId: number;
@@ -594,6 +606,11 @@ export default function AIGovernor({
     startY: number;
     originX: number;
     originY: number;
+  } | null>(null);
+  const [operationGraphWaypointDrag, setOperationGraphWaypointDrag] = useState<{
+    edgeKey: string;
+    waypointIndex: number;
+    pointerId: number;
   } | null>(null);
   const operationGraphScrollRef = useRef<HTMLDivElement>(null);
   const operationGraphDragRef = useRef({ dragging: false, x: 0, y: 0, left: 0, top: 0 });
@@ -1167,6 +1184,7 @@ export default function AIGovernor({
       setOperationGraphLayout({
         version: Number(value.version) || 1,
         nodes: value.nodes && typeof value.nodes === "object" ? value.nodes : {},
+        edges: value.edges && typeof value.edges === "object" ? value.edges : {},
         updatedAt: value.updatedAt
       });
       setOperationGraphLayoutNote("");
@@ -1179,6 +1197,7 @@ export default function AIGovernor({
     const value: AIOperationGraphLayout = {
       version: 1,
       nodes: operationGraphLayout.nodes,
+      edges: operationGraphLayout.edges || {},
       updatedAt: new Date().toISOString()
     };
     try {
@@ -1197,7 +1216,7 @@ export default function AIGovernor({
   };
 
   const resetOperationGraphLayout = async () => {
-    const value: AIOperationGraphLayout = { version: 1, nodes: {}, updatedAt: new Date().toISOString() };
+    const value: AIOperationGraphLayout = { version: 1, nodes: {}, edges: {}, updatedAt: new Date().toISOString() };
     setOperationGraphLayout(value);
     try {
       const response = await fetch(`/api/state/${AI_OPERATION_GRAPH_LAYOUT_KEY}`, {
@@ -1965,6 +1984,13 @@ export default function AIGovernor({
     action: "Nháp"
   };
   const graphCanvas = { width: 1640, height: 800, nodeWidth: 172, nodeHeight: 76 };
+  const operationSideOptions: AIOperationGraphSide[] = ["left", "right", "top", "bottom"];
+  const getOperationEdgeKey = (edge: AIOperationGraphEdge) => `${edge.from}->${edge.to}:${edge.label || ""}`;
+  const getOperationEdgeTitle = (edge: AIOperationGraphEdge) => {
+    const fromLabel = aiOperationGraph.nodes.find((node) => node.id === edge.from)?.label || edge.from;
+    const toLabel = aiOperationGraph.nodes.find((node) => node.id === edge.to)?.label || edge.to;
+    return `${fromLabel} -> ${toLabel}${edge.label ? ` (${edge.label})` : ""}`;
+  };
   const getDefaultOperationNodePosition = (node: AIOperationGraphNode) => ({
     x: 44 + (node.column - 1) * 266,
     y: 48 + (node.row - 1) * 110
@@ -2138,7 +2164,26 @@ export default function AIGovernor({
     const candidates: Array<{ points: Array<{ x: number; y: number }>; score: number }> = [];
     let routePoints: Array<{ x: number; y: number }> | null = null;
 
-    if (edge.to === "ai_gateway" && fromNode.type === "bot") {
+    const edgeKey = getOperationEdgeKey(edge);
+    const edgeLayout = operationGraphLayout.edges?.[edgeKey] || {};
+    if (edgeLayout.routeMode && edgeLayout.routeMode !== "auto") {
+      const preferred = getPreferredOperationSides(edge);
+      const fromSide = edgeLayout.fromSide || preferred.fromSide;
+      const toSide = edgeLayout.toSide || preferred.toSide;
+      const start = getOperationAnchor(fromNode, fromSide, 0.5);
+      const end = getOperationAnchor(toNode, toSide, 0.5);
+      if (edgeLayout.routeMode === "straight") {
+        routePoints = [start, end];
+      } else if (edgeLayout.routeMode === "manual" && Array.isArray(edgeLayout.waypoints) && edgeLayout.waypoints.length) {
+        routePoints = [start, ...edgeLayout.waypoints.map((point) => ({
+          x: Math.min(graphCanvas.width - 12, Math.max(12, Number(point.x) || 12)),
+          y: Math.min(graphCanvas.height - 12, Math.max(12, Number(point.y) || 12))
+        })), end];
+      } else {
+        const midX = Math.round((start.x + end.x) / 2);
+        routePoints = [start, { x: midX, y: start.y }, { x: midX, y: end.y }, end];
+      }
+    } else if (edge.to === "ai_gateway" && fromNode.type === "bot") {
       const preferred = getPreferredOperationSides(edge);
       const start = getOperationAnchor(fromNode, preferred.fromSide, getOperationAnchorSlot(edge, fromNode.id, preferred.fromSide, "from"));
       const gatewayRect = getOperationNodeRect(toNode);
@@ -2323,7 +2368,7 @@ export default function AIGovernor({
     routePoints = routePoints || bestRoute?.points || [];
     const path = operationPathFromPoints(routePoints);
     const middlePoint = routePoints[Math.max(1, Math.floor(routePoints.length / 2))] || { x: 0, y: 0 };
-    const label = edge.label === "botType" || edge.label === "paused" ? "" : edge.label || "";
+    const label = edgeLayout.labelHidden ? "" : (edge.label === "botType" || edge.label === "paused" ? "" : edge.label || "");
     const labelWidth = Math.min(104, Math.max(42, label.length * 6 + 18));
     return {
       ...edge,
@@ -2333,7 +2378,10 @@ export default function AIGovernor({
       path,
       labelWidth,
       labelX: middlePoint.x,
-      labelY: middlePoint.y - 10
+      labelY: middlePoint.y - 10,
+      edgeKey,
+      edgeLayout,
+      routePoints
     };
   }).filter(Boolean) as Array<AIOperationGraphEdge & {
     fromNode: AIOperationGraphNode;
@@ -2342,10 +2390,53 @@ export default function AIGovernor({
     labelWidth: number;
     labelX: number;
     labelY: number;
+    edgeKey: string;
+    edgeLayout: AIOperationGraphEdgeLayout;
+    routePoints: Array<{ x: number; y: number }>;
   }>;
   const operationShellClass = isOperationGraphExpanded
     ? "fixed inset-4 z-50 overflow-hidden rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl"
     : "rounded-xl border border-stone-200 bg-white p-5 shadow-sm";
+  const selectedOperationEdge =
+    operationGraphEdges.find((edge) => edge.edgeKey === selectedOperationEdgeKey) || operationGraphEdges[0] || null;
+  const updateOperationEdgeLayout = (edgeKey: string, patch: Partial<AIOperationGraphEdgeLayout>) => {
+    setOperationGraphLayout((prev) => {
+      const previousEdge = prev.edges?.[edgeKey] || {};
+      return {
+        ...prev,
+        edges: {
+          ...(prev.edges || {}),
+          [edgeKey]: {
+            ...previousEdge,
+            ...patch
+          }
+        }
+      };
+    });
+    setOperationGraphLayoutNote("Layout has unsaved changes.");
+  };
+  const resetOperationEdgeLayout = (edgeKey: string) => {
+    setOperationGraphLayout((prev) => {
+      const nextEdges = { ...(prev.edges || {}) };
+      delete nextEdges[edgeKey];
+      return { ...prev, edges: nextEdges };
+    });
+    setOperationGraphLayoutNote("Layout has unsaved changes.");
+  };
+  const addOperationEdgeWaypoint = (edge: typeof selectedOperationEdge) => {
+    if (!edge) return;
+    const points = edge.routePoints || [];
+    const first = points[0] || { x: 100, y: 100 };
+    const last = points[points.length - 1] || { x: first.x + 80, y: first.y + 40 };
+    const waypoint = { x: Math.round((first.x + last.x) / 2), y: Math.round((first.y + last.y) / 2) };
+    const waypoints = [...(edge.edgeLayout.waypoints || []), waypoint];
+    updateOperationEdgeLayout(edge.edgeKey, {
+      routeMode: "manual",
+      fromSide: edge.edgeLayout.fromSide || getPreferredOperationSides(edge).fromSide,
+      toSide: edge.edgeLayout.toSide || getPreferredOperationSides(edge).toSide,
+      waypoints
+    });
+  };
   const handleOperationGraphPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) return;
     const container = operationGraphScrollRef.current;
@@ -2410,6 +2501,54 @@ export default function AIGovernor({
     event.preventDefault();
     event.stopPropagation();
     setOperationGraphNodeDrag(null);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+  const handleOperationWaypointPointerDown = (
+    event: React.PointerEvent<SVGCircleElement>,
+    edgeKey: string,
+    waypointIndex: number
+  ) => {
+    if (!isOperationGraphEditing) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedOperationEdgeKey(edgeKey);
+    setOperationGraphWaypointDrag({ edgeKey, waypointIndex, pointerId: event.pointerId });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const handleOperationWaypointPointerMove = (event: React.PointerEvent<SVGCircleElement>) => {
+    if (!operationGraphWaypointDrag || operationGraphWaypointDrag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const svg = event.currentTarget.ownerSVGElement;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const x = Math.min(graphCanvas.width - 12, Math.max(12, event.clientX - rect.left));
+    const y = Math.min(graphCanvas.height - 12, Math.max(12, event.clientY - rect.top));
+    setOperationGraphLayout((prev) => {
+      const edgeLayout = prev.edges?.[operationGraphWaypointDrag.edgeKey] || {};
+      const waypoints = [...(edgeLayout.waypoints || [])];
+      waypoints[operationGraphWaypointDrag.waypointIndex] = { x: Math.round(x), y: Math.round(y) };
+      return {
+        ...prev,
+        edges: {
+          ...(prev.edges || {}),
+          [operationGraphWaypointDrag.edgeKey]: {
+            ...edgeLayout,
+            routeMode: "manual",
+            waypoints
+          }
+        }
+      };
+    });
+    setOperationGraphLayoutNote("Layout has unsaved changes.");
+  };
+  const handleOperationWaypointPointerEnd = (event: React.PointerEvent<SVGCircleElement>) => {
+    if (operationGraphWaypointDrag?.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setOperationGraphWaypointDrag(null);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
@@ -2671,6 +2810,78 @@ export default function AIGovernor({
                   {isOperationGraphEditing && operationGraphLayoutNote ? ` ${operationGraphLayoutNote}` : ""}
                 </p>
               )}
+              {isOperationGraphEditing && (
+                <div className="mb-3 grid gap-2 rounded-xl border border-stone-200 bg-white p-3 text-[11px] shadow-sm lg:grid-cols-6">
+                  <label className="lg:col-span-2">
+                    <span className="mb-1 block font-bold uppercase text-stone-400">Edge</span>
+                    <select
+                      value={selectedOperationEdge?.edgeKey || ""}
+                      onChange={(event) => setSelectedOperationEdgeKey(event.target.value)}
+                      className="w-full rounded border border-stone-200 bg-white px-2 py-1.5 font-semibold text-stone-700"
+                    >
+                      {operationGraphEdges.map((edge) => (
+                        <option key={edge.edgeKey} value={edge.edgeKey}>{getOperationEdgeTitle(edge)}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span className="mb-1 block font-bold uppercase text-stone-400">From</span>
+                    <select
+                      value={selectedOperationEdge?.edgeLayout.fromSide || (selectedOperationEdge ? getPreferredOperationSides(selectedOperationEdge).fromSide : "right")}
+                      onChange={(event) => selectedOperationEdge && updateOperationEdgeLayout(selectedOperationEdge.edgeKey, { fromSide: event.target.value as AIOperationGraphSide })}
+                      className="w-full rounded border border-stone-200 bg-white px-2 py-1.5 font-semibold text-stone-700"
+                    >
+                      {operationSideOptions.map((side) => <option key={side} value={side}>{side}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    <span className="mb-1 block font-bold uppercase text-stone-400">To</span>
+                    <select
+                      value={selectedOperationEdge?.edgeLayout.toSide || (selectedOperationEdge ? getPreferredOperationSides(selectedOperationEdge).toSide : "left")}
+                      onChange={(event) => selectedOperationEdge && updateOperationEdgeLayout(selectedOperationEdge.edgeKey, { toSide: event.target.value as AIOperationGraphSide })}
+                      className="w-full rounded border border-stone-200 bg-white px-2 py-1.5 font-semibold text-stone-700"
+                    >
+                      {operationSideOptions.map((side) => <option key={side} value={side}>{side}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    <span className="mb-1 block font-bold uppercase text-stone-400">Route</span>
+                    <select
+                      value={selectedOperationEdge?.edgeLayout.routeMode || "auto"}
+                      onChange={(event) => selectedOperationEdge && updateOperationEdgeLayout(selectedOperationEdge.edgeKey, { routeMode: event.target.value as AIOperationGraphEdgeLayout["routeMode"] })}
+                      className="w-full rounded border border-stone-200 bg-white px-2 py-1.5 font-semibold text-stone-700"
+                    >
+                      {["auto", "straight", "elbow", "manual"].map((mode) => <option key={mode} value={mode}>{mode}</option>)}
+                    </select>
+                  </label>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => addOperationEdgeWaypoint(selectedOperationEdge)}
+                      disabled={!selectedOperationEdge}
+                      className="rounded border border-blue-200 bg-blue-50 px-2.5 py-1.5 font-bold text-blue-800 disabled:opacity-50"
+                    >
+                      Add point
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => selectedOperationEdge && updateOperationEdgeLayout(selectedOperationEdge.edgeKey, { labelHidden: !selectedOperationEdge.edgeLayout.labelHidden })}
+                      disabled={!selectedOperationEdge}
+                      className="rounded border border-stone-200 bg-stone-50 px-2.5 py-1.5 font-bold text-stone-700 disabled:opacity-50"
+                    >
+                      {selectedOperationEdge?.edgeLayout.labelHidden ? "Show label" : "Hide label"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => selectedOperationEdge && resetOperationEdgeLayout(selectedOperationEdge.edgeKey)}
+                      disabled={!selectedOperationEdge}
+                      className="rounded border border-red-200 bg-red-50 px-2.5 py-1.5 font-bold text-red-800 disabled:opacity-50"
+                    >
+                      Reset edge
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="mb-2 flex flex-wrap gap-3 text-[11px] font-semibold text-stone-500">
                 <span className="inline-flex items-center gap-1"><span className="h-0.5 w-5 rounded bg-slate-500" />Luồng thường</span>
                 <span className="inline-flex items-center gap-1"><span className="h-0.5 w-5 rounded bg-blue-600" />Liên quan kiểm tra</span>
@@ -2690,7 +2901,7 @@ export default function AIGovernor({
                   onPointerCancel={handleOperationGraphPointerEnd}
                 >
                   <svg
-                    className="pointer-events-none absolute inset-0 z-0"
+                    className={`absolute inset-0 z-0 ${isOperationGraphEditing ? "pointer-events-auto" : "pointer-events-none"}`}
                     width={graphCanvas.width}
                     height={graphCanvas.height}
                     viewBox={`0 0 ${graphCanvas.width} ${graphCanvas.height}`}
@@ -2713,19 +2924,47 @@ export default function AIGovernor({
                           : edge.from === "zalo_bot"
                             ? "#9ca3af"
                             : "#64748b";
+                      const isSelectedEdge = edge.edgeKey === selectedOperationEdge?.edgeKey;
                       return (
                         <g key={`${edge.from}-${edge.to}-${edge.label || ""}`}>
+                          {isOperationGraphEditing && (
+                            <path
+                              d={edge.path}
+                              fill="none"
+                              stroke="transparent"
+                              strokeWidth={12}
+                              className="cursor-pointer"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setSelectedOperationEdgeKey(edge.edgeKey);
+                              }}
+                            />
+                          )}
                           <path
                             d={edge.path}
                             fill="none"
                             stroke={edgeStroke}
-                            strokeWidth={isRelated ? 1.45 : 0.85}
+                            strokeWidth={isSelectedEdge ? 2.1 : (isRelated ? 1.45 : 0.85)}
                             strokeDasharray={edge.from === "zalo_bot" ? "5 5" : undefined}
                             strokeLinecap="round"
                             strokeLinejoin="round"
-                            opacity={isRelated ? 0.95 : 0.58}
+                            opacity={isSelectedEdge ? 1 : (isRelated ? 0.95 : 0.58)}
                             markerEnd={isRelated ? "url(#ai-flow-arrow-active)" : "url(#ai-flow-arrow)"}
                           />
+                          {isOperationGraphEditing && edge.edgeLayout.routeMode === "manual" && (edge.edgeLayout.waypoints || []).map((point, waypointIndex) => (
+                            <circle
+                              key={`${edge.edgeKey}-wp-${waypointIndex}`}
+                              cx={point.x}
+                              cy={point.y}
+                              r={6}
+                              className="cursor-move fill-white stroke-blue-600"
+                              strokeWidth={2}
+                              onPointerDown={(event) => handleOperationWaypointPointerDown(event, edge.edgeKey, waypointIndex)}
+                              onPointerMove={handleOperationWaypointPointerMove}
+                              onPointerUp={handleOperationWaypointPointerEnd}
+                              onPointerCancel={handleOperationWaypointPointerEnd}
+                            />
+                          ))}
                           {edge.label && isRelated && (
                             <g className="hidden md:block">
                               <rect
