@@ -1890,7 +1890,8 @@ export default function AIGovernor({
       if (preferred.toSide === "top" || preferred.toSide === "bottom") {
         routePoints = [start, { x: end.x, y: start.y }, end];
       } else if (edge.from === "ai_governor") {
-        routePoints = [start, end];
+        const routeX = end.x - 34;
+        routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: end.y }, end];
       } else if (edge.from === "zalo_bot") {
         const routeX = end.x - 54;
         routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: end.y }, end];
@@ -2272,11 +2273,11 @@ export default function AIGovernor({
                     aria-hidden="true"
                   >
                     <defs>
-                      <marker id="ai-flow-arrow" markerWidth="5.5" markerHeight="5.5" refX="5.1" refY="2.75" orient="auto" markerUnits="strokeWidth">
-                        <path d="M 0 0 L 5.5 2.75 L 0 5.5 z" fill="context-stroke" />
+                      <marker id="ai-flow-arrow" markerWidth="4.5" markerHeight="4.5" refX="3.9" refY="2.25" orient="auto" markerUnits="strokeWidth">
+                        <path d="M 0 0 L 4.5 2.25 L 0 4.5 z" fill="context-stroke" />
                       </marker>
-                      <marker id="ai-flow-arrow-active" markerWidth="6.5" markerHeight="6.5" refX="6" refY="3.25" orient="auto" markerUnits="strokeWidth">
-                        <path d="M 0 0 L 6.5 3.25 L 0 6.5 z" fill="context-stroke" />
+                      <marker id="ai-flow-arrow-active" markerWidth="5.5" markerHeight="5.5" refX="4.8" refY="2.75" orient="auto" markerUnits="strokeWidth">
+                        <path d="M 0 0 L 5.5 2.75 L 0 5.5 z" fill="context-stroke" />
                       </marker>
                     </defs>
                     {operationGraphEdges.map((edge) => {
