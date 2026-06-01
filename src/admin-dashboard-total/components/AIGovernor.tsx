@@ -1578,7 +1578,7 @@ export default function AIGovernor({
           type: "data",
           status: "active",
           column: 4,
-          row: 3,
+          row: 2.75,
           description: "Nguồn local-first cho nhân vật, đời, chi/ngành, dữ liệu đã applied và hồ sơ.",
           metrics: { members: formatNumber(members.length) }
         },
@@ -1598,7 +1598,7 @@ export default function AIGovernor({
           type: "data",
           status: knowledgeStatus ? "active" : "error",
           column: 4,
-          row: 5,
+          row: 5.25,
           description: "Tìm top chunks từ tài liệu Cao Tộc, alias/danh xưng và dữ liệu đã import.",
           metrics: {
             sources: knowledgeStatus?.sources || 0,
@@ -1975,15 +1975,21 @@ export default function AIGovernor({
       const sourceRectRaw = getOperationNodeRect(fromNode);
       const guardRect = getOperationNodeRect(toNode);
       const guardSlots: Record<string, { source: number; target: number; lane: number }> = {
-        local_db: { source: 0.38, target: 0.28, lane: 0.18 },
+        local_db: { source: 0.5, target: 0.14, lane: 0.18 },
         anniversary_calendar: { source: 0.5, target: 0.5, lane: 0.5 },
         gemini: { source: 0.6, target: 0.72, lane: 0.82 }
       };
       const slots = guardSlots[edge.from] || { source: 0.5, target: 0.5, lane: 0.5 };
       const start = { x: sourceRectRaw.right, y: sourceRectRaw.top + graphCanvas.nodeHeight * slots.source };
-      const end = { x: guardRect.left, y: guardRect.top + graphCanvas.nodeHeight * slots.target };
-      const routeX = sourceRectRaw.right + 34 + slots.lane * Math.max(32, guardRect.left - sourceRectRaw.right - 68);
-      routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: end.y }, end];
+      const end = edge.from === "local_db"
+        ? { x: guardRect.left, y: start.y }
+        : { x: guardRect.left, y: guardRect.top + graphCanvas.nodeHeight * slots.target };
+      if (edge.from === "local_db") {
+        routePoints = [start, end];
+      } else {
+        const routeX = sourceRectRaw.right + 34 + slots.lane * Math.max(32, guardRect.left - sourceRectRaw.right - 68);
+        routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: end.y }, end];
+      }
     } else if (edge.from === "response_guard" && edge.to === "ai_logs") {
       const guardRect = getOperationNodeRect(fromNode);
       const logsRect = getOperationNodeRect(toNode);
@@ -1993,7 +1999,7 @@ export default function AIGovernor({
     } else if (edge.from === "knowledge_search" && edge.to === "gemini") {
       const sourceRectRaw = getOperationNodeRect(fromNode);
       const modelRect = getOperationNodeRect(toNode);
-      const x = sourceRectRaw.left + graphCanvas.nodeWidth * 0.36;
+      const x = sourceRectRaw.left + graphCanvas.nodeWidth * 0.5;
       routePoints = [
         { x, y: sourceRectRaw.top },
         { x, y: modelRect.bottom }
