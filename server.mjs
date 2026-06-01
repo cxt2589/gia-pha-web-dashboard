@@ -2254,6 +2254,7 @@ function publicLineageMemberSearchResult(member, score = 0, confidence = 'none',
     score,
     reason,
     currentValues: {
+      name: member.name || '',
       birth: member.solarBirthDate || member.birthYear || '',
       death: member.solarDeathDate || member.deathYear || '',
       lunar_anniversary: member.deathAnniversaryLunar || member.lunarAnniversary || '',
@@ -2276,16 +2277,17 @@ function scoreMemberForQuery(query, member) {
   const rawNameNorm = normalizePersonLookupText(member.name);
   const queryTerms = queryNorm.split(' ').filter((term) => term.length >= 2);
   const nameTerms = fullNorm.split(' ').filter(Boolean);
+  const hasFullNameShape = nameTerms.length >= 2;
   const shortName = nameTerms.at(-1) || '';
   let score = 0;
   const reasons = [];
   if (fullNorm && queryNorm === fullNorm) {
     score += 120;
     reasons.push('exact full name');
-  } else if (fullNorm && queryNorm.includes(fullNorm)) {
+  } else if (fullNorm && hasFullNameShape && queryNorm.includes(fullNorm)) {
     score += 100;
     reasons.push('contains full name');
-  } else if (fullNorm && fullNorm.includes(queryNorm) && queryNorm.length >= 5) {
+  } else if (fullNorm && hasFullNameShape && fullNorm.includes(queryNorm) && queryNorm.length >= 5) {
     score += 70;
     reasons.push('partial full name');
   }
@@ -2878,12 +2880,12 @@ function normalizeProfileCandidateStatus(status) {
 
 function normalizeProfileTargetField(value) {
   const field = String(value || '').trim();
-  return ['description', 'bio', 'achievements'].includes(field) ? field : 'description';
+  return ['name', 'description', 'bio', 'achievements'].includes(field) ? field : 'description';
 }
 
 function normalizeProfileCandidateType(value) {
   const type = String(value || '').trim();
-  return ['biography', 'legacy_note', 'achievement', 'career', 'spouse_note', 'parent_note'].includes(type)
+  return ['name_alias', 'biography', 'legacy_note', 'achievement', 'career', 'spouse_note', 'parent_note'].includes(type)
     ? type
     : 'biography';
 }
@@ -2902,6 +2904,7 @@ function classifyProfileCandidateType(text) {
 }
 
 function defaultProfileTargetField(candidateType) {
+  if (candidateType === 'name_alias') return 'name';
   if (candidateType === 'achievement') return 'achievements';
   if (candidateType === 'career' || candidateType === 'legacy_note') return 'bio';
   return 'description';
@@ -2928,6 +2931,37 @@ function buildProfileCandidateHash({ sourceId, chunkId, personName, candidateTyp
     candidateType,
     normalizeKnowledgeText(extractedText).slice(0, 500)
   ].join('|')).slice(0, 24);
+}
+
+function compactExtractedNameCandidate(value) {
+  const text = stripHanCharacters(value)
+    .replace(/[.,;:()[\]{}"']/g, ' ')
+    .replace(/\b(?:la|là|tuc|tức|hieu|hiệu|ten|tên|huy|huý|thuy|thuỷ|to|tổ|cao|cu|cụ)\b$/giu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text;
+}
+
+function extractNameAliasCandidatesFromText(text) {
+  const source = String(text || '').replace(/\s+/g, ' ');
+  const names = new Set();
+  for (const name of extractCaoNamesFromText(source)) {
+    names.add(compactExtractedNameCandidate(name));
+  }
+  const patterns = [
+    /(?:Cao\s*Tổ|Cao\s*To)\s*(?:là|la|tức|tuc|tên\s+húy|ten\s+huy|húy|huý|huy)?\s*(Cao\s+[\p{L}]{2,}(?:\s+[\p{L}]{2,}){1,4})/giu,
+    /(?:Th[ủu]y\s*Tổ|Thuy\s*To|cụ\s*Lạng|cu\s*Lang)\s*(?:là|la|tức|tuc|tên\s+húy|ten\s+huy|húy|huý|huy)?\s*(Cao\s+[\p{L}]{2,}(?:\s+[\p{L}]{2,}){1,4})/giu,
+    /(?:tên\s+đầy\s+đủ|ten\s+day\s+du|họ\s+tên|ho\s+ten|tên\s+húy|ten\s+huy|húy|huý|huy)\s*(?:là|la|:)?\s*(Cao\s+[\p{L}]{2,}(?:\s+[\p{L}]{2,}){1,4})/giu
+  ];
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      const candidate = compactExtractedNameCandidate(match[1] || '');
+      if (candidate.split(/\s+/).length >= 3 && candidate.length <= 80) {
+        names.add(candidate);
+      }
+    }
+  }
+  return [...names].filter(Boolean).slice(0, 12);
 }
 
 function publicExtractedProfileCandidate(row) {
@@ -3128,6 +3162,94 @@ async function scanExtractedProfileCandidates({ sourceId = '', limit = 250 } = {
         targetField,
         rawText,
         '',
+        compactText(row.content || row.summary || '', 420),
+        row.source_id,
+        row.id,
+        row.source_title || row.title || '',
+        row.visibility || row.source_visibility || 'public',
+        JSON.stringify(metadata)
+      );
+      created += 1;
+      candidates.push(await hydrateProfileCandidateReviewData(publicExtractedProfileCandidate(database.prepare('SELECT * FROM extracted_profile_candidates WHERE id = ?').get(id))));
+    }
+  }
+  return { ok: true, scanned, created, skipped, candidates };
+}
+
+async function scanExtractedNameAliasCandidates({ sourceId = '', limit = 250 } = {}) {
+  const database = await getDatabase();
+  const where = sourceId ? 'WHERE c.source_id = ?' : '';
+  const params = sourceId ? [sourceId] : [];
+  const rows = database.prepare(`
+    SELECT c.*, s.title AS source_title, s.visibility AS source_visibility
+    FROM knowledge_chunks c
+    LEFT JOIN knowledge_sources s ON s.id = c.source_id
+    ${where}
+    ORDER BY c.updated_at DESC
+    LIMIT ?
+  `).all(...params, Math.max(1, Math.min(2000, Number(limit) || 250)));
+  let scanned = 0;
+  let created = 0;
+  let skipped = 0;
+  const candidates = [];
+  for (const row of rows) {
+    scanned += 1;
+    const rawText = compactText(row.content || row.summary || row.title || '', 1200);
+    const haystack = normalizeKnowledgeText([row.title, row.heading_path, row.summary, rawText].join(' '));
+    const hasNameSignal = /(cao |cao dinh|cao van|cao duy|cao xuan|cao to|thuy to|thuy to|danh xung|ten huy|ten day du|ho ten|alias)/.test(haystack);
+    if (!hasNameSignal) {
+      skipped += 1;
+      continue;
+    }
+    const names = extractNameAliasCandidatesFromText([row.title, row.heading_path, rawText].join(' '));
+    if (!names.length) {
+      skipped += 1;
+      continue;
+    }
+    for (const personName of names) {
+      const personNameNorm = normalizeKnowledgeText(personName);
+      const matches = await searchLineageMembers(personName, { limit: 6 });
+      const topMatch = matches[0] || null;
+      const currentName = topMatch?.currentValues?.name || '';
+      if (currentName && normalizeKnowledgeText(currentName) === personNameNorm) {
+        skipped += 1;
+        continue;
+      }
+      const id = `profile_${buildProfileCandidateHash({
+        sourceId: row.source_id,
+        chunkId: row.id,
+        personName,
+        candidateType: 'name_alias',
+        extractedText: personName
+      })}`;
+      const exists = database.prepare('SELECT id FROM extracted_profile_candidates WHERE id = ?').get(id);
+      if (exists) {
+        skipped += 1;
+        continue;
+      }
+      const metadata = {
+        headingPath: row.heading_path || '',
+        summary: row.summary || '',
+        tags: safeJsonParse(row.tags_json, []),
+        entityRefs: safeJsonParse(row.entity_refs_json, []),
+        candidateMatches: matches,
+        suggestedField: 'name',
+        currentName
+      };
+      database.prepare(`
+        INSERT INTO extracted_profile_candidates
+          (id, candidate_type, person_name, person_name_norm, matched_member_id, matched_member_name,
+           match_confidence, target_field, extracted_text, reviewed_text, source_quote, source_id,
+           chunk_id, knowledge_title, visibility, status, metadata_json, created_at, updated_at)
+        VALUES (?, 'name_alias', ?, ?, ?, ?, ?, 'name', ?, '', ?, ?, ?, ?, ?, 'pending', ?, datetime('now'), datetime('now'))
+      `).run(
+        id,
+        personName,
+        personNameNorm,
+        topMatch?.confidence && ['exact', 'strong', 'medium'].includes(topMatch.confidence) ? topMatch.memberId : '',
+        topMatch?.confidence && ['exact', 'strong', 'medium'].includes(topMatch.confidence) ? topMatch.fullName : '',
+        topMatch?.confidence || 'none',
+        personName,
         compactText(row.content || row.summary || '', 420),
         row.source_id,
         row.id,
@@ -4453,6 +4575,19 @@ app.post('/api/knowledge/profile-candidates/scan', async (req, res) => {
   } catch (err) {
     console.error('Failed to scan profile candidates:', err);
     res.status(err.status || 500).json({ error: err.message || 'Failed to scan profile candidates.' });
+  }
+});
+
+app.post('/api/knowledge/profile-candidates/scan-names', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const sourceId = String(req.body?.sourceId || '').trim();
+    const limit = Math.max(1, Math.min(2000, Number(req.body?.limit || 500) || 500));
+    res.json(await scanExtractedNameAliasCandidates({ sourceId, limit }));
+  } catch (err) {
+    console.error('Failed to scan name alias candidates:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to scan name alias candidates.' });
   }
 });
 
