@@ -1783,10 +1783,9 @@ export default function AIGovernor({
     edge: AIOperationGraphEdge,
     nodeId: string,
     side: "left" | "right" | "top" | "bottom",
-    endpoint: "from" | "to"
+    _endpoint: "from" | "to"
   ) => {
     const sortAxis = side === "top" || side === "bottom" ? "x" : "y";
-    const otherEndpoint = endpoint === "from" ? "to" : "from";
     const getNodeCenter = (id: string) => {
       const node = aiOperationGraph.nodes.find((item) => item.id === id);
       if (!node) return { x: 0, y: 0 };
@@ -1796,10 +1795,20 @@ export default function AIGovernor({
         y: pos.y + graphCanvas.nodeHeight / 2
       };
     };
+    const getOtherNodeId = (item: AIOperationGraphEdge) => item.from === nodeId ? item.to : item.from;
     const peers = aiOperationGraph.edges.filter((item) => {
       const preferred = getPreferredOperationSides(item);
-      return item[endpoint] === nodeId && preferred[endpoint === "from" ? "fromSide" : "toSide"] === side;
-    }).sort((a, b) => getNodeCenter(a[otherEndpoint])[sortAxis] - getNodeCenter(b[otherEndpoint])[sortAxis]);
+      return (
+        (item.from === nodeId && preferred.fromSide === side) ||
+        (item.to === nodeId && preferred.toSide === side)
+      );
+    }).sort((a, b) => {
+      const centerA = getNodeCenter(getOtherNodeId(a));
+      const centerB = getNodeCenter(getOtherNodeId(b));
+      const primary = centerA[sortAxis] - centerB[sortAxis];
+      if (primary !== 0) return primary;
+      return sortAxis === "x" ? centerA.y - centerB.y : centerA.x - centerB.x;
+    });
     const index = peers.findIndex((item) => item === edge);
     if (peers.length <= 1 || index < 0) return 0.5;
     return (index * 2 + 1) / (peers.length * 2);
@@ -1873,16 +1882,8 @@ export default function AIGovernor({
       const preferred = getPreferredOperationSides(edge);
       const start = getOperationAnchor(fromNode, preferred.fromSide, getOperationAnchorSlot(edge, fromNode.id, preferred.fromSide, "from"));
       const end = getOperationAnchor(toNode, preferred.toSide, getOperationAnchorSlot(edge, toNode.id, preferred.toSide, "to"));
-      const fromSlot = getOperationAnchorSlot(edge, fromNode.id, preferred.fromSide, "from");
-      const toSlot = getOperationAnchorSlot(edge, toNode.id, preferred.toSide, "to");
-      if (preferred.toSide === "top") {
-        const routeX = Math.min(start.x + 20 + fromSlot * 84, end.x - 22 - toSlot * 16);
-        const routeY = end.y - 26 - toSlot * 34;
-        routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: routeY }, { x: end.x, y: routeY }, end];
-      } else if (preferred.toSide === "bottom") {
-        const routeX = Math.min(start.x + 20 + fromSlot * 84, end.x - 22 - toSlot * 16);
-        const routeY = end.y + 26 + (1 - toSlot) * 34;
-        routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: routeY }, { x: end.x, y: routeY }, end];
+      if (preferred.toSide === "top" || preferred.toSide === "bottom") {
+        routePoints = [start, { x: end.x, y: start.y }, end];
       } else {
         const routeX = end.x - 28 - Math.abs(lane);
         routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: end.y }, end];
@@ -1895,10 +1896,7 @@ export default function AIGovernor({
     } else if (edge.from === "system_audit" && edge.to === "bot_config") {
       const auditRect = getOperationNodeRect(fromNode);
       const configRect = getOperationNodeRect(toNode);
-      const straightY = Math.max(
-        Math.max(auditRect.top, configRect.top) + graphCanvas.nodeHeight / 2,
-        Math.min(auditRect.bottom, configRect.bottom) - graphCanvas.nodeHeight / 2
-      );
+      const straightY = (Math.max(auditRect.top, configRect.top) + Math.min(auditRect.bottom, configRect.bottom)) / 2;
       const start = { x: auditRect.left, y: straightY };
       const end = { x: configRect.right, y: straightY };
       routePoints = [start, end];
@@ -1906,7 +1904,10 @@ export default function AIGovernor({
       const start = getOperationAnchor(fromNode, "right", getOperationAnchorSlot(edge, fromNode.id, "right", "from"));
       const end = getOperationAnchor(toNode, "left", getOperationAnchorSlot(edge, toNode.id, "left", "to"));
       const fromSlot = getOperationAnchorSlot(edge, fromNode.id, "right", "from");
-      const routeX = Math.max(start.x + 34 + fromSlot * 28, Math.min(start.x + 124, end.x - 34));
+      const gap = end.x - start.x;
+      const routeX = gap > 52
+        ? start.x + 16 + fromSlot * Math.max(20, gap - 32)
+        : start.x + gap / 2;
       routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: end.y }, end];
     } else if (edge.from === "ai_governor" && edge.to === "system_audit") {
       const start = getOperationAnchor(fromNode, "right", getOperationAnchorSlot(edge, fromNode.id, "right", "from"));
