@@ -1904,6 +1904,13 @@ export default function AIGovernor({
       const end = getOperationAnchor(toNode, "top", getOperationAnchorSlot(edge, toNode.id, "top", "to"));
       const routeY = Math.min(end.y - 28, start.y + 28);
       routePoints = [start, { x: start.x, y: routeY }, { x: end.x, y: routeY }, end];
+    } else if (edge.from === "ai_gateway" && edge.to === "bot_config") {
+      const gatewayRect = getOperationNodeRect(fromNode);
+      const configRect = getOperationNodeRect(toNode);
+      const start = { x: gatewayRect.right, y: gatewayRect.top + graphCanvas.nodeHeight * 0.32 };
+      const end = { x: configRect.left, y: configRect.top + graphCanvas.nodeHeight * 0.5 };
+      const routeX = gatewayRect.right + 38;
+      routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: end.y }, end];
     } else if (edge.from === "system_audit" && edge.to === "bot_config") {
       const auditRect = getOperationNodeRect(fromNode);
       const configRect = getOperationNodeRect(toNode);
@@ -1934,6 +1941,45 @@ export default function AIGovernor({
       const routeX = sourceRect.right + 22;
       const routeY = 24;
       routePoints = [start, { x: routeX, y: start.y }, { x: routeX, y: routeY }, { x: end.x, y: routeY }, end];
+    } else if (edge.to === "response_guard") {
+      const sourceRectRaw = getOperationNodeRect(fromNode);
+      const guardRect = getOperationNodeRect(toNode);
+      const guardSlots: Record<string, number> = {
+        local_db: 0.28,
+        anniversary_calendar: 0.5,
+        gemini: 0.72
+      };
+      const slot = guardSlots[edge.from] || 0.5;
+      const start = { x: sourceRectRaw.right, y: sourceRectRaw.top + graphCanvas.nodeHeight * slot };
+      const end = { x: guardRect.left, y: guardRect.top + graphCanvas.nodeHeight * slot };
+      routePoints = [start, end];
+    } else if (edge.from === "response_guard" && edge.to === "ai_logs") {
+      const guardRect = getOperationNodeRect(fromNode);
+      const logsRect = getOperationNodeRect(toNode);
+      const start = { x: guardRect.left + graphCanvas.nodeWidth * 0.5, y: guardRect.bottom };
+      const end = { x: logsRect.left + graphCanvas.nodeWidth * 0.5, y: logsRect.top };
+      routePoints = [start, end];
+    } else if (edge.from === "knowledge_search" && edge.to === "gemini") {
+      const sourceRectRaw = getOperationNodeRect(fromNode);
+      const modelRect = getOperationNodeRect(toNode);
+      const x = sourceRectRaw.left + graphCanvas.nodeWidth * 0.36;
+      routePoints = [
+        { x, y: sourceRectRaw.top },
+        { x, y: modelRect.bottom }
+      ];
+    } else if (edge.from === "system_audit" && edge.to === "ai_logs") {
+      const auditRect = getOperationNodeRect(fromNode);
+      const logsRect = getOperationNodeRect(toNode);
+      const routeX = logsRect.left - 42;
+      const routeY = logsRect.top - 28;
+      const endX = logsRect.left + graphCanvas.nodeWidth * 0.38;
+      routePoints = [
+        { x: auditRect.right, y: auditRect.top + graphCanvas.nodeHeight * 0.52 },
+        { x: routeX, y: auditRect.top + graphCanvas.nodeHeight * 0.52 },
+        { x: routeX, y: routeY },
+        { x: endX, y: routeY },
+        { x: endX, y: logsRect.top }
+      ];
     }
 
     if (!routePoints) sidePairs.forEach(([fromSide, toSide]) => {
@@ -2273,10 +2319,10 @@ export default function AIGovernor({
                     aria-hidden="true"
                   >
                     <defs>
-                      <marker id="ai-flow-arrow" markerWidth="4.5" markerHeight="4.5" refX="3.9" refY="2.25" orient="auto" markerUnits="strokeWidth">
-                        <path d="M 0 0 L 4.5 2.25 L 0 4.5 z" fill="context-stroke" />
+                      <marker id="ai-flow-arrow" markerWidth="5.5" markerHeight="5.5" refX="4.8" refY="2.75" orient="auto" markerUnits="userSpaceOnUse">
+                        <path d="M 0 0 L 5.5 2.75 L 0 5.5 z" fill="context-stroke" />
                       </marker>
-                      <marker id="ai-flow-arrow-active" markerWidth="5.5" markerHeight="5.5" refX="4.8" refY="2.75" orient="auto" markerUnits="strokeWidth">
+                      <marker id="ai-flow-arrow-active" markerWidth="5.5" markerHeight="5.5" refX="4.8" refY="2.75" orient="auto" markerUnits="userSpaceOnUse">
                         <path d="M 0 0 L 5.5 2.75 L 0 5.5 z" fill="context-stroke" />
                       </marker>
                     </defs>
