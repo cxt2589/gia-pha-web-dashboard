@@ -1718,16 +1718,16 @@ export default function AIGovernor({
     logs: "Log",
     audit: "Audit"
   };
-  const graphCanvas = { width: 1240, height: 660, nodeWidth: 164, nodeHeight: 76 };
+  const graphCanvas = { width: 1680, height: 880, nodeWidth: 172, nodeHeight: 76 };
   const getOperationNodePosition = (node: AIOperationGraphNode) => ({
-    x: 32 + (node.column - 1) * 190,
-    y: 36 + (node.row - 1) * 92
+    x: 44 + (node.column - 1) * 270,
+    y: 52 + (node.row - 1) * 122
   });
   const operationEdgeLane = (edge: AIOperationGraphEdge, index: number) => {
     const siblingEdges = aiOperationGraph.edges.filter((item) => item.to === edge.to || item.from === edge.from);
     const siblingIndex = siblingEdges.findIndex((item) => item === edge);
-    if (siblingIndex < 0) return ((index % 3) - 1) * 10;
-    return (siblingIndex - (siblingEdges.length - 1) / 2) * 12;
+    if (siblingIndex < 0) return ((index % 3) - 1) * 8;
+    return (siblingIndex - (siblingEdges.length - 1) / 2) * 10;
   };
   const getOperationAnchor = (
     node: AIOperationGraphNode,
@@ -1737,10 +1737,10 @@ export default function AIGovernor({
     const pos = getOperationNodePosition(node);
     const halfWidth = graphCanvas.nodeWidth / 2;
     const halfHeight = graphCanvas.nodeHeight / 2;
-    if (side === "left") return { x: pos.x - 8, y: pos.y + halfHeight + lane };
-    if (side === "right") return { x: pos.x + graphCanvas.nodeWidth + 8, y: pos.y + halfHeight + lane };
-    if (side === "top") return { x: pos.x + halfWidth + lane, y: pos.y - 8 };
-    return { x: pos.x + halfWidth + lane, y: pos.y + graphCanvas.nodeHeight + 8 };
+    if (side === "left") return { x: pos.x - 12, y: pos.y + halfHeight + lane };
+    if (side === "right") return { x: pos.x + graphCanvas.nodeWidth + 12, y: pos.y + halfHeight + lane };
+    if (side === "top") return { x: pos.x + halfWidth + lane, y: pos.y - 12 };
+    return { x: pos.x + halfWidth + lane, y: pos.y + graphCanvas.nodeHeight + 12 };
   };
   const operationGraphEdges = aiOperationGraph.edges.map((edge, index) => {
     const fromNode = aiOperationGraph.nodes.find((node) => node.id === edge.from);
@@ -2045,11 +2045,11 @@ export default function AIGovernor({
                     aria-hidden="true"
                   >
                     <defs>
-                      <marker id="ai-flow-arrow" markerWidth="10" markerHeight="10" refX="8.5" refY="5" orient="auto" markerUnits="strokeWidth">
-                        <path d="M 0 0 L 10 5 L 0 10 z" fill="#b45309" />
+                      <marker id="ai-flow-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="strokeWidth">
+                        <path d="M 0 0 L 7 3.5 L 0 7 z" fill="#b45309" />
                       </marker>
-                      <marker id="ai-flow-arrow-active" markerWidth="10" markerHeight="10" refX="8.5" refY="5" orient="auto" markerUnits="strokeWidth">
-                        <path d="M 0 0 L 10 5 L 0 10 z" fill="#991b1b" />
+                      <marker id="ai-flow-arrow-active" markerWidth="8" markerHeight="8" refX="6.8" refY="4" orient="auto" markerUnits="strokeWidth">
+                        <path d="M 0 0 L 8 4 L 0 8 z" fill="#991b1b" />
                       </marker>
                     </defs>
                     {operationGraphEdges.map((edge) => {
@@ -2060,13 +2060,14 @@ export default function AIGovernor({
                             d={edge.path}
                             fill="none"
                             stroke={isRelated ? "#991b1b" : "#d6a646"}
-                            strokeWidth={isRelated ? 2.6 : 1.6}
+                            strokeWidth={isRelated ? 1.8 : 1.05}
                             strokeDasharray={edge.from === "zalo_bot" ? "5 5" : undefined}
                             strokeLinecap="round"
                             strokeLinejoin="round"
+                            opacity={isRelated ? 0.95 : 0.58}
                             markerEnd={isRelated ? "url(#ai-flow-arrow-active)" : "url(#ai-flow-arrow)"}
                           />
-                          {edge.label && (
+                          {edge.label && isRelated && (
                             <g className="hidden md:block">
                               <rect
                                 x={edge.labelX - edge.labelWidth / 2}
