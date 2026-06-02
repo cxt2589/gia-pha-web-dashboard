@@ -360,7 +360,7 @@ export default function App() {
     siteName: "Họ Cao",
     slogan: "Uống nước nhớ nguồn - Kính tộc phụng tiên",
     primaryColor: "royal-red",
-    fontFamily: "Playfair Display",
+    fontFamily: "Inter",
     showBanner: true,
     bannerImage: "/images/ancient_temple_roof_1779856049722.png",
     logoText: "Cao"
