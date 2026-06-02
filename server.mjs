@@ -19,6 +19,7 @@ const DATABASE_FILE = resolve(__dirname, process.env.LINEAGE_DATABASE_FILE || 'd
 const DIST_DIR = resolve(__dirname, 'dist');
 const PHASE2_ALIAS_SEED_DIR = resolve(__dirname, 'docs/knowledge-seeds/cao-toc-ai-luu-y-alias-danh-xung-v2');
 const PHASE2_ALIAS_SEED_SLUG = 'cao-toc-ai-luu-y-alias-danh-xung-v2';
+const CAO_TOC_V2_DATASET_DIR = resolve(__dirname, process.env.CAO_TOC_V2_DATASET_DIR || '../gia-pha-ai-system-archive-20260530/Tai lieu/Cao_Toc_TXT_Knowledge_Base_v2');
 const TREE_STATE_KEY = 'lineage-tree';
 const AUTH_USERS_STATE_KEY = 'auth-users';
 const AUTH_SESSIONS_STATE_KEY = 'auth-sessions';
@@ -1330,7 +1331,17 @@ function canReadKnowledgeVisibility(visibility, authScope) {
 
 function normalizeKnowledgeSourceKind(value) {
   const normalized = normalizeGatewayText(value || '');
-  if (['technical_rule', 'verification_note', 'imported_document', 'genealogy_evidence'].includes(normalized)) return normalized;
+  if ([
+    'technical_rule',
+    'verification_note',
+    'verification_notes',
+    'imported_document',
+    'genealogy_evidence',
+    'genealogy_facts',
+    'genealogy_dates_graves',
+    'genealogy_relationships',
+    'genealogy_biography_legacy'
+  ].includes(normalized)) return normalized;
   return '';
 }
 
@@ -4982,6 +4993,482 @@ async function rejectNoisyKnowledgeCandidates(adminUser = {}) {
   }
 }
 
+const CAO_TOC_V2_FILES = [
+  { fileName: '02_person_facts.jsonl', group: 'person_facts', sourceKind: 'genealogy_facts', sourceType: 'v2_person_facts', evidenceType: 'genealogy_text' },
+  { fileName: '03_dates_graves.jsonl', group: 'dates_graves', sourceKind: 'genealogy_dates_graves', sourceType: 'v2_dates_graves', evidenceType: 'date_grave' },
+  { fileName: '04_relationships.jsonl', group: 'relationships', sourceKind: 'genealogy_relationships', sourceType: 'v2_relationships', evidenceType: 'relationship' },
+  { fileName: '05_biography_legacy.jsonl', group: 'biography_legacy', sourceKind: 'genealogy_biography_legacy', sourceType: 'v2_biography_legacy', evidenceType: 'biography' },
+  { fileName: '06_verification_notes.jsonl', group: 'verification_notes', sourceKind: 'verification_notes', sourceType: 'v2_verification_notes', evidenceType: 'verification_note' }
+];
+
+function resolveCaoTocV2DatasetDir(value = '') {
+  return resolve(__dirname, String(value || process.env.CAO_TOC_V2_DATASET_DIR || CAO_TOC_V2_DATASET_DIR));
+}
+
+function parseJsonlRecords(filePath) {
+  const content = readFileSync(filePath, 'utf8');
+  return content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      try {
+        return JSON.parse(line);
+      } catch (err) {
+        err.message = `${err.message} at ${filePath}:${index + 1}`;
+        throw err;
+      }
+    });
+}
+
+function normalizeCaoTocV2DatasetKey(value = '') {
+  return normalizeGatewayText(value || 'cao_toc_v2').replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48) || 'cao_toc_v2';
+}
+
+function v2SourceId(group, datasetKey = 'cao_toc_v2') {
+  return `source_${normalizeCaoTocV2DatasetKey(datasetKey)}_${group}`;
+}
+
+function v2ChunkId(group, recordId, datasetKey = 'cao_toc_v2') {
+  return `chunk_${normalizeCaoTocV2DatasetKey(datasetKey)}_${group}_${normalizeGatewayText(recordId).slice(0, 80)}`;
+}
+
+function v2CandidateHash(parts) {
+  return sha256Base64Url(parts.map((part) => normalizeKnowledgeText(part)).join('|')).slice(0, 24);
+}
+
+function v2RecordEvidence(record, file, datasetKey = 'cao_toc_v2') {
+  const quote = String(record.source_quote || record.value || record.relationship_note || record.notes || '').trim();
+  const window = compactText([
+    record.section,
+    record.page_hint ? `page ${record.page_hint}` : '',
+    quote,
+    record.notes
+  ].filter(Boolean).join('\n'), 900);
+  return {
+    sourceId: v2SourceId(file.group, datasetKey),
+    chunkId: v2ChunkId(file.group, record.record_id, datasetKey),
+    recordId: String(record.record_id || ''),
+    sourceTitle: String(record.source_title || 'Cao Tộc TXT Knowledge Base v2'),
+    headingPath: String(record.section || ''),
+    pageHint: String(record.page_hint || ''),
+    evidenceQuote: compactText(quote, 520),
+    evidenceWindow: window,
+    evidenceType: file.evidenceType,
+    dataset: 'cao_toc_txt_knowledge_base_v2',
+    datasetKey: normalizeCaoTocV2DatasetKey(datasetKey),
+    datasetGroup: file.group,
+    confidence: String(record.confidence || 'medium'),
+    needsAdminReview: Boolean(record.needs_admin_review)
+  };
+}
+
+function insertV2SourceAndChunks(database, file, records, datasetDir, datasetKey = 'cao_toc_v2') {
+  const normalizedDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey);
+  const sourceId = v2SourceId(file.group, normalizedDatasetKey);
+  const sourceContent = records.map((record) => JSON.stringify(record)).join('\n');
+  const metadata = {
+    sourceKind: file.sourceKind,
+    dataset: 'cao_toc_txt_knowledge_base_v2',
+    datasetKey: normalizedDatasetKey,
+    datasetGroup: file.group,
+    originFile: file.fileName,
+    importedAt: new Date().toISOString()
+  };
+  database.prepare(`
+    INSERT INTO knowledge_sources
+      (id, slug, title, source_type, scope, clan_scope, system_scope, domain, content, source_hash, metadata_json, summary, tags_json, entity_refs_json, visibility, status, updated_at)
+    VALUES (?, ?, ?, ?, 'cao_toc_v2', 'cao_toc_phu_my', 'ho_cao_giatochocao', 'giatochocao.site', ?, ?, ?, ?, '[]', '[]', ?, 'indexed', datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET
+      title = excluded.title,
+      source_type = excluded.source_type,
+      content = excluded.content,
+      source_hash = excluded.source_hash,
+      metadata_json = excluded.metadata_json,
+      summary = excluded.summary,
+      visibility = excluded.visibility,
+      status = excluded.status,
+      updated_at = excluded.updated_at
+  `).run(
+    sourceId,
+    `${normalizedDatasetKey.replace(/_/g, '-')}-${file.group}`,
+    `Cao Tộc TXT Knowledge Base v2 - ${file.group}`,
+    file.sourceType,
+    sourceContent,
+    sha256Hex(sourceContent),
+    JSON.stringify(metadata),
+    `${records.length} records from ${file.fileName}`,
+    file.group === 'verification_notes' ? 'private' : 'kyc'
+  );
+  database.prepare('DELETE FROM knowledge_chunks WHERE source_id = ?').run(sourceId);
+  const insertChunk = database.prepare(`
+    INSERT INTO knowledge_chunks
+      (id, source_id, chunk_index, title, content, content_norm, metadata_json, summary, tags_json, entity_refs_json, visibility, heading_path, content_ascii, char_count, token_estimate, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', ?, ?, ?, ?, ?, datetime('now'))
+  `);
+  records.forEach((record, index) => {
+    const evidence = v2RecordEvidence(record, file, normalizedDatasetKey);
+    const content = JSON.stringify(record, null, 2);
+    insertChunk.run(
+      evidence.chunkId,
+      sourceId,
+      index,
+      evidence.sourceTitle,
+      content,
+      normalizeKnowledgeText([record.person_name, record.subject_name, record.object_name, record.value, record.source_quote, record.relationship_note].join(' ')),
+      JSON.stringify({ ...metadata, ...evidence, datasetDir }),
+      compactText(record.source_quote || record.value || '', 260),
+      file.group === 'verification_notes' ? 'private' : 'kyc',
+      evidence.headingPath,
+      normalizeKnowledgeText(content),
+      content.length,
+      estimateTextTokens(content)
+    );
+  });
+  return { sourceId, chunks: records.length };
+}
+
+async function importCaoTocV2Dataset({ datasetDir = '', datasetKey = '' } = {}, adminUser = {}) {
+  const resolvedDir = resolveCaoTocV2DatasetDir(datasetDir);
+  const normalizedDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey);
+  const database = await getDatabase();
+  const summary = { datasetDir: resolvedDir, datasetKey: normalizedDatasetKey, sources: 0, records: 0, chunks: 0, groups: {}, rulesPrivateLocked: false };
+  database.exec('BEGIN');
+  try {
+    for (const file of CAO_TOC_V2_FILES) {
+      const filePath = resolve(resolvedDir, file.fileName);
+      if (!existsSync(filePath)) continue;
+      const records = parseJsonlRecords(filePath);
+      const inserted = insertV2SourceAndChunks(database, file, records, resolvedDir, normalizedDatasetKey);
+      summary.sources += 1;
+      summary.records += records.length;
+      summary.chunks += inserted.chunks;
+      summary.groups[file.group] = { records: records.length, sourceId: inserted.sourceId };
+    }
+    const rulesPath = resolve(resolvedDir, '07_rules_private.json');
+    if (existsSync(rulesPath)) {
+      const content = readFileSync(rulesPath, 'utf8');
+      const metadata = {
+        sourceKind: 'technical_rule',
+        dataset: 'cao_toc_txt_knowledge_base_v2',
+        datasetKey: normalizedDatasetKey,
+        datasetGroup: 'rules_private',
+        originFile: '07_rules_private.json',
+        excludeFromExtraction: true,
+        excludeFromPublicChat: true,
+        importedAt: new Date().toISOString()
+      };
+      const rulesSourceId = v2SourceId('rules_private', normalizedDatasetKey);
+      const rulesChunkId = v2ChunkId('rules_private', 'rules_private', normalizedDatasetKey);
+      database.prepare(`
+        INSERT INTO knowledge_sources
+          (id, slug, title, source_type, scope, clan_scope, system_scope, domain, content, source_hash, metadata_json, summary, tags_json, entity_refs_json, visibility, status, updated_at)
+        VALUES (?, ?, 'Cao Tộc TXT Knowledge Base v2 - rules private', 'v2_rules_private', 'cao_toc_v2', 'cao_toc_phu_my', 'ho_cao_giatochocao', 'giatochocao.site', ?, ?, ?, 'Private rules only, not genealogy evidence.', '[]', '[]', 'private', 'indexed', datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET content = excluded.content, source_hash = excluded.source_hash, metadata_json = excluded.metadata_json, visibility = 'private', updated_at = datetime('now')
+      `).run(rulesSourceId, `${normalizedDatasetKey.replace(/_/g, '-')}-rules-private`, content, sha256Hex(content), JSON.stringify(metadata));
+      database.prepare('DELETE FROM knowledge_chunks WHERE source_id = ?').run(rulesSourceId);
+      database.prepare(`
+        INSERT INTO knowledge_chunks
+          (id, source_id, chunk_index, title, content, content_norm, metadata_json, summary, tags_json, entity_refs_json, visibility, heading_path, content_ascii, char_count, token_estimate, updated_at)
+        VALUES (?, ?, 0, 'Cao Tộc TXT Knowledge Base v2 - rules private', ?, ?, ?, 'Private technical rules.', '[]', '[]', 'private', 'rules_private', ?, ?, ?, datetime('now'))
+      `).run(rulesChunkId, rulesSourceId, content, normalizeKnowledgeText(content), JSON.stringify(metadata), normalizeKnowledgeText(content), content.length, estimateTextTokens(content));
+      summary.sources += 1;
+      summary.records += 1;
+      summary.chunks += 1;
+      summary.rulesPrivateLocked = true;
+    }
+    const logId = insertKnowledgeMaintenanceLog(database, 'import_v2_dataset', summary, adminUser);
+    database.exec('COMMIT');
+    return { ok: true, ...summary, logId };
+  } catch (err) {
+    database.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+async function matchV2Person(personName, needsAdminReview = false) {
+  const matches = await searchLineageMembers(personName, { limit: 6 });
+  const top = matches[0] || null;
+  const confidence = top?.confidence || 'none';
+  const ambiguous = needsAdminReview || ['weak', 'ambiguous', 'none'].includes(confidence);
+  return {
+    matches,
+    top: ambiguous ? null : top,
+    confidence,
+    ambiguous
+  };
+}
+
+async function createV2ProfileCandidate(database, record, file, candidateType, targetField, extractedText, personName = record.person_name || 'Ghi chú kiểm chứng phả hệ', datasetKey = 'cao_toc_v2') {
+  const evidence = v2RecordEvidence(record, file, datasetKey);
+  const match = await matchV2Person(personName, evidence.needsAdminReview || candidateType === 'verification_note' || candidateType === 'clan_legacy' || candidateType === 'branch_legacy');
+  const id = `profile_v2_${v2CandidateHash([evidence.sourceId, personName, candidateType, targetField, extractedText, evidence.evidenceQuote])}`;
+  if (database.prepare('SELECT id FROM extracted_profile_candidates WHERE id = ?').get(id)) return { created: false, duplicate: true, id };
+  const metadata = {
+    ...evidence,
+    candidateMatches: match.matches,
+    notApplyDirectly: ['verification_note', 'clan_legacy', 'branch_legacy'].includes(candidateType)
+  };
+  database.prepare(`
+    INSERT INTO extracted_profile_candidates
+      (id, candidate_type, person_name, person_name_norm, matched_member_id, matched_member_name,
+       match_confidence, target_field, extracted_text, reviewed_text, source_quote, source_id,
+       chunk_id, knowledge_title, visibility, status, metadata_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, 'pending', ?, datetime('now'), datetime('now'))
+  `).run(
+    id,
+    candidateType,
+    personName,
+    normalizeKnowledgeText(personName),
+    match.top?.memberId || '',
+    match.top?.fullName || '',
+    match.confidence,
+    targetField,
+    String(extractedText || evidence.evidenceQuote || '').trim(),
+    evidence.evidenceQuote,
+    evidence.sourceId,
+    evidence.chunkId,
+    evidence.sourceTitle,
+    candidateType === 'verification_note' ? 'private' : 'kyc',
+    JSON.stringify(metadata)
+  );
+  return { created: true, duplicate: false, ambiguous: match.ambiguous, id };
+}
+
+async function createV2AnniversaryCandidate(database, record, file, datasetKey = 'cao_toc_v2') {
+  const evidence = v2RecordEvidence(record, file, datasetKey);
+  const fieldType = String(record.field_type || '').trim();
+  const personName = String(record.person_name || '').trim();
+  const value = String(record.value || '').trim();
+  if (!personName || !value) return { created: false, skipped: true };
+  const match = await matchV2Person(personName, evidence.needsAdminReview);
+  const id = `ann_v2_${v2CandidateHash([evidence.sourceId, personName, fieldType, value, evidence.evidenceQuote])}`;
+  if (database.prepare('SELECT id FROM extracted_anniversary_candidates WHERE id = ?').get(id)) return { created: false, duplicate: true, id };
+  const columnMap = {
+    birth: 'birth_text',
+    death: 'death_text',
+    lunar_anniversary: 'death_anniversary_lunar',
+    anniversary: 'death_anniversary_lunar',
+    hometown: 'hometown',
+    origin: 'hometown',
+    residence: 'hometown',
+    grave: 'grave_text',
+    burial_place: 'grave_text',
+    tomb_note: 'grave_text'
+  };
+  const targetColumn = columnMap[fieldType] || '';
+  if (!targetColumn) return { created: false, skipped: true };
+  const values = { birth_text: '', death_text: '', death_anniversary_lunar: '', hometown: '', grave_text: '' };
+  values[targetColumn] = value;
+  const metadata = { ...evidence, calendar: record.calendar || '', candidateMatches: match.matches };
+  database.prepare(`
+    INSERT INTO extracted_anniversary_candidates
+      (id, source_id, chunk_id, person_name, person_name_norm, generation, branch, birth_text, death_text,
+       death_anniversary_lunar, hometown, grave_text, source_quote, heading_path, matched_member_id,
+       matched_member_name, match_confidence, status, metadata_json, updated_at)
+    VALUES (?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, datetime('now'))
+  `).run(
+    id,
+    evidence.sourceId,
+    evidence.chunkId,
+    personName,
+    normalizeKnowledgeText(personName),
+    values.birth_text,
+    values.death_text,
+    values.death_anniversary_lunar,
+    values.hometown,
+    values.grave_text,
+    evidence.evidenceQuote,
+    evidence.headingPath,
+    match.top?.memberId || '',
+    match.top?.fullName || '',
+    match.confidence,
+    JSON.stringify(metadata)
+  );
+  return { created: true, duplicate: false, ambiguous: match.ambiguous, id };
+}
+
+async function createV2RelationshipCandidate(database, record, file, datasetKey = 'cao_toc_v2') {
+  const evidence = v2RecordEvidence(record, file, datasetKey);
+  const subjectName = String(record.subject_name || '').trim();
+  const objectName = String(record.object_name || '').trim();
+  const relationshipType = normalizeRelationshipType(record.relationship_type || '');
+  if (!subjectName || !objectName) {
+    return createV2ProfileCandidate(database, record, { ...file, evidenceType: 'verification_note' }, 'verification_note', 'description', record.source_quote || record.relationship_note || '', 'Ghi chú kiểm chứng phả hệ', datasetKey);
+  }
+  const subjectMatch = await matchV2Person(subjectName, evidence.needsAdminReview);
+  const objectMatch = await matchV2Person(objectName, evidence.needsAdminReview);
+  const flags = {
+    requires_new_subject: !subjectMatch.matches.length,
+    requires_new_object: !objectMatch.matches.length,
+    ambiguous_subject: subjectMatch.ambiguous,
+    ambiguous_object: objectMatch.ambiguous,
+    needs_manual_review: evidence.needsAdminReview || subjectMatch.ambiguous || objectMatch.ambiguous
+  };
+  const id = `rel_v2_${v2CandidateHash([evidence.sourceId, subjectName, relationshipType, objectName, evidence.evidenceQuote])}`;
+  if (database.prepare('SELECT id FROM extracted_relationship_candidates WHERE id = ?').get(id)) return { created: false, duplicate: true, id };
+  const metadata = { ...evidence, subjectMatches: subjectMatch.matches, objectMatches: objectMatch.matches };
+  database.prepare(`
+    INSERT INTO extracted_relationship_candidates
+      (id, relationship_type, subject_name, subject_name_norm, subject_member_id, subject_member_name,
+       subject_match_confidence, object_name, object_name_norm, object_member_id, object_member_name,
+       object_match_confidence, direction, extracted_text, reviewed_text, source_quote, source_id,
+       chunk_id, knowledge_title, visibility, status, flags_json, metadata_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, 'kyc', 'pending', ?, ?, datetime('now'), datetime('now'))
+  `).run(
+    id,
+    relationshipType,
+    subjectName,
+    normalizeKnowledgeText(subjectName),
+    subjectMatch.top?.memberId || '',
+    subjectMatch.top?.fullName || '',
+    subjectMatch.confidence,
+    objectName,
+    normalizeKnowledgeText(objectName),
+    objectMatch.top?.memberId || '',
+    objectMatch.top?.fullName || '',
+    objectMatch.confidence,
+    normalizeRelationshipDirection(record.direction || 'subject_to_object'),
+    record.relationship_note || evidence.evidenceQuote,
+    evidence.evidenceQuote,
+    evidence.sourceId,
+    evidence.chunkId,
+    evidence.sourceTitle,
+    JSON.stringify(flags),
+    JSON.stringify(metadata)
+  );
+  return { created: true, duplicate: false, ambiguous: flags.needs_manual_review, id };
+}
+
+async function rescanCaoTocV2({ datasetDir = '', datasetKey = '' } = {}, adminUser = {}) {
+  const resolvedDir = resolveCaoTocV2DatasetDir(datasetDir);
+  const normalizedDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey);
+  await importCaoTocV2Dataset({ datasetDir: resolvedDir, datasetKey: normalizedDatasetKey }, adminUser);
+  const database = await getDatabase();
+  const summary = {
+    datasetDir: resolvedDir,
+    datasetKey: normalizedDatasetKey,
+    candidatesCreated: 0,
+    duplicatesSkipped: 0,
+    ambiguous: 0,
+    needsAdminReview: 0,
+    groups: {},
+    highRisk: []
+  };
+  database.exec('BEGIN');
+  try {
+    for (const file of CAO_TOC_V2_FILES) {
+      const filePath = resolve(resolvedDir, file.fileName);
+      if (!existsSync(filePath)) continue;
+      const records = parseJsonlRecords(filePath);
+      const groupSummary = { records: records.length, created: 0, duplicates: 0, ambiguous: 0, needsAdminReview: 0 };
+      for (const record of records) {
+        let result = { created: false, duplicate: false, ambiguous: false };
+        if (file.group === 'person_facts') {
+          const fieldType = String(record.field_type || '').trim();
+          if (['name', 'title', 'alias', 'display_name'].includes(fieldType)) {
+            result = await createV2ProfileCandidate(database, record, file, 'name_alias', 'name', record.value || record.source_quote || '', record.person_name, normalizedDatasetKey);
+          } else {
+            continue;
+          }
+        } else if (file.group === 'dates_graves') {
+          result = await createV2AnniversaryCandidate(database, record, file, normalizedDatasetKey);
+        } else if (file.group === 'relationships') {
+          result = await createV2RelationshipCandidate(database, record, file, normalizedDatasetKey);
+        } else if (file.group === 'biography_legacy') {
+          const legacyType = normalizeProfileCandidateType(record.legacy_type || 'biography');
+          const personName = String(record.person_name || '').trim();
+          const candidateType = personName ? legacyType : (String(record.legacy_type || '').includes('branch') ? 'branch_legacy' : 'clan_legacy');
+          result = await createV2ProfileCandidate(database, record, file, candidateType, defaultProfileTargetField(candidateType), record.value || record.source_quote || '', personName || 'Di sản cấp họ/chi', normalizedDatasetKey);
+        } else if (file.group === 'verification_notes') {
+          result = await createV2ProfileCandidate(database, record, file, 'verification_note', 'description', record.value || record.source_quote || record.notes || '', 'Ghi chú kiểm chứng phả hệ', normalizedDatasetKey);
+        }
+        if (result.created) {
+          summary.candidatesCreated += 1;
+          groupSummary.created += 1;
+        }
+        if (result.duplicate) {
+          summary.duplicatesSkipped += 1;
+          groupSummary.duplicates += 1;
+        }
+        if (result.ambiguous) {
+          summary.ambiguous += 1;
+          groupSummary.ambiguous += 1;
+          summary.highRisk.push({ group: file.group, recordId: record.record_id, reason: 'ambiguous_or_needs_review', personName: record.person_name || record.subject_name || '' });
+        }
+        if (record.needs_admin_review) {
+          summary.needsAdminReview += 1;
+          groupSummary.needsAdminReview += 1;
+        }
+      }
+      summary.groups[file.group] = groupSummary;
+    }
+    summary.highRisk = summary.highRisk.slice(0, 50);
+    const logId = insertKnowledgeMaintenanceLog(database, 'rescan_v2_dataset', summary, adminUser);
+    database.exec('COMMIT');
+    return { ok: true, ...summary, logId };
+  } catch (err) {
+    database.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+async function getCaoTocV2Report({ datasetKey = '' } = {}) {
+  const database = await getDatabase();
+  const normalizedDatasetKey = datasetKey ? normalizeCaoTocV2DatasetKey(datasetKey) : '';
+  const sourceRows = database.prepare("SELECT * FROM knowledge_sources WHERE json_extract(metadata_json, '$.dataset') = 'cao_toc_txt_knowledge_base_v2'").all();
+  const sources = normalizedDatasetKey
+    ? sourceRows.filter((row) => safeJsonParse(row.metadata_json, {}).datasetKey === normalizedDatasetKey)
+    : sourceRows;
+  const sourceIds = new Set(sources.map((row) => row.id));
+  const chunks = database.prepare("SELECT COUNT(*) AS count FROM knowledge_chunks WHERE source_id IN (SELECT id FROM knowledge_sources WHERE json_extract(metadata_json, '$.dataset') = 'cao_toc_txt_knowledge_base_v2')").get()?.count || 0;
+  const profileRows = database.prepare("SELECT * FROM extracted_profile_candidates WHERE json_extract(metadata_json, '$.dataset') = 'cao_toc_txt_knowledge_base_v2'").all()
+    .filter((row) => !normalizedDatasetKey || safeJsonParse(row.metadata_json, {}).datasetKey === normalizedDatasetKey);
+  const annRows = database.prepare("SELECT * FROM extracted_anniversary_candidates WHERE json_extract(metadata_json, '$.dataset') = 'cao_toc_txt_knowledge_base_v2'").all()
+    .filter((row) => !normalizedDatasetKey || safeJsonParse(row.metadata_json, {}).datasetKey === normalizedDatasetKey);
+  const relRows = database.prepare("SELECT * FROM extracted_relationship_candidates WHERE json_extract(metadata_json, '$.dataset') = 'cao_toc_txt_knowledge_base_v2'").all()
+    .filter((row) => !normalizedDatasetKey || safeJsonParse(row.metadata_json, {}).datasetKey === normalizedDatasetKey);
+  const all = [...profileRows, ...annRows, ...relRows];
+  const byGroup = {};
+  for (const row of all) {
+    const meta = safeJsonParse(row.metadata_json, {});
+    const group = meta.datasetGroup || 'unknown';
+    byGroup[group] = byGroup[group] || { candidates: 0, ambiguous: 0, needsAdminReview: 0 };
+    byGroup[group].candidates += 1;
+    if (meta.needsAdminReview) byGroup[group].needsAdminReview += 1;
+    const flags = safeJsonParse(row.flags_json, {});
+    if (['weak', 'ambiguous', 'none'].includes(row.match_confidence || row.subject_match_confidence || '') || flags.needs_manual_review) byGroup[group].ambiguous += 1;
+  }
+  const lastLogs = database.prepare("SELECT * FROM knowledge_maintenance_logs WHERE action IN ('import_v2_dataset', 'rescan_v2_dataset') ORDER BY created_at DESC LIMIT 5").all().map(normalizeKnowledgeMaintenanceLog);
+  return {
+    ok: true,
+    datasetKey: normalizedDatasetKey || 'all',
+    imported: sources.length > 0,
+    sources: sources.length,
+    records: normalizedDatasetKey
+      ? database.prepare('SELECT source_id FROM knowledge_chunks').all().filter((row) => sourceIds.has(row.source_id)).length
+      : chunks,
+    candidates: all.length,
+    profileCandidates: profileRows.length,
+    anniversaryCandidates: annRows.length,
+    relationshipCandidates: relRows.length,
+    byGroup,
+    highRisk: all.map((row) => {
+      const meta = safeJsonParse(row.metadata_json, {});
+      return {
+        id: row.id,
+        group: meta.datasetGroup || 'unknown',
+        evidenceType: meta.evidenceType || '',
+        confidence: meta.confidence || row.match_confidence || row.subject_match_confidence || '',
+        needsAdminReview: Boolean(meta.needsAdminReview),
+        title: row.person_name || row.subject_name || '',
+        quote: meta.evidenceQuote || row.source_quote || ''
+      };
+    }).filter((item) => item.needsAdminReview || ['weak', 'ambiguous', 'none'].includes(item.confidence)).slice(0, 50),
+    logs: lastLogs
+  };
+}
+
 async function createKnowledgeSource(payload = {}, authUser = null) {
   const title = String(payload.title || '').trim();
   const content = normalizeImportedKnowledgeContent(payload);
@@ -5566,6 +6053,44 @@ app.post('/api/knowledge/maintenance/reject-noisy-candidates', async (req, res) 
   } catch (err) {
     console.error('Failed to reject noisy candidates:', err);
     res.status(err.status || 500).json({ error: err.message || 'Failed to reject noisy candidates.' });
+  }
+});
+
+app.post('/api/knowledge/import-v2-dataset', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json(await importCaoTocV2Dataset({
+      datasetDir: req.body?.datasetDir || req.body?.datasetPath || '',
+      datasetKey: req.body?.datasetKey || ''
+    }, admin.authUser));
+  } catch (err) {
+    console.error('Failed to import Cao Toc v2 dataset:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to import Cao Toc v2 dataset.' });
+  }
+});
+
+app.post('/api/knowledge/rescan-v2', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json(await rescanCaoTocV2({
+      datasetDir: req.body?.datasetDir || req.body?.datasetPath || '',
+      datasetKey: req.body?.datasetKey || ''
+    }, admin.authUser));
+  } catch (err) {
+    console.error('Failed to rescan Cao Toc v2 dataset:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to rescan Cao Toc v2 dataset.' });
+  }
+});
+
+app.get('/api/knowledge/rescan-v2/report', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json(await getCaoTocV2Report({ datasetKey: req.query.datasetKey || '' }));
+  } catch (err) {
+    console.error('Failed to build Cao Toc v2 rescan report:', err);
+    res.status(500).json({ error: 'Failed to build Cao Toc v2 rescan report.' });
   }
 });
 

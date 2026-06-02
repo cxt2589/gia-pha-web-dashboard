@@ -75,6 +75,14 @@ const DRAFT_CATEGORY: WebArticle["category"] = "Tin tức họ tộc";
 const DRAFT_STATUS: WebArticle["status"] = "Bản nháp";
 const AI_OPERATION_LOG_PAGE_SIZE = 4;
 const AI_OPERATION_GRAPH_LAYOUT_KEY = "ai-operation-graph-layout";
+const AI_GOVERNOR_MODES = ["overview", "operations", "system-audit", "action-drafts", "knowledge", "content", "channels"] as const;
+type AIGovernorMode = typeof AI_GOVERNOR_MODES[number];
+
+function loadInitialAIGovernorMode(): AIGovernorMode {
+  if (typeof window === "undefined") return "overview";
+  const queryMode = new URLSearchParams(window.location.search).get("aiMode");
+  return AI_GOVERNOR_MODES.includes(queryMode as AIGovernorMode) ? queryMode as AIGovernorMode : "overview";
+}
 
 type KnowledgeStatus = {
   ok?: boolean;
@@ -107,6 +115,26 @@ type KnowledgeSearchResult = {
   visibility?: string;
   reason?: string;
   matchedTerms?: string[];
+};
+
+type CaoTocV2Report = {
+  ok?: boolean;
+  imported?: boolean;
+  sources?: number;
+  records?: number;
+  candidates?: number;
+  profileCandidates?: number;
+  anniversaryCandidates?: number;
+  relationshipCandidates?: number;
+  candidatesCreated?: number;
+  duplicatesSkipped?: number;
+  ambiguous?: number;
+  needsAdminReview?: number;
+  rulesPrivateLocked?: boolean;
+  byGroup?: Record<string, { candidates?: number; records?: number; created?: number; duplicates?: number; ambiguous?: number; needsAdminReview?: number }>;
+  groups?: Record<string, { records?: number; created?: number; duplicates?: number; ambiguous?: number; needsAdminReview?: number; sourceId?: string }>;
+  highRisk?: { id?: string; group?: string; recordId?: string; title?: string; personName?: string; reason?: string; confidence?: string; quote?: string; needsAdminReview?: boolean }[];
+  logs?: { id?: string; action?: string; createdAt?: string; summary?: any }[];
 };
 
 type AIRequestLog = {
@@ -587,7 +615,7 @@ export default function AIGovernor({
   onSetAIInitialPrompt
 }: AIGovernorProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [activeMode, setActiveMode] = useState<"overview" | "operations" | "system-audit" | "action-drafts" | "knowledge" | "content" | "channels">("overview");
+  const [activeMode, setActiveMode] = useState<AIGovernorMode>(() => loadInitialAIGovernorMode());
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGeneratingTemplate, setIsGeneratingTemplate] = useState(false);
   const [isScanningSystem, setIsScanningSystem] = useState(false);
@@ -638,6 +666,9 @@ export default function AIGovernor({
   const [maintenanceNote, setMaintenanceNote] = useState("");
   const [maintenanceResult, setMaintenanceResult] = useState<any>(null);
   const [isMaintenanceRunning, setIsMaintenanceRunning] = useState(false);
+  const [caoTocV2Report, setCaoTocV2Report] = useState<CaoTocV2Report | null>(null);
+  const [caoTocV2Note, setCaoTocV2Note] = useState("");
+  const [isCaoTocV2Running, setIsCaoTocV2Running] = useState(false);
   const [aiLogs, setAiLogs] = useState<AIRequestLog[]>([]);
   const [aiLogSummary, setAiLogSummary] = useState<AIRequestLogSummary | null>(null);
   const [isAiLogsLoading, setIsAiLogsLoading] = useState(false);
@@ -1047,6 +1078,49 @@ export default function AIGovernor({
       setMaintenanceNote(`Lỗi bảo trì kho tri thức: ${err?.message || "không xác định"}`);
     } finally {
       setIsMaintenanceRunning(false);
+    }
+  };
+
+  const loadCaoTocV2Report = async () => {
+    try {
+      const response = await fetch("/api/knowledge/rescan-v2/report");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không đọc được báo cáo Cao Tộc v2.");
+      setCaoTocV2Report(data);
+      return data as CaoTocV2Report;
+    } catch (err: any) {
+      setCaoTocV2Note(`Lỗi tải báo cáo Cao Tộc v2: ${err?.message || "không xác định"}`);
+      return null;
+    }
+  };
+
+  const runCaoTocV2Action = async (action: "import" | "rescan") => {
+    setIsCaoTocV2Running(true);
+    setCaoTocV2Note(action === "import" ? "Đang import dataset v2..." : "Đang rescan dataset v2 và tạo candidate...");
+    try {
+      const endpoint = action === "import" ? "/api/knowledge/import-v2-dataset" : "/api/knowledge/rescan-v2";
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không chạy được Cao Tộc v2.");
+      setCaoTocV2Report(data);
+      setCaoTocV2Note(action === "import"
+        ? `Đã import ${data.sources || 0} source, ${data.records || 0} records/chunks. Rules private: ${data.rulesPrivateLocked ? "đã khóa" : "chưa có"}.`
+        : `Đã tạo ${data.candidatesCreated || 0} candidate, bỏ qua ${data.duplicatesSkipped || 0} duplicate, ${data.ambiguous || 0} ambiguous.`);
+      await Promise.all([
+        loadKnowledgeBackend(),
+        loadExtractedCandidates(),
+        loadProfileCandidates(),
+        loadRelationshipCandidates(),
+        loadCaoTocV2Report()
+      ]);
+    } catch (err: any) {
+      setCaoTocV2Note(`Lỗi Cao Tộc v2: ${err?.message || "không xác định"}`);
+    } finally {
+      setIsCaoTocV2Running(false);
     }
   };
 
@@ -1952,6 +2026,7 @@ export default function AIGovernor({
     void loadOperationGraphLayout();
     void loadSystemAuditPanel();
     void loadAIActionDrafts();
+    void loadCaoTocV2Report();
   }, []);
 
   useEffect(() => {
@@ -4607,6 +4682,92 @@ export default function AIGovernor({
                   <span className="rounded bg-white px-2 py-1">Profile reject: {maintenanceResult.rejectedProfileCandidates ?? 0}</span>
                   <span className="rounded bg-white px-2 py-1">Quan hệ reject: {maintenanceResult.rejectedRelationshipCandidates ?? 0}</span>
                 </div>
+              )}
+            </div>
+            <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50/40 p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <h4 className="flex items-center gap-2 font-bold text-stone-850">
+                    <Database className="h-4 w-4 text-blue-700" />
+                    Import & Rescan Cao Tộc v2
+                  </h4>
+                  <p className="mt-1 text-xs leading-relaxed text-stone-500">
+                    Import bộ JSONL v2 có kiểm soát, tạo candidate kèm evidence rõ ràng. Rules private bị khóa khỏi scanner/chat public; rescan không tự áp dụng vào cây phả.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void runCaoTocV2Action("import")}
+                    disabled={isCaoTocV2Running}
+                    className="inline-flex items-center justify-center gap-2 rounded bg-blue-800 px-3 py-2 text-xs font-bold text-white hover:bg-blue-900 disabled:opacity-60"
+                  >
+                    <UploadCloud className="h-4 w-4" />
+                    Import v2
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void runCaoTocV2Action("rescan")}
+                    disabled={isCaoTocV2Running}
+                    className="inline-flex items-center justify-center gap-2 rounded border border-blue-200 bg-white px-3 py-2 text-xs font-bold text-blue-900 hover:bg-blue-50 disabled:opacity-60"
+                  >
+                    <FileSearch className="h-4 w-4" />
+                    Rescan tạo candidate
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void loadCaoTocV2Report()}
+                    disabled={isCaoTocV2Running}
+                    className="inline-flex items-center justify-center gap-2 rounded border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-60"
+                  >
+                    <RefreshCw className={`h-4 w-4 ${isCaoTocV2Running ? "animate-spin" : ""}`} />
+                    Tải báo cáo
+                  </button>
+                </div>
+              </div>
+              {caoTocV2Note && <p className="mt-2 whitespace-pre-wrap rounded bg-white p-2 text-[11px] leading-relaxed text-stone-700">{caoTocV2Note}</p>}
+              {caoTocV2Report && (
+                <>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-bold text-stone-700 md:grid-cols-4 lg:grid-cols-6">
+                    <span className="rounded bg-white px-2 py-1">Sources: {caoTocV2Report.sources ?? 0}</span>
+                    <span className="rounded bg-white px-2 py-1">Records/chunks: {caoTocV2Report.records ?? caoTocV2Report.candidatesCreated ?? 0}</span>
+                    <span className="rounded bg-white px-2 py-1">Candidates: {caoTocV2Report.candidates ?? caoTocV2Report.candidatesCreated ?? 0}</span>
+                    <span className="rounded bg-white px-2 py-1">Duplicate: {caoTocV2Report.duplicatesSkipped ?? 0}</span>
+                    <span className="rounded bg-white px-2 py-1">Ambiguous: {caoTocV2Report.ambiguous ?? 0}</span>
+                    <span className="rounded bg-white px-2 py-1">Cần review: {caoTocV2Report.needsAdminReview ?? 0}</span>
+                  </div>
+                  <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+                    <div className="rounded border border-blue-100 bg-white p-3">
+                      <p className="text-[11px] font-bold uppercase tracking-wide text-stone-500">Theo nhóm dữ liệu</p>
+                      <div className="mt-2 grid gap-1 text-[11px] text-stone-700">
+                        {Object.entries((caoTocV2Report.byGroup || caoTocV2Report.groups || {}) as NonNullable<CaoTocV2Report["byGroup"]>).map(([group, item]) => (
+                          <div key={group} className="flex flex-wrap items-center justify-between gap-2 rounded bg-blue-50/50 px-2 py-1">
+                            <span className="font-bold text-blue-900">{group}</span>
+                            <span>{item.candidates ?? item.created ?? 0} candidates · {item.records ?? 0} records · {item.ambiguous ?? 0} ambiguous</span>
+                          </div>
+                        ))}
+                        {!Object.keys(caoTocV2Report.byGroup || caoTocV2Report.groups || {}).length && (
+                          <p className="text-stone-500">Chưa có báo cáo nhóm. Bấm Import hoặc Rescan để tạo dữ liệu.</p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="rounded border border-blue-100 bg-white p-3">
+                      <p className="text-[11px] font-bold uppercase tracking-wide text-stone-500">Rủi ro cần xem trước</p>
+                      <div className="mt-2 max-h-32 overflow-y-auto text-[11px] text-stone-700">
+                        {(caoTocV2Report.highRisk || []).slice(0, 6).map((item, index) => (
+                          <div key={`${item.id || item.recordId || index}`} className="mb-1 rounded bg-amber-50 px-2 py-1">
+                            <span className="font-bold text-amber-800">{item.group || "unknown"}</span>
+                            <span className="text-stone-500"> · {item.reason || item.confidence || "needs review"}</span>
+                            <p className="mt-0.5">{truncateText(item.quote || item.title || item.personName || "", 120)}</p>
+                          </div>
+                        ))}
+                        {!(caoTocV2Report.highRisk || []).length && (
+                          <p className="text-stone-500">Chưa có high-risk candidate trong báo cáo hiện tại.</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </>
               )}
             </div>
             <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50/40 p-4">

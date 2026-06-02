@@ -154,6 +154,13 @@ function loadStored<T>(key: string, fallback: T): T {
   }
 }
 
+function loadInitialDashboardTab(fallback: string): string {
+  if (typeof window === "undefined") return fallback;
+  const queryTab = new URLSearchParams(window.location.search).get("tab");
+  if (queryTab) return queryTab;
+  return loadStored(DASHBOARD_ACTIVE_TAB_KEY, fallback);
+}
+
 async function loadServerStored<T>(key: string, fallback: T): Promise<T> {
   try {
     const response = await fetch(`/api/state/${key}`, { headers: { Accept: "application/json" } });
@@ -237,7 +244,7 @@ function normalizeDashboardUser(user: UserSession): UserSession {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<string>(() => loadStored(DASHBOARD_ACTIVE_TAB_KEY, "overview"));
+  const [activeTab, setActiveTab] = useState<string>(() => loadInitialDashboardTab("overview"));
   const [serverHealth, setServerHealth] = useState<boolean>(false);
   const [adminAuthSession, setAdminAuthSession] = useState<AdminAuthSession | null>(null);
   const [adminAuthChecked, setAdminAuthChecked] = useState(false);

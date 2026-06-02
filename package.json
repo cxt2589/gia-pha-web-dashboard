@@ -27,6 +27,7 @@
     "test:phase2w-relationship-extraction": "node scripts/test-phase-2w-relationship-extraction.mjs",
     "test:phase2w2-maintenance": "node scripts/test-phase-2w2-maintenance.mjs",
     "test:phase2w2-extraction-quality": "node scripts/test-phase-2w2-extraction-quality.mjs",
+    "test:phase2w2c-v2-rescan": "node scripts/test-phase-2w2c-v2-rescan.mjs",
     "import:cao-toc-txt": "node scripts/import-cao-toc-txt-knowledge.mjs",
     "import:cao-toc-04": "node scripts/import-cao-toc-04-anniversaries.mjs",
     "test:lineage-display": "tsx scripts/test-lineage-display.ts",
