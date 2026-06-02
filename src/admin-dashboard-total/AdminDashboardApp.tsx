@@ -437,11 +437,7 @@ export default function App() {
     root.style.setProperty("--dashboard-primary", colors.primary);
     root.style.setProperty("--dashboard-primary-hover", colors.hover);
     root.style.setProperty("--dashboard-primary-soft", colors.soft);
-    root.style.fontFamily = themeConfig.fontFamily === "Playfair Display"
-      ? '"Playfair Display", serif'
-      : themeConfig.fontFamily === "Space Grotesk"
-        ? '"Space Grotesk", sans-serif'
-        : '"Inter", sans-serif';
+    root.style.fontFamily = '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
   }, [dashboardServerStateLoaded, themeConfig]);
 
   useEffect(() => {
