@@ -2307,10 +2307,13 @@ function publicExtractedAnniversaryCandidate(row) {
   const metadata = safeJsonParse(row.metadata_json, {});
   const status = normalizeExtractedCandidateStatus(row.status);
   const fields = getExtractedAnniversaryFields(row, metadata);
+  const evidenceQuote = metadata.evidenceQuote || row.source_quote || '';
+  const evidenceWindow = metadata.evidenceWindow || row.source_quote || '';
   return {
     id: row.id,
     sourceId: row.source_id,
     chunkId: row.chunk_id,
+    sourceTitle: metadata.sourceTitle || metadata.knowledgeTitle || '',
     personName: row.person_name,
     generation: row.generation,
     branch: row.branch,
@@ -2320,6 +2323,9 @@ function publicExtractedAnniversaryCandidate(row) {
     hometown: row.hometown,
     graveText: row.grave_text,
     sourceQuote: row.source_quote,
+    evidenceQuote,
+    evidenceWindow,
+    evidenceType: metadata.evidenceType || 'date_grave',
     headingPath: row.heading_path,
     matchedMemberId: row.matched_member_id,
     matchedMemberName: row.matched_member_name,
@@ -3028,7 +3034,7 @@ function normalizeProfileTargetField(value) {
 
 function normalizeProfileCandidateType(value) {
   const type = String(value || '').trim();
-  return ['name_alias', 'biography', 'legacy_note', 'achievement', 'career', 'spouse_note', 'parent_note'].includes(type)
+  return ['name_alias', 'biography', 'legacy_note', 'achievement', 'career', 'spouse_note', 'parent_note', 'verification_note', 'clan_legacy', 'branch_legacy'].includes(type)
     ? type
     : 'biography';
 }
@@ -3076,6 +3082,59 @@ function buildProfileCandidateHash({ sourceId, chunkId, personName, candidateTyp
   ].join('|')).slice(0, 24);
 }
 
+function candidateEvidenceFromText(content, needles = [], { maxQuote = 260, maxWindow = 780 } = {}) {
+  const text = String(content || '').replace(/\s+/g, ' ').trim();
+  if (!text) return { evidenceQuote: '', evidenceWindow: '' };
+  const normalizedText = normalizeKnowledgeText(text);
+  const normalizedNeedles = normalizeStringArray(needles).map(normalizeKnowledgeText).filter(Boolean);
+  let index = -1;
+  for (const needle of normalizedNeedles.sort((a, b) => b.length - a.length)) {
+    index = normalizedText.indexOf(needle);
+    if (index >= 0) break;
+  }
+  if (index < 0) index = 0;
+  const sentenceMatches = [...text.matchAll(/[^.!?;。\n\r]{0,420}(?:[.!?;。]|\n|$)/gu)]
+    .map((match) => ({ text: match[0].trim(), index: match.index || 0 }))
+    .filter((item) => item.text.length >= 10);
+  const sentence = sentenceMatches.find((item) => {
+    const norm = normalizeKnowledgeText(item.text);
+    return normalizedNeedles.some((needle) => norm.includes(needle));
+  })?.text || text.slice(Math.max(0, index - 80), index + maxQuote);
+  const start = Math.max(0, index - Math.floor(maxWindow / 2));
+  const evidenceWindow = text.slice(start, start + maxWindow).trim();
+  return {
+    evidenceQuote: compactText(sentence, maxQuote),
+    evidenceWindow: compactText(evidenceWindow, maxWindow)
+  };
+}
+
+function buildCandidateEvidenceMetadata(row, { evidenceQuote = '', evidenceWindow = '', evidenceType = 'genealogy_text', extra = {} } = {}) {
+  return {
+    sourceId: row.source_id,
+    chunkId: row.id,
+    sourceTitle: row.source_title || row.title || '',
+    headingPath: row.heading_path || '',
+    evidenceQuote: evidenceQuote || compactText(row.content || row.summary || '', 260),
+    evidenceWindow: evidenceWindow || compactText(row.content || row.summary || '', 780),
+    evidenceType,
+    ...extra
+  };
+}
+
+function hasTechnicalInstructionNoise(value) {
+  return /\b(lowercase|bo kinh xung|ghi la|van truc thuoc|lam toc bieu|mua pho ly|khong hien dien)\b/.test(normalizeKnowledgeText(value));
+}
+
+function isVerificationNoteText(value) {
+  const text = normalizeKnowledgeText(value);
+  return /\b(can kiem chung|can xac minh|chua xac minh|nghi van|nguon goc truoc cao dinh lang|moc 1807|thon trai|gia hoa|van ban 1930|lien he ho cao)\b/.test(text);
+}
+
+function isClanOrBranchLegacyText(value) {
+  const text = normalizeKnowledgeText(value);
+  return /\b(chi nhanh|chi nganh|dong ho|toan toc|toc cao|ho cao|cao toc|ban tri su)\b/.test(text) && !/\b(cao\s+dinh|cao\s+van|cao\s+duy|cao\s+xuan)\b/.test(text);
+}
+
 function compactExtractedNameCandidate(value) {
   const text = stripHanCharacters(value)
     .replace(/[.,;:()[\]{}"']/g, ' ')
@@ -3111,6 +3170,8 @@ function extractNameAliasCandidatesFromText(text) {
 
 function publicExtractedProfileCandidate(row) {
   const metadata = safeJsonParse(row.metadata_json, {});
+  const evidenceQuote = metadata.evidenceQuote || row.source_quote || row.extracted_text || '';
+  const evidenceWindow = metadata.evidenceWindow || row.source_quote || row.extracted_text || '';
   return {
     id: row.id,
     candidateType: row.candidate_type,
@@ -3124,6 +3185,11 @@ function publicExtractedProfileCandidate(row) {
     reviewedText: row.reviewed_text,
     effectiveText: row.reviewed_text || row.extracted_text,
     sourceQuote: row.source_quote,
+    sourceTitle: metadata.sourceTitle || row.knowledge_title,
+    headingPath: metadata.headingPath || '',
+    evidenceQuote,
+    evidenceWindow,
+    evidenceType: metadata.evidenceType || (row.candidate_type === 'name_alias' ? 'genealogy_text' : row.candidate_type === 'verification_note' ? 'verification_note' : 'biography'),
     sourceId: row.source_id,
     chunkId: row.chunk_id,
     knowledgeTitle: row.knowledge_title,
@@ -3270,8 +3336,22 @@ async function scanExtractedProfileCandidates({ sourceId = '', limit = 250 } = {
       continue;
     }
     const candidateType = classifyProfileCandidateType(rawText);
-    const targetField = defaultProfileTargetField(candidateType);
+    const scopedCandidateType = isClanOrBranchLegacyText(rawText)
+      ? (normalizeKnowledgeText(rawText).includes('chi') || normalizeKnowledgeText(row.heading_path || '').includes('chi') ? 'branch_legacy' : 'clan_legacy')
+      : isVerificationNoteText(rawText)
+        ? 'verification_note'
+        : candidateType;
+    const targetField = defaultProfileTargetField(scopedCandidateType);
     for (const personName of names) {
+      const evidence = candidateEvidenceFromText(row.content || rawText, [personName], { maxQuote: 320, maxWindow: 720 });
+      if (!evidence.evidenceQuote || !normalizeKnowledgeText(evidence.evidenceQuote).includes(normalizeKnowledgeText(personName))) {
+        skipped += 1;
+        continue;
+      }
+      if (names.length > 2 && normalizeKnowledgeText(evidence.evidenceQuote).split(/\s+/).length > 90) {
+        skipped += 1;
+        continue;
+      }
       const personNameNorm = normalizeKnowledgeText(personName);
       const matches = await searchLineageMembers(personName, { limit: 6 });
       const topMatch = matches[0] || null;
@@ -3279,8 +3359,8 @@ async function scanExtractedProfileCandidates({ sourceId = '', limit = 250 } = {
         sourceId: row.source_id,
         chunkId: row.id,
         personName,
-        candidateType,
-        extractedText: rawText
+        candidateType: scopedCandidateType,
+        extractedText: evidence.evidenceQuote
       })}`;
       const exists = database.prepare('SELECT id FROM extracted_profile_candidates WHERE id = ?').get(id);
       if (exists) {
@@ -3288,6 +3368,14 @@ async function scanExtractedProfileCandidates({ sourceId = '', limit = 250 } = {
         continue;
       }
       const metadata = {
+        ...buildCandidateEvidenceMetadata(row, {
+          ...evidence,
+          evidenceType: scopedCandidateType === 'verification_note'
+            ? 'verification_note'
+            : scopedCandidateType === 'clan_legacy' || scopedCandidateType === 'branch_legacy'
+              ? 'biography'
+              : 'biography'
+        }),
         headingPath: row.heading_path || '',
         summary: row.summary || '',
         tags: safeJsonParse(row.tags_json, []),
@@ -3302,16 +3390,16 @@ async function scanExtractedProfileCandidates({ sourceId = '', limit = 250 } = {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, datetime('now'), datetime('now'))
       `).run(
         id,
-        candidateType,
+        scopedCandidateType,
         personName,
         personNameNorm,
         topMatch?.confidence && topMatch.confidence !== 'weak' && topMatch.confidence !== 'ambiguous' ? topMatch.memberId : '',
         topMatch?.confidence && topMatch.confidence !== 'weak' && topMatch.confidence !== 'ambiguous' ? topMatch.fullName : '',
         topMatch?.confidence || 'none',
         targetField,
-        rawText,
+        evidence.evidenceQuote,
         '',
-        compactText(row.content || row.summary || '', 420),
+        evidence.evidenceQuote,
         row.source_id,
         row.id,
         row.source_title || row.title || '',
@@ -3350,7 +3438,7 @@ async function scanExtractedNameAliasCandidates({ sourceId = '', limit = 250 } =
     const rawText = compactText(row.content || row.summary || row.title || '', 1200);
     const haystack = normalizeKnowledgeText([row.title, row.heading_path, row.summary, rawText].join(' '));
     const hasNameSignal = /(cao |cao dinh|cao van|cao duy|cao xuan|cao to|thuy to|thuy to|danh xung|ten huy|ten day du|ho ten|alias)/.test(haystack);
-    if (!hasNameSignal) {
+    if (!hasNameSignal || hasTechnicalInstructionNoise(rawText)) {
       skipped += 1;
       continue;
     }
@@ -3360,6 +3448,10 @@ async function scanExtractedNameAliasCandidates({ sourceId = '', limit = 250 } =
       continue;
     }
     for (const personName of names) {
+      if (hasTechnicalInstructionNoise(personName)) {
+        skipped += 1;
+        continue;
+      }
       const personNameNorm = normalizeKnowledgeText(personName);
       const matches = await searchLineageMembers(personName, { limit: 6 });
       const topMatch = matches[0] || null;
@@ -3380,7 +3472,12 @@ async function scanExtractedNameAliasCandidates({ sourceId = '', limit = 250 } =
         skipped += 1;
         continue;
       }
+      const evidence = candidateEvidenceFromText(row.content || rawText, [personName, row.heading_path]);
       const metadata = {
+        ...buildCandidateEvidenceMetadata(row, {
+          ...evidence,
+          evidenceType: 'genealogy_text'
+        }),
         headingPath: row.heading_path || '',
         summary: row.summary || '',
         tags: safeJsonParse(row.tags_json, []),
@@ -3465,6 +3562,11 @@ async function applyExtractedProfileCandidate(id, body = {}, adminUser = {}) {
   const status = normalizeProfileCandidateStatus(row.status);
   if (status !== 'approved' && status !== 'applied') {
     const err = new Error('Candidate must be approved before applying.');
+    err.status = 400;
+    throw err;
+  }
+  if (['verification_note', 'clan_legacy', 'branch_legacy'].includes(row.candidate_type)) {
+    const err = new Error('Candidate này là ghi chú kiểm chứng/cấp chi ngành, không áp dụng trực tiếp vào hồ sơ cá nhân.');
     err.status = 400;
     throw err;
   }
@@ -3663,6 +3765,8 @@ function relationshipMatchFlags(subjectMatches, objectMatches) {
 function publicExtractedRelationshipCandidate(row) {
   const flags = safeJsonParse(row.flags_json, {});
   const metadata = safeJsonParse(row.metadata_json, {});
+  const evidenceQuote = metadata.evidenceQuote || row.source_quote || row.extracted_text || '';
+  const evidenceWindow = metadata.evidenceWindow || row.source_quote || row.extracted_text || '';
   return {
     id: row.id,
     relationshipType: normalizeRelationshipType(row.relationship_type),
@@ -3681,6 +3785,11 @@ function publicExtractedRelationshipCandidate(row) {
     reviewedText: row.reviewed_text,
     effectiveText: row.reviewed_text || row.extracted_text,
     sourceQuote: row.source_quote,
+    sourceTitle: metadata.sourceTitle || row.knowledge_title,
+    headingPath: metadata.headingPath || '',
+    evidenceQuote,
+    evidenceWindow,
+    evidenceType: metadata.evidenceType || 'relationship',
     sourceId: row.source_id,
     chunkId: row.chunk_id,
     knowledgeTitle: row.knowledge_title,
@@ -3785,6 +3894,49 @@ function inferRelationshipPair(sentence, relationshipType) {
   return { relationshipType, subjectName, objectName, direction };
 }
 
+async function insertVerificationNoteCandidateFromChunk(database, row, text) {
+  const evidence = candidateEvidenceFromText(row.content || text, [text, row.heading_path], { maxQuote: 340, maxWindow: 760 });
+  const id = `profile_${buildProfileCandidateHash({
+    sourceId: row.source_id,
+    chunkId: row.id,
+    personName: 'Ghi chú kiểm chứng phả hệ',
+    candidateType: 'verification_note',
+    extractedText: evidence.evidenceQuote || text
+  })}`;
+  if (database.prepare('SELECT id FROM extracted_profile_candidates WHERE id = ?').get(id)) return null;
+  const metadata = {
+    ...buildCandidateEvidenceMetadata(row, {
+      ...evidence,
+      evidenceType: 'verification_note'
+    }),
+    headingPath: row.heading_path || '',
+    summary: row.summary || '',
+    tags: safeJsonParse(row.tags_json, []),
+    entityRefs: safeJsonParse(row.entity_refs_json, []),
+    candidateMatches: [],
+    notApplyDirectly: true
+  };
+  database.prepare(`
+    INSERT INTO extracted_profile_candidates
+      (id, candidate_type, person_name, person_name_norm, matched_member_id, matched_member_name,
+       match_confidence, target_field, extracted_text, reviewed_text, source_quote, source_id,
+       chunk_id, knowledge_title, visibility, status, metadata_json, created_at, updated_at)
+    VALUES (?, 'verification_note', ?, ?, '', '', 'none', 'description', ?, '', ?, ?, ?, ?, ?, 'pending', ?, datetime('now'), datetime('now'))
+  `).run(
+    id,
+    'Ghi chú kiểm chứng phả hệ',
+    normalizeKnowledgeText('Ghi chú kiểm chứng phả hệ'),
+    evidence.evidenceQuote || compactText(text, 340),
+    evidence.evidenceQuote || compactText(text, 340),
+    row.source_id,
+    row.id,
+    row.source_title || row.title || '',
+    row.visibility || row.source_visibility || 'private',
+    JSON.stringify(metadata)
+  );
+  return hydrateProfileCandidateReviewData(publicExtractedProfileCandidate(database.prepare('SELECT * FROM extracted_profile_candidates WHERE id = ?').get(id)));
+}
+
 async function scanExtractedRelationshipCandidates({ sourceId = '', limit = 250 } = {}) {
   const database = await getDatabase();
   const where = sourceId ? 'WHERE c.source_id = ?' : '';
@@ -3808,6 +3960,12 @@ async function scanExtractedRelationshipCandidates({ sourceId = '', limit = 250 
     }
     const rawText = compactText(row.content || row.summary || row.title || '', 1800);
     const haystack = normalizeKnowledgeText([row.title, row.heading_path, row.summary, rawText].join(' '));
+    if (isVerificationNoteText(rawText) && !/(vo|chong|phoi ngau|chinh that|thu that|sinh ha|sinh duoc|con cua|phu than|mau than|cha cua|me cua|truong nam|thu nam|truong nu|thu nu)/.test(haystack)) {
+      const note = await insertVerificationNoteCandidateFromChunk(database, row, rawText);
+      if (note) created += 1;
+      else skipped += 1;
+      continue;
+    }
     if (!/(vo|chong|phoi ngau|chinh that|thu that|sinh ha|sinh duoc|con cua|phu than|mau than|cha cua|me cua|truong nam|thu nam|truong nu|thu nu)/.test(haystack)) {
       skipped += 1;
       continue;
@@ -3821,6 +3979,14 @@ async function scanExtractedRelationshipCandidates({ sourceId = '', limit = 250 
       }
       const pair = inferRelationshipPair(sentence, relationshipType);
       if (!pair?.subjectName || !pair?.objectName || normalizeKnowledgeText(pair.subjectName) === normalizeKnowledgeText(pair.objectName)) {
+        if (isVerificationNoteText(sentence)) {
+          const note = await insertVerificationNoteCandidateFromChunk(database, row, sentence);
+          if (note) created += 1;
+        }
+        skipped += 1;
+        continue;
+      }
+      if (hasTechnicalInstructionNoise(sentence)) {
         skipped += 1;
         continue;
       }
@@ -3841,7 +4007,12 @@ async function scanExtractedRelationshipCandidates({ sourceId = '', limit = 250 
         skipped += 1;
         continue;
       }
+      const evidence = candidateEvidenceFromText(row.content || sentence, [pair.subjectName, pair.objectName, sentence], { maxQuote: 320, maxWindow: 760 });
       const metadata = {
+        ...buildCandidateEvidenceMetadata(row, {
+          ...evidence,
+          evidenceType: 'relationship'
+        }),
         headingPath: row.heading_path || '',
         summary: row.summary || '',
         tags: safeJsonParse(row.tags_json, []),
@@ -3870,8 +4041,8 @@ async function scanExtractedRelationshipCandidates({ sourceId = '', limit = 250 
         flags.ambiguous_object ? '' : objectTop?.fullName || '',
         objectTop?.confidence || 'none',
         normalizeRelationshipDirection(pair.direction),
-        sentence,
-        compactText(row.content || row.summary || '', 420),
+        evidence.evidenceQuote || sentence,
+        evidence.evidenceQuote || compactText(row.content || row.summary || '', 420),
         row.source_id,
         row.id,
         row.source_title || row.title || '',
@@ -5695,6 +5866,15 @@ app.get('/api/knowledge/chunks/:id', async (req, res) => {
       res.status(404).json({ error: 'Knowledge chunk not found.' });
       return;
     }
+    const evidenceQuote = String(req.query.evidenceQuote || '').trim();
+    const evidenceWindow = String(req.query.evidenceWindow || '').trim();
+    const evidence = evidenceQuote || evidenceWindow
+      ? {
+          evidenceQuote,
+          evidenceWindow: evidenceWindow || candidateEvidenceFromText(row.content, [evidenceQuote]).evidenceWindow,
+          evidenceOffset: evidenceQuote ? normalizeKnowledgeText(row.content).indexOf(normalizeKnowledgeText(evidenceQuote)) : -1
+        }
+      : {};
     res.json({
       chunk: {
         sourceId: row.source_id,
@@ -5705,6 +5885,7 @@ app.get('/api/knowledge/chunks/:id', async (req, res) => {
         summary: row.summary,
         tags: safeJsonParse(row.tags_json, []),
         entityRefs: safeJsonParse(row.entity_refs_json, []),
+        ...evidence,
         visibility: row.visibility || row.source_visibility || 'public',
         updatedAt: row.updated_at
       }

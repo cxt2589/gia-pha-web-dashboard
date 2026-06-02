@@ -387,7 +387,11 @@ type ExtractedAnniversaryCandidate = {
   personName: string;
   generation?: string;
   branch?: string;
+  sourceTitle?: string;
   sourceQuote?: string;
+  evidenceQuote?: string;
+  evidenceWindow?: string;
+  evidenceType?: string;
   headingPath?: string;
   matchedMemberId?: string;
   matchedMemberName?: string;
@@ -411,6 +415,11 @@ type ExtractedProfileCandidate = {
   reviewedText?: string;
   effectiveText?: string;
   sourceQuote?: string;
+  sourceTitle?: string;
+  headingPath?: string;
+  evidenceQuote?: string;
+  evidenceWindow?: string;
+  evidenceType?: string;
   sourceId?: string;
   chunkId?: string;
   knowledgeTitle?: string;
@@ -437,6 +446,11 @@ type ExtractedRelationshipCandidate = {
   reviewedText?: string;
   effectiveText?: string;
   sourceQuote?: string;
+  sourceTitle?: string;
+  headingPath?: string;
+  evidenceQuote?: string;
+  evidenceWindow?: string;
+  evidenceType?: string;
   sourceId?: string;
   chunkId?: string;
   knowledgeTitle?: string;
@@ -454,6 +468,9 @@ type SourceChunkDetail = {
   title: string;
   headingPath?: string;
   content: string;
+  evidenceQuote?: string;
+  evidenceWindow?: string;
+  evidenceOffset?: number;
   visibility?: string;
 };
 
@@ -827,6 +844,47 @@ export default function AIGovernor({
     sibling: "Anh/chị/em"
   }[type] || type);
 
+  const evidenceTypeLabel = (type?: string) => ({
+    genealogy_text: "Gia phả",
+    date_grave: "Ngày tháng/mộ chí",
+    biography: "Hành trạng",
+    relationship: "Quan hệ",
+    verification_note: "Cần kiểm chứng"
+  }[type || ""] || type || "Chưa phân loại");
+
+  const renderCandidateEvidence = (candidate: {
+    evidenceQuote?: string;
+    evidenceType?: string;
+    sourceTitle?: string;
+    knowledgeTitle?: string;
+    headingPath?: string;
+    sourceId?: string;
+    chunkId?: string;
+    matchConfidence?: string;
+    subjectMatchConfidence?: string;
+    objectMatchConfidence?: string;
+    flags?: Record<string, boolean>;
+  }, setNote: (value: string) => void = setExtractedNote) => {
+    const weak = ["weak", "ambiguous", "none"].includes(candidate.matchConfidence || "") ||
+      ["weak", "ambiguous", "none"].includes(candidate.subjectMatchConfidence || "") ||
+      ["weak", "ambiguous", "none"].includes(candidate.objectMatchConfidence || "") ||
+      Boolean(candidate.flags?.ambiguous_subject || candidate.flags?.ambiguous_object || candidate.flags?.requires_new_subject || candidate.flags?.requires_new_object);
+    return (
+      <div className="mt-3 rounded border border-stone-100 bg-[#fbfaf6] p-2">
+        <div className="flex flex-wrap items-center gap-2 text-[10px] font-bold uppercase tracking-wide text-stone-500">
+          <span className="rounded bg-white px-2 py-0.5 text-amber-700">{evidenceTypeLabel(candidate.evidenceType)}</span>
+          {weak && <span className="rounded bg-red-50 px-2 py-0.5 text-red-700">Cần kiểm tra match</span>}
+          <span className="normal-case tracking-normal text-stone-500">{candidate.sourceTitle || candidate.knowledgeTitle || candidate.sourceId || "Nguồn chưa rõ"}</span>
+        </div>
+        {candidate.headingPath && <p className="mt-1 text-[11px] font-semibold text-stone-500">{candidate.headingPath}</p>}
+        <p className="mt-1 text-xs leading-relaxed text-stone-700">{truncateText(candidate.evidenceQuote || "", 300) || "Chưa có trích dẫn evidence."}</p>
+        <button type="button" onClick={() => void openSourceChunk(candidate, setNote)} className="mt-2 rounded border border-stone-200 bg-white px-2 py-1 text-[11px] font-bold text-stone-600 hover:bg-stone-50">
+          Mở đúng đoạn nguồn
+        </button>
+      </div>
+    );
+  };
+
   const toggleCandidateSelection = (candidateId: string) => {
     setSelectedCandidateIds((current) => (
       current.includes(candidateId)
@@ -1102,13 +1160,16 @@ export default function AIGovernor({
     if (action === "apply") await loadAppliedExtractions();
   };
 
-  const openSourceChunk = async (candidate: { chunkId?: string }, setNote: (value: string) => void = setExtractedNote) => {
+  const openSourceChunk = async (candidate: { chunkId?: string; evidenceQuote?: string; evidenceWindow?: string }, setNote: (value: string) => void = setExtractedNote) => {
     if (!candidate.chunkId) {
       setNote("Candidate chưa có chunkId nguồn.");
       return;
     }
     try {
-      const response = await fetch(`/api/knowledge/chunks/${encodeURIComponent(candidate.chunkId)}`);
+      const params = new URLSearchParams();
+      if (candidate.evidenceQuote) params.set("evidenceQuote", candidate.evidenceQuote);
+      if (candidate.evidenceWindow) params.set("evidenceWindow", candidate.evidenceWindow);
+      const response = await fetch(`/api/knowledge/chunks/${encodeURIComponent(candidate.chunkId)}${params.toString() ? `?${params.toString()}` : ""}`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Không đọc được chunk nguồn.");
       setSourceChunkDetail(data.chunk || null);
@@ -4769,6 +4830,7 @@ export default function AIGovernor({
                           </div>
                           <p className="mt-1 text-[11px] text-stone-500">{candidate.knowledgeTitle || "-"} · {candidate.sourceId || "-"} · {candidate.chunkId || "-"} · {candidate.visibility || "public"}</p>
                           <p className="mt-2 text-xs leading-relaxed text-stone-700">{truncateText(candidate.reviewedText || candidate.extractedText || "", 300)}</p>
+                          {renderCandidateEvidence(candidate, setRelationshipCandidateNote)}
                           {(candidate.flags?.ambiguous_subject || candidate.flags?.ambiguous_object || candidate.flags?.requires_new_subject || candidate.flags?.requires_new_object) && (
                             <p className="mt-2 rounded bg-amber-50 p-2 text-[11px] font-semibold text-amber-800">
                               Cần rà lại: {candidate.flags?.ambiguous_subject ? "chủ thể mơ hồ; " : ""}{candidate.flags?.ambiguous_object ? "đối tượng mơ hồ; " : ""}{candidate.flags?.requires_new_subject ? "chưa có chủ thể trong cây; " : ""}{candidate.flags?.requires_new_object ? "chưa có đối tượng trong cây; " : ""}
@@ -4900,7 +4962,7 @@ export default function AIGovernor({
                         <p className="mt-1 text-[11px] text-stone-500">
                           {candidate.headingPath || "-"} · {candidate.sourceId} · {candidate.chunkId || "-"}
                         </p>
-                        <p className="mt-1 text-xs leading-relaxed text-stone-600">{truncateText(candidate.sourceQuote || "", 260)}</p>
+                        {renderCandidateEvidence(candidate)}
                         <button
                           type="button"
                           onClick={() => void openSourceChunk(candidate)}
@@ -5124,12 +5186,15 @@ export default function AIGovernor({
                             </div>
                             <p className="mt-1 text-[11px] text-stone-500">{candidate.knowledgeTitle || "-"} · {candidate.sourceId || "-"} · {candidate.chunkId || "-"} · {candidate.visibility || "public"}</p>
                             <p className="mt-2 text-xs leading-relaxed text-stone-700">{truncateText(candidate.reviewedText || candidate.extractedText || "", 320)}</p>
+                            {renderCandidateEvidence(candidate, setProfileCandidateNote)}
                           </div>
                           <div className="flex shrink-0 flex-wrap gap-2">
                             <button type="button" onClick={() => void patchProfileCandidate(candidate.id, { status: "approved" }, "Đã duyệt candidate hành trạng.")} disabled={candidate.status === "applied"} className="rounded bg-emerald-700 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-800 disabled:opacity-50">Duyệt</button>
                             <button type="button" onClick={() => void patchProfileCandidate(candidate.id, { status: "rejected" }, "Đã từ chối candidate hành trạng.")} disabled={candidate.status === "applied"} className="rounded border border-red-200 px-2.5 py-1.5 text-[11px] font-bold text-red-700 hover:bg-red-50 disabled:opacity-50">Từ chối</button>
                             <button type="button" onClick={() => startEditProfileCandidate(candidate)} className="rounded border border-stone-200 px-2.5 py-1.5 text-[11px] font-bold text-stone-600 hover:bg-stone-50">Sửa</button>
-                            <button type="button" onClick={() => void applyProfileCandidate(candidate)} disabled={candidate.status !== "approved" && candidate.status !== "applied"} className="rounded bg-red-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-red-950 disabled:opacity-50">Áp dụng</button>
+                            {candidate.candidateType !== "verification_note" && candidate.candidateType !== "clan_legacy" && candidate.candidateType !== "branch_legacy" && (
+                              <button type="button" onClick={() => void applyProfileCandidate(candidate)} disabled={candidate.status !== "approved" && candidate.status !== "applied"} className="rounded bg-red-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-red-950 disabled:opacity-50">Áp dụng</button>
+                            )}
                           </div>
                         </div>
                         <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-3">
@@ -5207,6 +5272,18 @@ export default function AIGovernor({
                       </button>
                     </div>
                     <div className="max-h-[65vh] overflow-y-auto p-4">
+                      {sourceChunkDetail.evidenceQuote && (
+                        <div className="mb-3 rounded border border-amber-200 bg-amber-50 p-3">
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-amber-800">Trích dẫn candidate</p>
+                          <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-stone-800">{sourceChunkDetail.evidenceQuote}</p>
+                        </div>
+                      )}
+                      {sourceChunkDetail.evidenceWindow && (
+                        <div className="mb-3 rounded border border-stone-200 bg-[#fbfaf6] p-3">
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-stone-500">Đoạn nguồn quanh evidence</p>
+                          <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-stone-700">{sourceChunkDetail.evidenceWindow}</p>
+                        </div>
+                      )}
                       <pre className="whitespace-pre-wrap text-sm leading-relaxed text-stone-700">{sourceChunkDetail.content}</pre>
                     </div>
                   </div>
