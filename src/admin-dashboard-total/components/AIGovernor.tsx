@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  Ban,
   Bot,
   BrainCircuit,
   CheckCircle2,
@@ -10,6 +11,7 @@ import {
   FileText,
   GitBranch,
   Globe2,
+  Lock,
   MessageSquare,
   Move,
   PenLine,
@@ -18,6 +20,7 @@ import {
   Save,
   Send,
   Settings,
+  ShieldCheck,
   Sparkles,
   Search,
   Trash2,
@@ -615,6 +618,9 @@ export default function AIGovernor({
   const [isKnowledgeLoading, setIsKnowledgeLoading] = useState(false);
   const [isKnowledgeSearching, setIsKnowledgeSearching] = useState(false);
   const [knowledgeApiNote, setKnowledgeApiNote] = useState("");
+  const [maintenanceNote, setMaintenanceNote] = useState("");
+  const [maintenanceResult, setMaintenanceResult] = useState<any>(null);
+  const [isMaintenanceRunning, setIsMaintenanceRunning] = useState(false);
   const [aiLogs, setAiLogs] = useState<AIRequestLog[]>([]);
   const [aiLogSummary, setAiLogSummary] = useState<AIRequestLogSummary | null>(null);
   const [isAiLogsLoading, setIsAiLogsLoading] = useState(false);
@@ -954,6 +960,35 @@ export default function AIGovernor({
       setKnowledgeApiNote(`Không đọc được kho tri thức backend: ${err?.message || "lỗi không xác định"}`);
     } finally {
       setIsKnowledgeLoading(false);
+    }
+  };
+
+  const runKnowledgeMaintenance = async (action: "lock" | "reject") => {
+    setIsMaintenanceRunning(true);
+    try {
+      const endpoint = action === "lock"
+        ? "/api/knowledge/maintenance/lock-technical-sources"
+        : "/api/knowledge/maintenance/reject-noisy-candidates";
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không chạy được bảo trì kho tri thức.");
+      setMaintenanceResult(data);
+      setMaintenanceNote(action === "lock"
+        ? `Đã khóa ${data.lockedSources || 0} nguồn kỹ thuật, cập nhật ${data.updatedChunks || 0} chunks.`
+        : `Đã reject ${data.rejectedProfileCandidates || 0} profile candidates và ${data.rejectedRelationshipCandidates || 0} relationship candidates nhiễu.`);
+      await Promise.all([
+        loadKnowledgeBackend(),
+        loadProfileCandidates(),
+        loadRelationshipCandidates()
+      ]);
+    } catch (err: any) {
+      setMaintenanceNote(`Lỗi bảo trì kho tri thức: ${err?.message || "không xác định"}`);
+    } finally {
+      setIsMaintenanceRunning(false);
     }
   };
 
@@ -4464,6 +4499,54 @@ export default function AIGovernor({
                   </p>
                 )}
               </div>
+            </div>
+            <div className="mb-4 rounded-lg border border-red-200 bg-red-50/40 p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <h4 className="flex items-center gap-2 font-bold text-stone-850">
+                    <ShieldCheck className="h-4 w-4 text-red-800" />
+                    Bảo trì kho tri thức
+                  </h4>
+                  <p className="mt-1 text-xs leading-relaxed text-stone-500">
+                    Khóa source kỹ thuật/rule để scanner và chatbot public không dùng nhầm, sau đó reject candidate nhiễu đang chờ duyệt. Không xóa candidate và không đụng dữ liệu cây phả.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void runKnowledgeMaintenance("lock")}
+                    disabled={isMaintenanceRunning}
+                    className="inline-flex items-center justify-center gap-2 rounded bg-red-900 px-3 py-2 text-xs font-bold text-white hover:bg-red-950 disabled:opacity-60"
+                  >
+                    <Lock className="h-4 w-4" />
+                    Khóa nguồn kỹ thuật
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void runKnowledgeMaintenance("reject")}
+                    disabled={isMaintenanceRunning}
+                    className="inline-flex items-center justify-center gap-2 rounded border border-red-200 bg-white px-3 py-2 text-xs font-bold text-red-900 hover:bg-red-50 disabled:opacity-60"
+                  >
+                    <Ban className="h-4 w-4" />
+                    Reject candidate nhiễu
+                  </button>
+                </div>
+              </div>
+              {isMaintenanceRunning && (
+                <p className="mt-2 flex items-center gap-1.5 text-xs text-red-800">
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                  Đang chạy bảo trì...
+                </p>
+              )}
+              {maintenanceNote && <p className="mt-2 rounded bg-white p-2 text-[11px] leading-relaxed text-stone-700">{maintenanceNote}</p>}
+              {maintenanceResult && (
+                <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-bold text-stone-700 md:grid-cols-4">
+                  <span className="rounded bg-white px-2 py-1">Sources khóa: {maintenanceResult.lockedSources ?? 0}</span>
+                  <span className="rounded bg-white px-2 py-1">Chunks cập nhật: {maintenanceResult.updatedChunks ?? 0}</span>
+                  <span className="rounded bg-white px-2 py-1">Profile reject: {maintenanceResult.rejectedProfileCandidates ?? 0}</span>
+                  <span className="rounded bg-white px-2 py-1">Quan hệ reject: {maintenanceResult.rejectedRelationshipCandidates ?? 0}</span>
+                </div>
+              )}
             </div>
             <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50/40 p-4">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">

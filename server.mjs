@@ -686,6 +686,14 @@ async function getDatabase() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS knowledge_maintenance_logs (
+      id TEXT PRIMARY KEY,
+      action TEXT NOT NULL DEFAULT '',
+      summary_json TEXT NOT NULL DEFAULT '{}',
+      admin_user TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS anniversary_event_drafts (
       id TEXT PRIMARY KEY,
       anniversary_key TEXT NOT NULL DEFAULT '',
@@ -1320,6 +1328,46 @@ function canReadKnowledgeVisibility(visibility, authScope) {
   return ['public', 'global'].includes(normalized);
 }
 
+function normalizeKnowledgeSourceKind(value) {
+  const normalized = normalizeGatewayText(value || '');
+  if (['technical_rule', 'verification_note', 'imported_document', 'genealogy_evidence'].includes(normalized)) return normalized;
+  return '';
+}
+
+function isTechnicalKnowledgeSource(row = {}) {
+  const metadata = safeJsonParse(row.source_metadata_json || row.metadata_json || '{}', {});
+  const title = normalizeKnowledgeText(row.source_title || row.title || '');
+  const slug = normalizeGatewayText(row.source_slug || row.slug || '');
+  const fileName = normalizeGatewayText(metadata.file_name || metadata.fileName || '');
+  const sourceKind = normalizeKnowledgeSourceKind(metadata.sourceKind || metadata.source_kind);
+  if (sourceKind === 'technical_rule') return true;
+  if (metadata.excludeFromExtraction === true || metadata.excludeFromPublicChat === true) return true;
+  if (metadata.seed_slug === PHASE2_ALIAS_SEED_SLUG) return true;
+  if (slug.includes(PHASE2_ALIAS_SEED_SLUG)) return true;
+  return [
+    'manual notes for knowledge base',
+    'search alias rules',
+    'sql seed manual notes',
+    'backend implementation notes',
+    'ai guardrail prompt',
+    'metadata examples',
+    'entity alias role overrides',
+    'readme'
+  ].some((needle) => title.includes(needle) || fileName.includes(normalizeGatewayText(needle)));
+}
+
+function shouldExcludeKnowledgeFromExtraction(row = {}) {
+  const metadata = safeJsonParse(row.source_metadata_json || row.metadata_json || '{}', {});
+  const sourceKind = normalizeKnowledgeSourceKind(metadata.sourceKind || metadata.source_kind);
+  return metadata.excludeFromExtraction === true || sourceKind === 'technical_rule' || isTechnicalKnowledgeSource(row);
+}
+
+function shouldExcludeKnowledgeFromPublicChat(row = {}, authScope = 'admin') {
+  if (authScope === 'admin') return false;
+  const metadata = safeJsonParse(row.source_metadata_json || row.metadata_json || '{}', {});
+  return metadata.excludeFromPublicChat === true || isTechnicalKnowledgeSource(row);
+}
+
 async function getRequestAuthContext(req) {
   const session = await getAuthSession(req);
   const authUser = await findAuthUserForSession(session);
@@ -1627,11 +1675,13 @@ async function searchKnowledgeWithAliases(query, { limit = 8, authScope = 'admin
     SELECT
       kc.*,
       ks.title AS source_title,
+      ks.slug AS source_slug,
       ks.scope AS source_scope,
       ks.system_scope AS source_system_scope,
       ks.clan_scope AS source_clan_scope,
       ks.domain AS source_domain,
       ks.visibility AS source_visibility,
+      ks.metadata_json AS source_metadata_json,
       ks.tags_json AS source_tags_json,
       ks.entity_refs_json AS source_entity_refs_json
     FROM knowledge_chunks kc
@@ -1640,6 +1690,7 @@ async function searchKnowledgeWithAliases(query, { limit = 8, authScope = 'admin
   const queryWords = queryNorm.split(/[^a-z0-9]+/).filter((word) => word.length >= 3);
   const chunkMatches = chunkRows
     .filter((row) => canReadKnowledgeVisibility(row.visibility || row.source_visibility, authScope))
+    .filter((row) => !shouldExcludeKnowledgeFromPublicChat(row, authScope))
     .map((row) => {
       const score = scoreKnowledgeChunk(queryNorm, queryWords, {
         ...row,
@@ -3186,7 +3237,7 @@ async function scanExtractedProfileCandidates({ sourceId = '', limit = 250 } = {
   const where = sourceId ? 'WHERE c.source_id = ?' : '';
   const params = sourceId ? [sourceId] : [];
   const rows = database.prepare(`
-    SELECT c.*, s.title AS source_title, s.visibility AS source_visibility
+    SELECT c.*, s.title AS source_title, s.slug AS source_slug, s.visibility AS source_visibility, s.metadata_json AS source_metadata_json
     FROM knowledge_chunks c
     LEFT JOIN knowledge_sources s ON s.id = c.source_id
     ${where}
@@ -3199,6 +3250,10 @@ async function scanExtractedProfileCandidates({ sourceId = '', limit = 250 } = {
   const candidates = [];
   for (const row of rows) {
     scanned += 1;
+    if (shouldExcludeKnowledgeFromExtraction(row)) {
+      skipped += 1;
+      continue;
+    }
     const haystack = normalizeKnowledgeText([row.title, row.heading_path, row.summary, row.content].join(' '));
     if (!PROFILE_CANDIDATE_KEYWORDS.some((keyword) => haystack.includes(keyword))) {
       skipped += 1;
@@ -3275,7 +3330,7 @@ async function scanExtractedNameAliasCandidates({ sourceId = '', limit = 250 } =
   const where = sourceId ? 'WHERE c.source_id = ?' : '';
   const params = sourceId ? [sourceId] : [];
   const rows = database.prepare(`
-    SELECT c.*, s.title AS source_title, s.visibility AS source_visibility
+    SELECT c.*, s.title AS source_title, s.slug AS source_slug, s.visibility AS source_visibility, s.metadata_json AS source_metadata_json
     FROM knowledge_chunks c
     LEFT JOIN knowledge_sources s ON s.id = c.source_id
     ${where}
@@ -3288,6 +3343,10 @@ async function scanExtractedNameAliasCandidates({ sourceId = '', limit = 250 } =
   const candidates = [];
   for (const row of rows) {
     scanned += 1;
+    if (shouldExcludeKnowledgeFromExtraction(row)) {
+      skipped += 1;
+      continue;
+    }
     const rawText = compactText(row.content || row.summary || row.title || '', 1200);
     const haystack = normalizeKnowledgeText([row.title, row.heading_path, row.summary, rawText].join(' '));
     const hasNameSignal = /(cao |cao dinh|cao van|cao duy|cao xuan|cao to|thuy to|thuy to|danh xung|ten huy|ten day du|ho ten|alias)/.test(haystack);
@@ -3731,7 +3790,7 @@ async function scanExtractedRelationshipCandidates({ sourceId = '', limit = 250 
   const where = sourceId ? 'WHERE c.source_id = ?' : '';
   const params = sourceId ? [sourceId] : [];
   const rows = database.prepare(`
-    SELECT c.*, s.title AS source_title, s.visibility AS source_visibility
+    SELECT c.*, s.title AS source_title, s.slug AS source_slug, s.visibility AS source_visibility, s.metadata_json AS source_metadata_json
     FROM knowledge_chunks c
     LEFT JOIN knowledge_sources s ON s.id = c.source_id
     ${where}
@@ -3743,6 +3802,10 @@ async function scanExtractedRelationshipCandidates({ sourceId = '', limit = 250 
   let skipped = 0;
   const candidates = [];
   for (const row of rows) {
+    if (shouldExcludeKnowledgeFromExtraction(row)) {
+      skipped += 1;
+      continue;
+    }
     const rawText = compactText(row.content || row.summary || row.title || '', 1800);
     const haystack = normalizeKnowledgeText([row.title, row.heading_path, row.summary, rawText].join(' '));
     if (!/(vo|chong|phoi ngau|chinh that|thu that|sinh ha|sinh duoc|con cua|phu than|mau than|cha cua|me cua|truong nam|thu nam|truong nu|thu nu)/.test(haystack)) {
@@ -4557,6 +4620,7 @@ function publicKnowledgeSource(row) {
     summary: row.summary,
     tags: safeJsonParse(row.tags_json, []),
     entityRefs: safeJsonParse(row.entity_refs_json, []),
+    metadata: safeJsonParse(row.metadata_json, {}),
     visibility: row.visibility,
     status: row.status,
     updatedAt: row.updated_at
@@ -4571,6 +4635,180 @@ async function listKnowledgeSources({ authScope = 'admin', limit = 80 } = {}) {
     .all(limit)
     .filter((row) => canReadKnowledgeVisibility(row.visibility, authScope))
     .map(publicKnowledgeSource);
+}
+
+function normalizeKnowledgeMaintenanceLog(row) {
+  return {
+    id: row.id,
+    action: row.action,
+    summary: safeJsonParse(row.summary_json, {}),
+    adminUser: row.admin_user,
+    createdAt: row.created_at
+  };
+}
+
+async function listKnowledgeMaintenanceLogs({ limit = 20 } = {}) {
+  const database = await getDatabase();
+  return database
+    .prepare('SELECT * FROM knowledge_maintenance_logs ORDER BY created_at DESC LIMIT ?')
+    .all(Math.max(1, Math.min(100, Number(limit) || 20)))
+    .map(normalizeKnowledgeMaintenanceLog);
+}
+
+function insertKnowledgeMaintenanceLog(database, action, summary, adminUser = {}) {
+  const id = `maint_${sha256Base64Url(`${action}:${Date.now()}:${randomToken(6)}`).slice(0, 24)}`;
+  database.prepare(`
+    INSERT INTO knowledge_maintenance_logs (id, action, summary_json, admin_user, created_at)
+    VALUES (?, ?, ?, ?, datetime('now'))
+  `).run(
+    id,
+    action,
+    JSON.stringify(summary || {}),
+    adminUser?.username || adminUser?.fullName || adminUser?.id || ''
+  );
+  return id;
+}
+
+async function lockTechnicalKnowledgeSources(adminUser = {}) {
+  await ensurePhase2AliasKnowledgeSeeded();
+  const database = await getDatabase();
+  const rows = database.prepare('SELECT * FROM knowledge_sources ORDER BY updated_at DESC').all();
+  const targetRows = rows.filter(isTechnicalKnowledgeSource);
+  let lockedSources = 0;
+  let updatedChunks = 0;
+  const locked = [];
+  database.exec('BEGIN');
+  try {
+    for (const row of targetRows) {
+      const metadata = {
+        ...safeJsonParse(row.metadata_json, {}),
+        sourceKind: 'technical_rule',
+        excludeFromExtraction: true,
+        excludeFromPublicChat: true,
+        lockedByMaintenance: 'phase_2w2a',
+        lockedAt: new Date().toISOString()
+      };
+      const nextVisibility = row.visibility === 'private' ? 'private' : 'admin';
+      const sourceResult = database.prepare(`
+        UPDATE knowledge_sources
+        SET visibility = ?, metadata_json = ?, updated_at = datetime('now')
+        WHERE id = ?
+      `).run(nextVisibility, JSON.stringify(metadata), row.id);
+      const chunkResult = database.prepare(`
+        UPDATE knowledge_chunks
+        SET visibility = ?, metadata_json = json_set(
+          COALESCE(NULLIF(metadata_json, ''), '{}'),
+          '$.sourceKind', 'technical_rule',
+          '$.excludeFromExtraction', json('true'),
+          '$.excludeFromPublicChat', json('true')
+        ),
+        updated_at = datetime('now')
+        WHERE source_id = ?
+      `).run(nextVisibility, row.id);
+      lockedSources += sourceResult.changes || 0;
+      updatedChunks += chunkResult.changes || 0;
+      locked.push({ id: row.id, slug: row.slug, title: row.title, visibility: nextVisibility });
+    }
+    const summary = { lockedSources, updatedChunks, locked };
+    const logId = insertKnowledgeMaintenanceLog(database, 'lock_technical_sources', summary, adminUser);
+    database.exec('COMMIT');
+    return { ok: true, ...summary, logId };
+  } catch (err) {
+    database.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function isNoisyCandidateText(value) {
+  const raw = String(value || '').trim();
+  const norm = normalizeKnowledgeText(raw);
+  if (!norm) return false;
+  if (/\b(lowercase|bo kinh xung|ghi la|van truc thuoc|lam toc bieu|mua pho ly|khong hien dien)\b/.test(norm)) return true;
+  const wordCount = norm.split(/\s+/).filter(Boolean).length;
+  if (wordCount > 6 && !/^cao\s+(dinh|van|duy|xuan|huu|ba|quang|minh|duc|viet)\b/.test(norm)) return true;
+  if (/^cao\s+[a-z\s]+$/.test(raw) && raw !== raw.replace(/\b\p{L}/gu, (letter) => letter.toLocaleUpperCase('vi-VN'))) return true;
+  return false;
+}
+
+function shouldRejectProfileCandidateAsNoisy(row, technicalSourceIds = new Set()) {
+  if (normalizeProfileCandidateStatus(row.status) === 'applied') return false;
+  const status = normalizeProfileCandidateStatus(row.status);
+  if (!['pending', 'candidate'].includes(status)) return false;
+  if (technicalSourceIds.has(row.source_id)) return true;
+  return [
+    row.person_name,
+    row.extracted_text,
+    row.reviewed_text,
+    row.source_quote,
+    row.knowledge_title
+  ].some(isNoisyCandidateText);
+}
+
+function shouldRejectRelationshipCandidateAsNoisy(row, technicalSourceIds = new Set()) {
+  if (normalizeRelationshipCandidateStatus(row.status) === 'applied') return false;
+  const status = normalizeRelationshipCandidateStatus(row.status);
+  if (!['pending', 'candidate'].includes(status)) return false;
+  if (technicalSourceIds.has(row.source_id)) return true;
+  return [
+    row.subject_name,
+    row.object_name,
+    row.extracted_text,
+    row.reviewed_text,
+    row.source_quote,
+    row.knowledge_title
+  ].some(isNoisyCandidateText);
+}
+
+async function rejectNoisyKnowledgeCandidates(adminUser = {}) {
+  const database = await getDatabase();
+  const technicalSourceIds = new Set(
+    database.prepare('SELECT id, slug, title, metadata_json FROM knowledge_sources').all()
+      .filter(isTechnicalKnowledgeSource)
+      .map((row) => row.id)
+  );
+  const profileRows = database.prepare('SELECT * FROM extracted_profile_candidates').all();
+  const relationshipRows = database.prepare('SELECT * FROM extracted_relationship_candidates').all();
+  const profileTargets = profileRows.filter((row) => shouldRejectProfileCandidateAsNoisy(row, technicalSourceIds));
+  const relationshipTargets = relationshipRows.filter((row) => shouldRejectRelationshipCandidateAsNoisy(row, technicalSourceIds));
+  database.exec('BEGIN');
+  try {
+    for (const row of profileTargets) {
+      const metadata = {
+        ...safeJsonParse(row.metadata_json, {}),
+        maintenanceRejectedBy: 'phase_2w2a',
+        maintenanceRejectedAt: new Date().toISOString()
+      };
+      database.prepare(`
+        UPDATE extracted_profile_candidates
+        SET status = 'rejected', metadata_json = ?, updated_at = datetime('now')
+        WHERE id = ? AND status <> 'applied'
+      `).run(JSON.stringify(metadata), row.id);
+    }
+    for (const row of relationshipTargets) {
+      const metadata = {
+        ...safeJsonParse(row.metadata_json, {}),
+        maintenanceRejectedBy: 'phase_2w2a',
+        maintenanceRejectedAt: new Date().toISOString()
+      };
+      database.prepare(`
+        UPDATE extracted_relationship_candidates
+        SET status = 'rejected', metadata_json = ?, updated_at = datetime('now')
+        WHERE id = ? AND status <> 'applied'
+      `).run(JSON.stringify(metadata), row.id);
+    }
+    const summary = {
+      technicalSourceIds: [...technicalSourceIds],
+      rejectedProfileCandidates: profileTargets.length,
+      rejectedRelationshipCandidates: relationshipTargets.length,
+      appliedCandidatesTouched: 0
+    };
+    const logId = insertKnowledgeMaintenanceLog(database, 'reject_noisy_candidates', summary, adminUser);
+    database.exec('COMMIT');
+    return { ok: true, ...summary, logId };
+  } catch (err) {
+    database.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 async function createKnowledgeSource(payload = {}, authUser = null) {
@@ -5124,6 +5362,39 @@ app.get('/api/knowledge/search', async (req, res) => {
   } catch (err) {
     console.error('Failed to search knowledge:', err);
     res.status(500).json({ error: 'Failed to search knowledge.' });
+  }
+});
+
+app.get('/api/knowledge/maintenance/logs', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    const limit = Math.max(1, Math.min(100, Number(req.query.limit || 20) || 20));
+    res.json({ logs: await listKnowledgeMaintenanceLogs({ limit }) });
+  } catch (err) {
+    console.error('Failed to list knowledge maintenance logs:', err);
+    res.status(500).json({ error: 'Failed to list knowledge maintenance logs.' });
+  }
+});
+
+app.post('/api/knowledge/maintenance/lock-technical-sources', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json(await lockTechnicalKnowledgeSources(admin.authUser));
+  } catch (err) {
+    console.error('Failed to lock technical knowledge sources:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to lock technical knowledge sources.' });
+  }
+});
+
+app.post('/api/knowledge/maintenance/reject-noisy-candidates', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json(await rejectNoisyKnowledgeCandidates(admin.authUser));
+  } catch (err) {
+    console.error('Failed to reject noisy candidates:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to reject noisy candidates.' });
   }
 });
 
