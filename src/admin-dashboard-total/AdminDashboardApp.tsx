@@ -50,7 +50,7 @@ function AdminLoginPage({ session }: { session: AdminAuthSession | null }) {
   const isDenied = isLoggedIn && !(session.role === "admin" || session.roles?.includes("admin"));
 
   return (
-    <div className="min-h-screen bg-[#fbf9f5] text-[#1b1c1a] [background-image:radial-gradient(#e4e2de_0.5px,transparent_0.5px)] [background-size:24px_24px]">
+    <div className="min-h-screen overflow-x-hidden bg-[#fbf9f5] text-[#1b1c1a] [background-image:radial-gradient(#e4e2de_0.5px,transparent_0.5px)] [background-size:24px_24px]">
       <style>{`
         @keyframes admin-login-drum-spin {
           from { transform: translate(-50%, -50%) rotate(0deg); }
@@ -68,28 +68,28 @@ function AdminLoginPage({ session }: { session: AdminAuthSession | null }) {
         }
       `}</style>
       <header className="sticky top-0 z-20 border-b border-[#e0bfbf] bg-[#fbf9f5]/95 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 md:px-16">
-          <a href="/" className="font-serif text-2xl font-bold text-[#570013]">Gia Tộc Họ Cao</a>
-          <a href="/" className="rounded border border-[#775a19]/40 px-4 py-2 text-xs font-bold uppercase tracking-wide text-[#570013] hover:bg-[#fed488]/30">
+        <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:flex-nowrap sm:px-6 md:px-16">
+          <a href="/" className="min-w-0 font-serif text-xl font-bold leading-tight text-[#570013] sm:text-2xl">Gia Tộc Họ Cao</a>
+          <a href="/" className="shrink-0 rounded border border-[#775a19]/40 px-3 py-2 text-[10px] font-bold uppercase tracking-wide text-[#570013] hover:bg-[#fed488]/30 sm:px-4 sm:text-xs">
             Về web gia phả
           </a>
         </div>
       </header>
 
-      <main className="relative flex min-h-[calc(100vh-132px)] items-center justify-center overflow-hidden px-4 py-12">
+      <main className="relative box-border flex min-h-[calc(100vh-132px)] w-full items-center justify-center overflow-hidden px-3 py-10 sm:px-4 sm:py-12">
         <img
           src="/images/dong-son-drum.png"
           alt=""
           aria-hidden="true"
-          className="admin-login-drum pointer-events-none absolute left-1/2 top-1/2 h-[620px] w-[620px] object-contain opacity-[0.13] mix-blend-multiply md:h-[820px] md:w-[820px]"
+          className="admin-login-drum pointer-events-none absolute left-1/2 top-1/2 h-[460px] w-[460px] max-w-none object-contain opacity-[0.13] mix-blend-multiply sm:h-[620px] sm:w-[620px] md:h-[820px] md:w-[820px]"
         />
 
-        <section className="relative z-10 w-full max-w-md rounded border border-[#e0bfbf] bg-[#fbf9f5]/95 p-8 shadow-sm md:p-12">
-          <div className="mb-9 text-center">
+        <section className="relative z-10 box-border w-full max-w-[calc(100vw-1.5rem)] rounded border border-[#e0bfbf] bg-[#fbf9f5]/95 p-6 shadow-sm sm:max-w-md sm:p-8 md:p-12">
+          <div className="mb-7 text-center sm:mb-9">
             <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full border border-[#775a19]/35 bg-[#ffdea5]/40 text-[#570013]">
               <KeyRound className="h-5 w-5" />
             </div>
-            <h1 className="font-serif text-4xl font-semibold text-[#570013]">Chào mừng</h1>
+            <h1 className="font-serif text-3xl font-semibold text-[#570013] sm:text-4xl">Chào mừng</h1>
             <p className="mt-3 text-sm leading-relaxed text-[#584141]">
               Chào mừng quản trị viên trở về với không gian điều hành gia phả.
               Vui lòng đăng nhập bằng tài khoản đã được cấp quyền.
@@ -108,13 +108,13 @@ function AdminLoginPage({ session }: { session: AdminAuthSession | null }) {
           <div className="space-y-3">
             <a
               href="/api/auth/zalo/start?return_to=/admin"
-              className="block w-full border border-[#570013] bg-[#800020] px-5 py-4 text-center text-sm font-bold uppercase tracking-widest text-white transition hover:bg-[#570013]"
+              className="block w-full border border-[#570013] bg-[#800020] px-4 py-4 text-center text-xs font-bold uppercase tracking-wide text-white transition hover:bg-[#570013] sm:px-5 sm:text-sm sm:tracking-widest"
             >
               Đăng nhập bằng Zalo
             </a>
             <a
               href="/api/auth/google/start?return_to=/admin"
-              className="block w-full border border-[#775a19]/45 bg-transparent px-5 py-4 text-center text-sm font-bold uppercase tracking-widest text-[#570013] transition hover:bg-[#ffdea5]/35"
+              className="block w-full border border-[#775a19]/45 bg-transparent px-4 py-4 text-center text-xs font-bold uppercase tracking-wide text-[#570013] transition hover:bg-[#ffdea5]/35 sm:px-5 sm:text-sm sm:tracking-widest"
             >
               Đăng nhập bằng Gmail
             </a>
