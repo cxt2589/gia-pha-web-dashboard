@@ -4537,15 +4537,9 @@ async function listAppliedProfileExtractions({ q = '', limit = 80 } = {}) {
     .slice(0, Math.max(1, Math.min(500, Number(limit) || 80)));
 }
 
-async function listProfileAuditLogs({ limit = 80 } = {}) {
-  const database = await getDatabase();
-  return database.prepare(`
-    SELECT a.*, c.person_name, c.matched_member_name, c.target_field, c.knowledge_title
-    FROM extracted_profile_audit_logs a
-    LEFT JOIN extracted_profile_candidates c ON c.id = a.candidate_id
-    ORDER BY a.created_at DESC
-    LIMIT ?
-  `).all(Math.max(1, Math.min(500, Number(limit) || 80))).map((row) => ({
+function publicProfileAuditLog(row) {
+  if (!row) return null;
+  return {
     id: row.id,
     candidateId: row.candidate_id,
     memberId: row.member_id,
@@ -4556,7 +4550,18 @@ async function listProfileAuditLogs({ limit = 80 } = {}) {
     chunkId: row.chunk_id,
     adminUser: row.admin_user,
     createdAt: row.created_at
-  }));
+  };
+}
+
+async function listProfileAuditLogs({ limit = 80 } = {}) {
+  const database = await getDatabase();
+  return database.prepare(`
+    SELECT a.*, c.person_name, c.matched_member_name, c.target_field, c.knowledge_title
+    FROM extracted_profile_audit_logs a
+    LEFT JOIN extracted_profile_candidates c ON c.id = a.candidate_id
+    ORDER BY a.created_at DESC
+    LIMIT ?
+  `).all(Math.max(1, Math.min(500, Number(limit) || 80))).map(publicProfileAuditLog);
 }
 
 async function buildProfileLocalAnswer(query, authScope = 'anonymous') {
@@ -5919,6 +5924,258 @@ function assertV3CandidateApplyAllowed(kind, row, body = {}) {
   throw err;
 }
 
+function getV3ReviewQueueGroup(kind, row) {
+  if (kind === 'relationship') return 'relationship';
+  if (kind === 'anniversary') return 'vital';
+  const candidateType = String(row.candidate_type || '').trim();
+  if (candidateType === 'name_alias') return 'name';
+  if (['verification_note', 'clan_legacy', 'branch_legacy'].includes(candidateType)) return 'note';
+  return 'profile';
+}
+
+function getV3ReviewQueueAction(kind, row, guard) {
+  const actions = new Set(guard?.requiredActions || []);
+  const confirmations = new Set(guard?.requiredConfirmations || []);
+  const blockers = new Set(guard?.blockedReasons || []);
+  if (blockers.has('noise_reject_candidate') || actions.has('reject_or_rescan_source')) {
+    return {
+      code: 'reject_or_rescan',
+      label: 'Reject hoặc quét lại nguồn',
+      detail: 'Candidate thiếu evidence hoặc nhiễu chắc chắn, không được apply vào cây phả.'
+    };
+  }
+  if (blockers.has('do_not_apply_directly') || actions.has('keep_as_verification_note')) {
+    return {
+      code: 'keep_verification_note',
+      label: 'Giữ làm ghi chú kiểm chứng',
+      detail: 'Không áp dụng trực tiếp vào cá nhân; lưu lại để Ban trị sự đối chiếu tài liệu.'
+    };
+  }
+  if (actions.has('assign_member')) {
+    return {
+      code: 'assign_member',
+      label: 'Gán đúng nhân vật',
+      detail: 'Chọn nhân vật trong cây phả trước khi duyệt hoặc apply.'
+    };
+  }
+  if (actions.has('assign_subject_and_object')) {
+    return {
+      code: 'assign_relationship_members',
+      label: 'Gán chủ thể và đối tượng',
+      detail: 'Xác nhận rõ ai là chủ thể, quan hệ là gì, và đối tượng là ai.'
+    };
+  }
+  if (confirmations.has('confirmRelationshipReview')) {
+    return {
+      code: 'confirm_relationship',
+      label: 'Kiểm quan hệ',
+      detail: 'Xác nhận loại quan hệ, chiều quan hệ và hai nhân vật liên quan.'
+    };
+  }
+  if (confirmations.has('confirmFieldMapping')) {
+    return {
+      code: 'confirm_field_mapping',
+      label: 'Kiểm field đích',
+      detail: 'Đối chiếu field đích để tránh map nhầm, nhất là quê quán/mộ chí/ngày giỗ.'
+    };
+  }
+  if (confirmations.has('confirmSourceCheck')) {
+    return {
+      code: 'confirm_source',
+      label: 'Kiểm đoạn nguồn',
+      detail: 'Mở trích dẫn và xác nhận đoạn nguồn trước khi apply.'
+    };
+  }
+  if (confirmations.has('confirmIdentity')) {
+    return {
+      code: 'confirm_identity',
+      label: 'Xác nhận nhân vật',
+      detail: 'Xác nhận candidate đang gán đúng người trong cây phả.'
+    };
+  }
+  const status = kind === 'relationship'
+    ? normalizeRelationshipCandidateStatus(row.status)
+    : kind === 'profile'
+      ? normalizeProfileCandidateStatus(row.status)
+      : normalizeExtractedCandidateStatus(row.status);
+  if (status === 'pending') {
+    return {
+      code: 'approve_then_apply',
+      label: 'Duyệt rồi apply',
+      detail: 'Candidate đã đủ điều kiện cơ bản; admin duyệt trước rồi mới apply.'
+    };
+  }
+  return {
+    code: 'ready_to_apply',
+    label: 'Có thể apply',
+    detail: 'Candidate đã duyệt và không còn blocker triage.'
+  };
+}
+
+function publicV3ReviewQueueItem(kind, row) {
+  const triage = classifyV3Candidate(kind, row);
+  const guard = getV3CandidateReviewState(kind, row);
+  const metadata = safeJsonParse(row.metadata_json, {});
+  const status = triage.status;
+  const group = getV3ReviewQueueGroup(kind, row);
+  const title = kind === 'relationship'
+    ? `${row.subject_name || row.subject_member_name || 'Chưa rõ'} -> ${row.object_name || row.object_member_name || 'Chưa rõ'}`
+    : row.person_name || row.matched_member_name || triage.title || row.id;
+  const target = kind === 'anniversary'
+    ? getExtractedAnniversaryFields(row, metadata).map((field) => field.label || field.type).join(', ')
+    : kind === 'relationship'
+      ? `${normalizeRelationshipType(row.relationship_type)} / ${normalizeRelationshipDirection(row.direction)}`
+      : `${row.candidate_type || 'profile'} -> ${row.target_field || 'description'}`;
+  const action = getV3ReviewQueueAction(kind, row, guard);
+  return {
+    kind,
+    id: row.id,
+    status,
+    bucket: triage.primaryBucket,
+    buckets: triage.buckets,
+    reviewGroup: group,
+    datasetGroup: triage.group,
+    title,
+    target,
+    personName: row.person_name || '',
+    subjectName: row.subject_name || '',
+    objectName: row.object_name || '',
+    matchedMemberId: row.matched_member_id || row.subject_member_id || '',
+    matchedMemberName: row.matched_member_name || row.subject_member_name || '',
+    matchConfidence: row.match_confidence || [row.subject_match_confidence, row.object_match_confidence].filter(Boolean).join('/') || '',
+    candidateType: row.candidate_type || '',
+    relationshipType: row.relationship_type || '',
+    fieldTypes: kind === 'anniversary' ? getExtractedAnniversaryFields(row, metadata).map((field) => field.type) : [],
+    sourceId: row.source_id || '',
+    chunkId: row.chunk_id || '',
+    sourceTitle: metadata.sourceTitle || row.knowledge_title || '',
+    headingPath: metadata.headingPath || row.heading_path || '',
+    evidenceQuote: metadata.evidenceQuote || row.source_quote || row.extracted_text || '',
+    evidenceWindow: metadata.evidenceWindow || row.source_quote || row.extracted_text || '',
+    qualityFlags: triage.qualityFlags,
+    reasons: triage.reasons,
+    triageGuard: guard,
+    action,
+    canApply: Boolean(guard?.canApply),
+    hardBlocked: Boolean(guard?.blockedReasons?.length || (guard?.requiredActions || []).some((item) => ['reject_or_rescan_source', 'keep_as_verification_note', 'assign_member', 'assign_subject_and_object', 'create_or_assign_missing_member'].includes(item))),
+    updatedAt: row.updated_at || row.created_at || ''
+  };
+}
+
+async function listCaoTocV3ReviewQueue({ datasetKey = CAO_TOC_V3_DEFAULT_DATASET_KEY, bucket = '', kind = '', status = 'pending', limit = 80 } = {}) {
+  const database = await getDatabase();
+  const normalizedDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY);
+  const bucketFilter = normalizeV3TriageBucket(bucket);
+  const kindFilter = String(kind || '').trim().toLowerCase();
+  const statusFilter = String(status || '').trim().toLowerCase();
+  const rows = [
+    ...database.prepare('SELECT * FROM extracted_profile_candidates').all().map((row) => ({ kind: 'profile', row })),
+    ...database.prepare('SELECT * FROM extracted_anniversary_candidates').all().map((row) => ({ kind: 'anniversary', row })),
+    ...database.prepare('SELECT * FROM extracted_relationship_candidates').all().map((row) => ({ kind: 'relationship', row }))
+  ].filter(({ kind: itemKind, row }) => {
+    if (kindFilter && itemKind !== kindFilter) return false;
+    if (!isV3CandidateRow(row, normalizedDatasetKey)) return false;
+    const triage = classifyV3Candidate(itemKind, row);
+    if (bucketFilter && triage.primaryBucket !== bucketFilter) return false;
+    if (statusFilter && statusFilter !== 'all' && triage.status !== statusFilter) return false;
+    return true;
+  });
+  const bucketCounts = createEmptyV3TriageBuckets();
+  const byKind = { profile: 0, anniversary: 0, relationship: 0 };
+  const byStatus = {};
+  const items = rows.map(({ kind: itemKind, row }) => {
+    const item = publicV3ReviewQueueItem(itemKind, row);
+    bucketCounts[item.bucket] = (bucketCounts[item.bucket] || 0) + 1;
+    byKind[itemKind] = (byKind[itemKind] || 0) + 1;
+    byStatus[item.status] = (byStatus[item.status] || 0) + 1;
+    return item;
+  });
+  const priority = Object.fromEntries(V3_TRIAGE_BUCKETS.map((item, index) => [item, index]));
+  const sorted = items.sort((a, b) => {
+    const priorityDiff = (priority[a.bucket] ?? 99) - (priority[b.bucket] ?? 99);
+    if (priorityDiff) return priorityDiff;
+    return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
+  }).slice(0, Math.max(1, Math.min(500, Number(limit) || 80)));
+  return {
+    ok: true,
+    datasetKey: normalizedDatasetKey,
+    total: rows.length,
+    bucketCounts,
+    byKind,
+    byStatus,
+    items: sorted
+  };
+}
+
+async function keepV3ProfileCandidateAsVerificationNote(id, body = {}, adminUser = {}) {
+  const database = await getDatabase();
+  const row = database.prepare('SELECT * FROM extracted_profile_candidates WHERE id = ?').get(String(id || ''));
+  if (!row) {
+    const err = new Error('Extracted profile candidate not found.');
+    err.status = 404;
+    throw err;
+  }
+  if (!isV3CandidateRow(row)) {
+    const err = new Error('Only v3 profile candidates can be kept as verification notes.');
+    err.status = 400;
+    throw err;
+  }
+  const guard = getV3CandidateReviewState('profile', row);
+  if (!guard?.buckets?.includes('do_not_apply_directly')) {
+    const err = new Error('Candidate is not classified as a verification-only note.');
+    err.status = 400;
+    err.triageGuard = guard;
+    throw err;
+  }
+  if (body.confirmKeepNote !== true) {
+    const err = new Error('confirmKeepNote=true is required to keep this candidate as a verification note.');
+    err.status = 409;
+    err.triageGuard = guard;
+    throw err;
+  }
+  const metadata = safeJsonParse(row.metadata_json, {});
+  const now = new Date().toISOString();
+  const nextMetadata = {
+    ...metadata,
+    keptAsVerificationNote: true,
+    keptAsVerificationNoteAt: now,
+    keptAsVerificationNoteBy: adminUser?.username || adminUser?.fullName || '',
+    reviewNote: String(body.reviewNote || metadata.reviewNote || '').trim()
+  };
+  database.prepare(`
+    UPDATE extracted_profile_candidates
+    SET status = 'approved',
+        metadata_json = ?,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(JSON.stringify(nextMetadata), row.id);
+  const auditId = `profile_note_${sha256Base64Url(`${row.id}:${now}`).slice(0, 24)}`;
+  database.prepare(`
+    INSERT INTO extracted_profile_audit_logs
+      (id, candidate_id, member_id, action, field_changes_json, source_id, chunk_id, admin_user, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `).run(
+    auditId,
+    row.id,
+    row.matched_member_id || '',
+    'kept_verification_note',
+    JSON.stringify([{
+      field: 'verification_note',
+      oldValue: row.status || '',
+      newValue: 'approved/kept',
+      note: nextMetadata.reviewNote || ''
+    }]),
+    row.source_id || '',
+    row.chunk_id || '',
+    adminUser?.username || adminUser?.fullName || 'admin'
+  );
+  return {
+    ok: true,
+    candidate: await hydrateProfileCandidateReviewData(publicExtractedProfileCandidate(database.prepare('SELECT * FROM extracted_profile_candidates WHERE id = ?').get(row.id))),
+    log: publicProfileAuditLog(database.prepare('SELECT * FROM extracted_profile_audit_logs WHERE id = ?').get(auditId))
+  };
+}
+
 async function buildCaoTocV3TriageSummary({ datasetKey = CAO_TOC_V3_DEFAULT_DATASET_KEY, examplesPerBucket = 5 } = {}) {
   const database = await getDatabase();
   const normalizedDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY);
@@ -6662,6 +6919,22 @@ app.get('/api/knowledge/v3-triage/summary', async (req, res) => {
   }
 });
 
+app.get('/api/knowledge/v3-review-queue', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json(await listCaoTocV3ReviewQueue({
+      datasetKey: req.query.datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY,
+      bucket: req.query.bucket || '',
+      kind: req.query.kind || '',
+      status: req.query.status || 'pending',
+      limit: req.query.limit || 80
+    }));
+  } catch (err) {
+    console.error('Failed to list Cao Toc v3 review queue:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to list Cao Toc v3 review queue.' });
+  }
+});
+
 app.post('/api/knowledge/v3-triage/reject-noise', async (req, res) => {
   try {
     const admin = await requireAdmin(req, res);
@@ -6965,6 +7238,20 @@ app.post('/api/knowledge/profile-candidates/bulk', async (req, res) => {
   } catch (err) {
     console.error('Failed to bulk update profile candidates:', err);
     res.status(err.status || 500).json({ error: err.message || 'Failed to bulk update profile candidates.' });
+  }
+});
+
+app.post('/api/knowledge/profile-candidates/:id/keep-verification-note', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json(await keepV3ProfileCandidateAsVerificationNote(String(req.params.id || ''), req.body || {}, admin.authUser));
+  } catch (err) {
+    console.error('Failed to keep profile candidate as verification note:', err);
+    res.status(err.status || 500).json({
+      error: err.message || 'Failed to keep profile candidate as verification note.',
+      triageGuard: err.triageGuard || null
+    });
   }
 });
 

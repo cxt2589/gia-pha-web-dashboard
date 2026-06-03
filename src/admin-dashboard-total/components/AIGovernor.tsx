@@ -168,6 +168,54 @@ type CaoTocV3TriageSummary = {
   generatedAt?: string;
 };
 
+type V3ReviewQueueItem = {
+  kind: "profile" | "anniversary" | "relationship" | string;
+  id: string;
+  status: string;
+  bucket: string;
+  buckets?: string[];
+  reviewGroup: "name" | "vital" | "profile" | "relationship" | "note" | string;
+  datasetGroup?: string;
+  title: string;
+  target?: string;
+  personName?: string;
+  subjectName?: string;
+  objectName?: string;
+  matchedMemberId?: string;
+  matchedMemberName?: string;
+  matchConfidence?: string;
+  candidateType?: string;
+  relationshipType?: string;
+  fieldTypes?: string[];
+  sourceId?: string;
+  chunkId?: string;
+  sourceTitle?: string;
+  headingPath?: string;
+  evidenceQuote?: string;
+  evidenceWindow?: string;
+  qualityFlags?: string[];
+  reasons?: string[];
+  triageGuard?: V3TriageGuard | null;
+  action?: {
+    code: string;
+    label: string;
+    detail: string;
+  };
+  canApply?: boolean;
+  hardBlocked?: boolean;
+  updatedAt?: string;
+};
+
+type V3ReviewQueue = {
+  ok?: boolean;
+  datasetKey?: string;
+  total?: number;
+  bucketCounts?: Record<string, number>;
+  byKind?: Record<string, number>;
+  byStatus?: Record<string, number>;
+  items?: V3ReviewQueueItem[];
+};
+
 const V3_TRIAGE_BUCKET_ORDER = [
   "ready_to_review",
   "needs_identity_match",
@@ -814,6 +862,11 @@ export default function AIGovernor({
   const [caoTocV3TriageNote, setCaoTocV3TriageNote] = useState("");
   const [isCaoTocV3TriageRunning, setIsCaoTocV3TriageRunning] = useState(false);
   const [selectedV3TriageBucket, setSelectedV3TriageBucket] = useState("");
+  const [v3ReviewQueue, setV3ReviewQueue] = useState<V3ReviewQueue | null>(null);
+  const [isV3ReviewQueueLoading, setIsV3ReviewQueueLoading] = useState(false);
+  const [v3ReviewQueueNote, setV3ReviewQueueNote] = useState("");
+  const [v3ReviewQueueStatus, setV3ReviewQueueStatus] = useState("pending");
+  const [v3ReviewQueueKind, setV3ReviewQueueKind] = useState("");
   const [aiLogs, setAiLogs] = useState<AIRequestLog[]>([]);
   const [aiLogSummary, setAiLogSummary] = useState<AIRequestLogSummary | null>(null);
   const [isAiLogsLoading, setIsAiLogsLoading] = useState(false);
@@ -1337,6 +1390,63 @@ export default function AIGovernor({
     }
   };
 
+  const loadV3ReviewQueue = async (overrides: { bucket?: string; status?: string; kind?: string } = {}) => {
+    setIsV3ReviewQueueLoading(true);
+    try {
+      const params = new URLSearchParams({
+        datasetKey: "cao_toc_txt_knowledge_base_v3",
+        limit: "120",
+        status: overrides.status ?? v3ReviewQueueStatus
+      });
+      const bucket = overrides.bucket ?? selectedV3TriageBucket;
+      const kind = overrides.kind ?? v3ReviewQueueKind;
+      if (bucket) params.set("bucket", bucket);
+      if (kind) params.set("kind", kind);
+      const response = await fetch(`/api/knowledge/v3-review-queue?${params.toString()}`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không đọc được hàng đợi duyệt v3.");
+      setV3ReviewQueue(data);
+      setV3ReviewQueueNote("");
+      return data as V3ReviewQueue;
+    } catch (err: any) {
+      setV3ReviewQueueNote(`Lỗi tải hàng đợi duyệt v3: ${err?.message || "không xác định"}`);
+      return null;
+    } finally {
+      setIsV3ReviewQueueLoading(false);
+    }
+  };
+
+  const focusV3ReviewQueueItem = async (item: V3ReviewQueueItem) => {
+    setSelectedV3TriageBucket(item.bucket || "");
+    setExtractedStatusFilter(item.status || "pending");
+    setProfileStatusFilter(item.status || "pending");
+    setRelationshipStatusFilter(item.status || "pending");
+    const query = item.kind === "relationship"
+      ? (item.subjectName || item.objectName || item.title || "")
+      : (item.personName || item.title || "");
+    if (item.kind === "relationship") {
+      setExtractionReviewGroup("relationship");
+      setRelationshipNameFilter(query);
+      await loadRelationshipCandidates({ triageBucket: item.bucket, status: item.status, q: query });
+    } else if (item.kind === "anniversary") {
+      setExtractionReviewGroup("vital");
+      setExtractedNameFilter(query);
+      await loadExtractedCandidates({ triageBucket: item.bucket, status: item.status, q: query });
+    } else {
+      const isName = item.reviewGroup === "name" || item.candidateType === "name_alias";
+      setExtractionReviewGroup(isName ? "name" : "profile");
+      setProfileNameFilter(query);
+      setProfileTypeFilter(item.reviewGroup === "note" ? "verification_note" : isName ? "name_alias" : "");
+      await loadProfileCandidates({
+        triageBucket: item.bucket,
+        status: item.status,
+        q: query,
+        type: item.reviewGroup === "note" ? "verification_note" : isName ? "name_alias" : ""
+      });
+    }
+    setCaoTocV3TriageNote(`Đã mở candidate ${item.id} trong nhóm duyệt chi tiết.`);
+  };
+
   const runCaoTocV3RejectNoise = async (dryRun: boolean) => {
     setIsCaoTocV3TriageRunning(true);
     setCaoTocV3TriageNote(dryRun ? "Đang dry-run reject nhiễu v3..." : "Đang reject candidate nhiễu v3 chắc chắn...");
@@ -1382,6 +1492,8 @@ export default function AIGovernor({
       ? `Đang lọc nhóm "${V3_TRIAGE_BUCKET_LABELS[nextBucket] || nextBucket}" trong khung duyệt bên dưới.`
       : "Đã bỏ lọc triage v3.");
     const options = { triageBucket: nextBucket, status: "pending" };
+    setV3ReviewQueueStatus("pending");
+    void loadV3ReviewQueue({ bucket: nextBucket, status: "pending" });
     if (preferredGroup === "relationship") await loadRelationshipCandidates(options);
     else if (preferredGroup === "profile") await loadProfileCandidates(options);
     else await loadExtractedCandidates(options);
@@ -1393,7 +1505,8 @@ export default function AIGovernor({
     await Promise.all([
       loadExtractedCandidates({ triageBucket: "" }),
       loadProfileCandidates({ triageBucket: "" }),
-      loadRelationshipCandidates({ triageBucket: "" })
+      loadRelationshipCandidates({ triageBucket: "" }),
+      loadV3ReviewQueue({ bucket: "" })
     ]);
   };
 
@@ -1785,6 +1898,30 @@ export default function AIGovernor({
     setProfileCandidateNote(`Đã áp dụng ${data.changes?.length ?? 0} trường hành trạng/công lao vào cây phả.`);
     setEditingProfileCandidateId("");
     await loadProfileCandidates();
+  };
+
+  const keepProfileCandidateAsVerificationNote = async (candidate: ExtractedProfileCandidate) => {
+    if (!window.confirm("Candidate này sẽ được giữ làm ghi chú kiểm chứng, không ghi trực tiếp vào hồ sơ cá nhân. Tiếp tục?")) {
+      return;
+    }
+    const response = await fetch(`/api/knowledge/profile-candidates/${encodeURIComponent(candidate.id)}/keep-verification-note`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        confirmKeepNote: true,
+        reviewNote: "Admin giữ candidate này làm ghi chú kiểm chứng, không apply trực tiếp."
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setProfileCandidateNote(formatTriageError(data));
+      return;
+    }
+    setProfileCandidateNote("Đã giữ candidate làm ghi chú kiểm chứng và ghi audit log.");
+    await Promise.all([
+      loadProfileCandidates(),
+      loadV3ReviewQueue()
+    ]);
   };
 
   const loadRelationshipCandidates = async (overrides: { triageBucket?: string; status?: string; q?: string; type?: string } = {}) => {
@@ -2378,6 +2515,7 @@ export default function AIGovernor({
     void loadAIActionDrafts();
     void loadCaoTocV2Report();
     void loadCaoTocV3Triage();
+    void loadV3ReviewQueue();
   }, []);
 
   useEffect(() => {
@@ -5211,6 +5349,124 @@ export default function AIGovernor({
                       </button>
                     ))}
                   </div>
+                  <div className="mt-3 rounded border border-purple-100 bg-white p-3">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                      <div>
+                        <p className="text-[11px] font-bold uppercase tracking-wide text-purple-800">Hàng đợi duyệt V3</p>
+                        <p className="mt-1 text-[11px] leading-relaxed text-stone-500">
+                          Danh sách ưu tiên để admin xử lý candidate: mở đúng nhóm duyệt, giữ ghi chú kiểm chứng, hoặc reject/rescan candidate nhiễu trước khi apply.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <select
+                          value={v3ReviewQueueStatus}
+                          onChange={(event) => {
+                            setV3ReviewQueueStatus(event.target.value);
+                            void loadV3ReviewQueue({ status: event.target.value });
+                          }}
+                          className="rounded border border-stone-200 bg-white px-2 py-1.5 text-[11px] outline-none focus:border-purple-500"
+                        >
+                          <option value="pending">Chưa duyệt</option>
+                          <option value="approved">Đã duyệt</option>
+                          <option value="applied">Đã apply</option>
+                          <option value="rejected">Đã từ chối</option>
+                          <option value="all">Tất cả</option>
+                        </select>
+                        <select
+                          value={v3ReviewQueueKind}
+                          onChange={(event) => {
+                            setV3ReviewQueueKind(event.target.value);
+                            void loadV3ReviewQueue({ kind: event.target.value });
+                          }}
+                          className="rounded border border-stone-200 bg-white px-2 py-1.5 text-[11px] outline-none focus:border-purple-500"
+                        >
+                          <option value="">Tất cả nhóm</option>
+                          <option value="profile">Hồ sơ</option>
+                          <option value="anniversary">Ngày/mộ chí</option>
+                          <option value="relationship">Quan hệ</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => void loadV3ReviewQueue()}
+                          disabled={isV3ReviewQueueLoading}
+                          className="inline-flex items-center justify-center gap-2 rounded bg-purple-800 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-purple-900 disabled:opacity-60"
+                        >
+                          <RefreshCw className={`h-3.5 w-3.5 ${isV3ReviewQueueLoading ? "animate-spin" : ""}`} />
+                          Tải hàng đợi
+                        </button>
+                      </div>
+                    </div>
+                    {v3ReviewQueueNote && <p className="mt-2 rounded bg-purple-50 p-2 text-[11px] leading-relaxed text-purple-900">{v3ReviewQueueNote}</p>}
+                    {v3ReviewQueue && (
+                      <>
+                        <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-bold text-stone-700 md:grid-cols-4 lg:grid-cols-6">
+                          <span className="rounded bg-purple-50 px-2 py-1">Tổng: {v3ReviewQueue.total ?? 0}</span>
+                          <span className="rounded bg-stone-50 px-2 py-1">Profile: {v3ReviewQueue.byKind?.profile ?? 0}</span>
+                          <span className="rounded bg-stone-50 px-2 py-1">Ngày/mộ: {v3ReviewQueue.byKind?.anniversary ?? 0}</span>
+                          <span className="rounded bg-stone-50 px-2 py-1">Quan hệ: {v3ReviewQueue.byKind?.relationship ?? 0}</span>
+                          <span className="rounded bg-emerald-50 px-2 py-1">Có thể duyệt: {v3ReviewQueue.bucketCounts?.ready_to_review ?? 0}</span>
+                          <span className="rounded bg-red-50 px-2 py-1">Nhiễu: {v3ReviewQueue.bucketCounts?.noise_reject_candidate ?? 0}</span>
+                        </div>
+                        <div className="mt-3 max-h-64 space-y-2 overflow-y-auto pr-1">
+                          {(v3ReviewQueue.items || []).map((item) => {
+                            const guide = getTriageGuide(item.bucket);
+                            return (
+                              <article key={`${item.kind}-${item.id}`} className={`rounded border p-2 ${triageToneClass(guide.tone)}`}>
+                                <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+                                  <div className="min-w-0">
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                      <span className="rounded bg-white/80 px-1.5 py-0.5 text-[10px] font-bold">{V3_TRIAGE_BUCKET_LABELS[item.bucket] || item.bucket}</span>
+                                      <span className="rounded bg-white/80 px-1.5 py-0.5 text-[10px] font-bold">{item.kind}</span>
+                                      <span className="rounded bg-white/80 px-1.5 py-0.5 text-[10px] font-bold">{item.status}</span>
+                                      <span className="rounded bg-white/80 px-1.5 py-0.5 text-[10px] font-bold">{item.matchConfidence || "none"}</span>
+                                    </div>
+                                    <p className="mt-1 text-xs font-bold text-stone-900">{truncateText(item.title, 120)}</p>
+                                    <p className="mt-0.5 text-[11px] text-stone-600">{truncateText(item.target || "", 160)}</p>
+                                    <p className="mt-1 text-[11px] font-semibold">{item.action?.label}: <span className="font-normal">{item.action?.detail}</span></p>
+                                    {item.evidenceQuote && <p className="mt-1 text-[10px] text-stone-500">{truncateText(item.evidenceQuote, 180)}</p>}
+                                  </div>
+                                  <div className="flex shrink-0 flex-wrap gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => void focusV3ReviewQueueItem(item)}
+                                      className="rounded bg-white px-2 py-1 text-[11px] font-bold text-stone-700 hover:bg-stone-50"
+                                    >
+                                      Mở nhóm duyệt
+                                    </button>
+                                    {item.kind === "profile" && item.action?.code === "keep_verification_note" && (
+                                      <button
+                                        type="button"
+                                        onClick={async () => {
+                                          const found = profileCandidates.find((candidate) => candidate.id === item.id);
+                                          if (found) {
+                                            await keepProfileCandidateAsVerificationNote(found);
+                                            return;
+                                          }
+                                          const response = await fetch(`/api/knowledge/profile-candidates/${encodeURIComponent(item.id)}`);
+                                          const data = await response.json().catch(() => ({}));
+                                          if (!response.ok || !data.candidate) {
+                                            setV3ReviewQueueNote(data.error || "Không mở được candidate ghi chú.");
+                                            return;
+                                          }
+                                          await keepProfileCandidateAsVerificationNote(data.candidate);
+                                        }}
+                                        className="rounded bg-amber-700 px-2 py-1 text-[11px] font-bold text-white hover:bg-amber-800"
+                                      >
+                                        Giữ ghi chú
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              </article>
+                            );
+                          })}
+                          {!(v3ReviewQueue.items || []).length && (
+                            <p className="rounded border border-dashed border-stone-200 bg-stone-50 p-3 text-xs text-stone-500">Hàng đợi hiện chưa có candidate theo bộ lọc.</p>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
                   <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[0.8fr_1.2fr]">
                     <div className="rounded border border-purple-100 bg-white p-3 text-[11px] text-stone-700">
                       <p className="font-bold uppercase tracking-wide text-stone-500">Tổng quan</p>
@@ -5844,6 +6100,9 @@ export default function AIGovernor({
                             <button type="button" onClick={() => void patchProfileCandidate(candidate.id, { status: "approved" }, "Đã duyệt candidate hành trạng.")} disabled={candidate.status === "applied"} className="rounded bg-emerald-700 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-800 disabled:opacity-50">Duyệt</button>
                             <button type="button" onClick={() => void patchProfileCandidate(candidate.id, { status: "rejected" }, "Đã từ chối candidate hành trạng.")} disabled={candidate.status === "applied"} className="rounded border border-red-200 px-2.5 py-1.5 text-[11px] font-bold text-red-700 hover:bg-red-50 disabled:opacity-50">Từ chối</button>
                             <button type="button" onClick={() => startEditProfileCandidate(candidate)} className="rounded border border-stone-200 px-2.5 py-1.5 text-[11px] font-bold text-stone-600 hover:bg-stone-50">Sửa</button>
+                            {(candidate.candidateType === "verification_note" || candidate.candidateType === "clan_legacy" || candidate.candidateType === "branch_legacy") && (
+                              <button type="button" onClick={() => void keepProfileCandidateAsVerificationNote(candidate)} disabled={candidate.status === "applied"} className="rounded bg-amber-700 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-amber-800 disabled:opacity-50">Giữ ghi chú</button>
+                            )}
                             {candidate.candidateType !== "verification_note" && candidate.candidateType !== "clan_legacy" && candidate.candidateType !== "branch_legacy" && (
                               <button type="button" onClick={() => void applyProfileCandidate(candidate)} disabled={(candidate.status !== "approved" && candidate.status !== "applied") || hasHardTriageBlock(candidate.triage)} className="rounded bg-red-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-red-950 disabled:opacity-50">Áp dụng</button>
                             )}
