@@ -29,6 +29,8 @@
     "test:phase2w2-extraction-quality": "node scripts/test-phase-2w2-extraction-quality.mjs",
     "test:phase2w2c-v2-rescan": "node scripts/test-phase-2w2c-v2-rescan.mjs",
     "test:phase2w2d-search-citation-rules": "node scripts/test-phase-2w2d-search-citation-rules.mjs",
+    "test:phase2w2e-v3-cleaned": "node scripts/test-phase-2w2e-v3-cleaned.mjs",
+    "build:cao-toc-v3": "node scripts/build-cao-toc-v3-cleaned.mjs",
     "import:cao-toc-txt": "node scripts/import-cao-toc-txt-knowledge.mjs",
     "import:cao-toc-04": "node scripts/import-cao-toc-04-anniversaries.mjs",
     "test:lineage-display": "tsx scripts/test-lineage-display.ts",

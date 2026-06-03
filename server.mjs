@@ -5134,6 +5134,30 @@ function normalizeCaoTocV2DatasetKey(value = '') {
   return normalizeGatewayText(value || 'cao_toc_v2').replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48) || 'cao_toc_v2';
 }
 
+function readCaoTocDatasetManifestName(datasetDir = '') {
+  try {
+    const manifestPath = resolve(String(datasetDir || ''), 'manifest.json');
+    if (!datasetDir || !existsSync(manifestPath)) return '';
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    return String(manifest.dataset_name || manifest.name || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function caoTocDatasetId(datasetKey = '', datasetDir = '') {
+  const key = normalizeCaoTocV2DatasetKey(datasetKey);
+  const manifestName = readCaoTocDatasetManifestName(datasetDir);
+  const marker = normalizeKnowledgeText([key, manifestName, datasetDir].join(' '));
+  return marker.includes('v3') ? 'cao_toc_txt_knowledge_base_v3' : 'cao_toc_txt_knowledge_base_v2';
+}
+
+function caoTocDatasetLabel(datasetId = 'cao_toc_txt_knowledge_base_v2') {
+  return String(datasetId || '').endsWith('_v3')
+    ? 'Cao Tộc TXT Knowledge Base v3'
+    : 'Cao Tộc TXT Knowledge Base v2';
+}
+
 function v2SourceId(group, datasetKey = 'cao_toc_v2') {
   return `source_${normalizeCaoTocV2DatasetKey(datasetKey)}_${group}`;
 }
@@ -5146,7 +5170,8 @@ function v2CandidateHash(parts) {
   return sha256Base64Url(parts.map((part) => normalizeKnowledgeText(part)).join('|')).slice(0, 24);
 }
 
-function v2RecordEvidence(record, file, datasetKey = 'cao_toc_v2') {
+function v2RecordEvidence(record, file, datasetKey = 'cao_toc_v2', datasetDir = '') {
+  const datasetId = caoTocDatasetId(datasetKey, datasetDir);
   const quote = String(record.source_quote || record.value || record.relationship_note || record.notes || '').trim();
   const window = compactText([
     record.section,
@@ -5158,13 +5183,13 @@ function v2RecordEvidence(record, file, datasetKey = 'cao_toc_v2') {
     sourceId: v2SourceId(file.group, datasetKey),
     chunkId: v2ChunkId(file.group, record.record_id, datasetKey),
     recordId: String(record.record_id || ''),
-    sourceTitle: String(record.source_title || 'Cao Tộc TXT Knowledge Base v2'),
+    sourceTitle: String(record.source_title || caoTocDatasetLabel(datasetId)),
     headingPath: String(record.section || ''),
     pageHint: String(record.page_hint || ''),
     evidenceQuote: compactText(quote, 520),
     evidenceWindow: window,
     evidenceType: file.evidenceType,
-    dataset: 'cao_toc_txt_knowledge_base_v2',
+    dataset: datasetId,
     datasetKey: normalizeCaoTocV2DatasetKey(datasetKey),
     datasetGroup: file.group,
     confidence: String(record.confidence || 'medium'),
@@ -5174,11 +5199,14 @@ function v2RecordEvidence(record, file, datasetKey = 'cao_toc_v2') {
 
 function insertV2SourceAndChunks(database, file, records, datasetDir, datasetKey = 'cao_toc_v2') {
   const normalizedDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey);
+  const datasetId = caoTocDatasetId(normalizedDatasetKey, datasetDir);
+  const datasetLabel = caoTocDatasetLabel(datasetId);
   const sourceId = v2SourceId(file.group, normalizedDatasetKey);
   const sourceContent = records.map((record) => JSON.stringify(record)).join('\n');
   const metadata = {
     sourceKind: file.sourceKind,
-    dataset: 'cao_toc_txt_knowledge_base_v2',
+    dataset: datasetId,
+    datasetLabel,
     datasetKey: normalizedDatasetKey,
     datasetGroup: file.group,
     originFile: file.fileName,
@@ -5201,7 +5229,7 @@ function insertV2SourceAndChunks(database, file, records, datasetDir, datasetKey
   `).run(
     sourceId,
     `${normalizedDatasetKey.replace(/_/g, '-')}-${file.group}`,
-    `Cao Tộc TXT Knowledge Base v2 - ${file.group}`,
+    `${datasetLabel} - ${file.group}`,
     file.sourceType,
     sourceContent,
     sha256Hex(sourceContent),
@@ -5216,7 +5244,7 @@ function insertV2SourceAndChunks(database, file, records, datasetDir, datasetKey
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', ?, ?, ?, ?, ?, datetime('now'))
   `);
   records.forEach((record, index) => {
-    const evidence = v2RecordEvidence(record, file, normalizedDatasetKey);
+    const evidence = v2RecordEvidence(record, file, normalizedDatasetKey, datasetDir);
     const content = JSON.stringify(record, null, 2);
     insertChunk.run(
       evidence.chunkId,
@@ -5240,8 +5268,10 @@ function insertV2SourceAndChunks(database, file, records, datasetDir, datasetKey
 async function importCaoTocV2Dataset({ datasetDir = '', datasetKey = '' } = {}, adminUser = {}) {
   const resolvedDir = resolveCaoTocV2DatasetDir(datasetDir);
   const normalizedDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey);
+  const datasetId = caoTocDatasetId(normalizedDatasetKey, resolvedDir);
+  const datasetLabel = caoTocDatasetLabel(datasetId);
   const database = await getDatabase();
-  const summary = { datasetDir: resolvedDir, datasetKey: normalizedDatasetKey, sources: 0, records: 0, chunks: 0, groups: {}, rulesPrivateLocked: false };
+  const summary = { datasetDir: resolvedDir, dataset: datasetId, datasetLabel, datasetKey: normalizedDatasetKey, sources: 0, records: 0, chunks: 0, groups: {}, rulesPrivateLocked: false };
   database.exec('BEGIN');
   try {
     for (const file of CAO_TOC_V2_FILES) {
@@ -5259,7 +5289,8 @@ async function importCaoTocV2Dataset({ datasetDir = '', datasetKey = '' } = {}, 
       const content = readFileSync(rulesPath, 'utf8');
       const metadata = {
         sourceKind: 'technical_rule',
-        dataset: 'cao_toc_txt_knowledge_base_v2',
+        dataset: datasetId,
+        datasetLabel,
         datasetKey: normalizedDatasetKey,
         datasetGroup: 'rules_private',
         originFile: '07_rules_private.json',
@@ -5272,15 +5303,15 @@ async function importCaoTocV2Dataset({ datasetDir = '', datasetKey = '' } = {}, 
       database.prepare(`
         INSERT INTO knowledge_sources
           (id, slug, title, source_type, scope, clan_scope, system_scope, domain, content, source_hash, metadata_json, summary, tags_json, entity_refs_json, visibility, status, updated_at)
-        VALUES (?, ?, 'Cao Tộc TXT Knowledge Base v2 - rules private', 'v2_rules_private', 'cao_toc_v2', 'cao_toc_phu_my', 'ho_cao_giatochocao', 'giatochocao.site', ?, ?, ?, 'Private rules only, not genealogy evidence.', '[]', '[]', 'private', 'indexed', datetime('now'))
+        VALUES (?, ?, ?, 'v2_rules_private', 'cao_toc_v2', 'cao_toc_phu_my', 'ho_cao_giatochocao', 'giatochocao.site', ?, ?, ?, 'Private rules only, not genealogy evidence.', '[]', '[]', 'private', 'indexed', datetime('now'))
         ON CONFLICT(id) DO UPDATE SET content = excluded.content, source_hash = excluded.source_hash, metadata_json = excluded.metadata_json, visibility = 'private', updated_at = datetime('now')
-      `).run(rulesSourceId, `${normalizedDatasetKey.replace(/_/g, '-')}-rules-private`, content, sha256Hex(content), JSON.stringify(metadata));
+      `).run(rulesSourceId, `${normalizedDatasetKey.replace(/_/g, '-')}-rules-private`, `${datasetLabel} - rules private`, content, sha256Hex(content), JSON.stringify(metadata));
       database.prepare('DELETE FROM knowledge_chunks WHERE source_id = ?').run(rulesSourceId);
       database.prepare(`
         INSERT INTO knowledge_chunks
           (id, source_id, chunk_index, title, content, content_norm, metadata_json, summary, tags_json, entity_refs_json, visibility, heading_path, content_ascii, char_count, token_estimate, updated_at)
-        VALUES (?, ?, 0, 'Cao Tộc TXT Knowledge Base v2 - rules private', ?, ?, ?, 'Private technical rules.', '[]', '[]', 'private', 'rules_private', ?, ?, ?, datetime('now'))
-      `).run(rulesChunkId, rulesSourceId, content, normalizeKnowledgeText(content), JSON.stringify(metadata), normalizeKnowledgeText(content), content.length, estimateTextTokens(content));
+        VALUES (?, ?, 0, ?, ?, ?, ?, 'Private technical rules.', '[]', '[]', 'private', 'rules_private', ?, ?, ?, datetime('now'))
+      `).run(rulesChunkId, rulesSourceId, `${datasetLabel} - rules private`, content, normalizeKnowledgeText(content), JSON.stringify(metadata), normalizeKnowledgeText(content), content.length, estimateTextTokens(content));
       summary.sources += 1;
       summary.records += 1;
       summary.chunks += 1;
@@ -5452,10 +5483,14 @@ async function createV2RelationshipCandidate(database, record, file, datasetKey 
 async function rescanCaoTocV2({ datasetDir = '', datasetKey = '' } = {}, adminUser = {}) {
   const resolvedDir = resolveCaoTocV2DatasetDir(datasetDir);
   const normalizedDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey);
+  const datasetId = caoTocDatasetId(normalizedDatasetKey, resolvedDir);
+  const datasetLabel = caoTocDatasetLabel(datasetId);
   await importCaoTocV2Dataset({ datasetDir: resolvedDir, datasetKey: normalizedDatasetKey }, adminUser);
   const database = await getDatabase();
   const summary = {
     datasetDir: resolvedDir,
+    dataset: datasetId,
+    datasetLabel,
     datasetKey: normalizedDatasetKey,
     candidatesCreated: 0,
     duplicatesSkipped: 0,
@@ -5525,17 +5560,17 @@ async function rescanCaoTocV2({ datasetDir = '', datasetKey = '' } = {}, adminUs
 async function getCaoTocV2Report({ datasetKey = '' } = {}) {
   const database = await getDatabase();
   const normalizedDatasetKey = datasetKey ? normalizeCaoTocV2DatasetKey(datasetKey) : '';
-  const sourceRows = database.prepare("SELECT * FROM knowledge_sources WHERE json_extract(metadata_json, '$.dataset') = 'cao_toc_txt_knowledge_base_v2'").all();
+  const sourceRows = database.prepare("SELECT * FROM knowledge_sources WHERE json_extract(metadata_json, '$.dataset') IN ('cao_toc_txt_knowledge_base_v2', 'cao_toc_txt_knowledge_base_v3')").all();
   const sources = normalizedDatasetKey
     ? sourceRows.filter((row) => safeJsonParse(row.metadata_json, {}).datasetKey === normalizedDatasetKey)
     : sourceRows;
   const sourceIds = new Set(sources.map((row) => row.id));
-  const chunks = database.prepare("SELECT COUNT(*) AS count FROM knowledge_chunks WHERE source_id IN (SELECT id FROM knowledge_sources WHERE json_extract(metadata_json, '$.dataset') = 'cao_toc_txt_knowledge_base_v2')").get()?.count || 0;
-  const profileRows = database.prepare("SELECT * FROM extracted_profile_candidates WHERE json_extract(metadata_json, '$.dataset') = 'cao_toc_txt_knowledge_base_v2'").all()
+  const chunks = database.prepare("SELECT COUNT(*) AS count FROM knowledge_chunks WHERE source_id IN (SELECT id FROM knowledge_sources WHERE json_extract(metadata_json, '$.dataset') IN ('cao_toc_txt_knowledge_base_v2', 'cao_toc_txt_knowledge_base_v3'))").get()?.count || 0;
+  const profileRows = database.prepare("SELECT * FROM extracted_profile_candidates WHERE json_extract(metadata_json, '$.dataset') IN ('cao_toc_txt_knowledge_base_v2', 'cao_toc_txt_knowledge_base_v3')").all()
     .filter((row) => !normalizedDatasetKey || safeJsonParse(row.metadata_json, {}).datasetKey === normalizedDatasetKey);
-  const annRows = database.prepare("SELECT * FROM extracted_anniversary_candidates WHERE json_extract(metadata_json, '$.dataset') = 'cao_toc_txt_knowledge_base_v2'").all()
+  const annRows = database.prepare("SELECT * FROM extracted_anniversary_candidates WHERE json_extract(metadata_json, '$.dataset') IN ('cao_toc_txt_knowledge_base_v2', 'cao_toc_txt_knowledge_base_v3')").all()
     .filter((row) => !normalizedDatasetKey || safeJsonParse(row.metadata_json, {}).datasetKey === normalizedDatasetKey);
-  const relRows = database.prepare("SELECT * FROM extracted_relationship_candidates WHERE json_extract(metadata_json, '$.dataset') = 'cao_toc_txt_knowledge_base_v2'").all()
+  const relRows = database.prepare("SELECT * FROM extracted_relationship_candidates WHERE json_extract(metadata_json, '$.dataset') IN ('cao_toc_txt_knowledge_base_v2', 'cao_toc_txt_knowledge_base_v3')").all()
     .filter((row) => !normalizedDatasetKey || safeJsonParse(row.metadata_json, {}).datasetKey === normalizedDatasetKey);
   const all = [...profileRows, ...annRows, ...relRows];
   const byGroup = {};
