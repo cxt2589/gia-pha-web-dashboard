@@ -2638,7 +2638,7 @@ function getCandidateValueForField(row, fieldType) {
   return String(map[fieldType] || '').trim();
 }
 
-async function listExtractedAnniversaryCandidates({ q = '', status = '', type = '', pendingOnly = false, limit = 100 } = {}) {
+async function listExtractedAnniversaryCandidates({ q = '', status = '', type = '', pendingOnly = false, limit = 100, triageBucket = '', datasetKey = '' } = {}) {
   const database = await getDatabase();
   const rows = database
     .prepare('SELECT * FROM extracted_anniversary_candidates ORDER BY person_name_norm, updated_at DESC')
@@ -2647,8 +2647,14 @@ async function listExtractedAnniversaryCandidates({ q = '', status = '', type = 
   const statusFilter = normalizeExtractedCandidateStatus(status);
   const hasStatusFilter = Boolean(String(status || '').trim());
   const typeFilter = String(type || '').trim();
+  const triageFilter = normalizeV3TriageBucket(triageBucket);
+  const triageDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY);
   const filtered = rows
     .filter((row) => {
+      if (triageFilter) {
+        if (!isV3CandidateRow(row, triageDatasetKey)) return false;
+        if (classifyV3Candidate('anniversary', row).primaryBucket !== triageFilter) return false;
+      }
       const normalizedStatus = normalizeExtractedCandidateStatus(row.status);
       if (pendingOnly && normalizedStatus !== 'pending') return false;
       if (hasStatusFilter && normalizedStatus !== statusFilter) return false;
@@ -3337,15 +3343,21 @@ async function hydrateProfileCandidateReviewData(publicCandidate) {
   };
 }
 
-async function listExtractedProfileCandidates({ q = '', status = '', type = '', sourceId = '', memberId = '', limit = 100 } = {}) {
+async function listExtractedProfileCandidates({ q = '', status = '', type = '', sourceId = '', memberId = '', limit = 100, triageBucket = '', datasetKey = '' } = {}) {
   const database = await getDatabase();
   const rows = database.prepare('SELECT * FROM extracted_profile_candidates ORDER BY updated_at DESC, created_at DESC').all();
   const queryNorm = normalizeKnowledgeText(q);
   const statusFilter = normalizeProfileCandidateStatus(status);
   const hasStatusFilter = Boolean(String(status || '').trim());
   const typeFilter = String(type || '').trim();
+  const triageFilter = normalizeV3TriageBucket(triageBucket);
+  const triageDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY);
   const filtered = rows
     .filter((row) => {
+      if (triageFilter) {
+        if (!isV3CandidateRow(row, triageDatasetKey)) return false;
+        if (classifyV3Candidate('profile', row).primaryBucket !== triageFilter) return false;
+      }
       if (hasStatusFilter && normalizeProfileCandidateStatus(row.status) !== statusFilter) return false;
       if (typeFilter && row.candidate_type !== typeFilter) return false;
       if (sourceId && row.source_id !== sourceId) return false;
@@ -4174,7 +4186,7 @@ async function scanExtractedRelationshipCandidates({ sourceId = '', limit = 250 
   return { ok: true, scanned, created, skipped, candidates };
 }
 
-async function listExtractedRelationshipCandidates({ q = '', status = '', type = '', memberId = '', ambiguous = '', requiresNewMember = '', limit = 100 } = {}) {
+async function listExtractedRelationshipCandidates({ q = '', status = '', type = '', memberId = '', ambiguous = '', requiresNewMember = '', limit = 100, triageBucket = '', datasetKey = '' } = {}) {
   const database = await getDatabase();
   const rows = database.prepare('SELECT * FROM extracted_relationship_candidates ORDER BY updated_at DESC, created_at DESC').all();
   const queryNorm = normalizeKnowledgeText(q);
@@ -4183,8 +4195,14 @@ async function listExtractedRelationshipCandidates({ q = '', status = '', type =
   const typeFilter = String(type || '').trim();
   const ambiguousFilter = String(ambiguous || '').toLowerCase();
   const newMemberFilter = String(requiresNewMember || '').toLowerCase();
+  const triageFilter = normalizeV3TriageBucket(triageBucket);
+  const triageDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY);
   const filtered = rows.filter((row) => {
     const flags = safeJsonParse(row.flags_json, {});
+    if (triageFilter) {
+      if (!isV3CandidateRow(row, triageDatasetKey)) return false;
+      if (classifyV3Candidate('relationship', row).primaryBucket !== triageFilter) return false;
+    }
     if (hasStatusFilter && normalizeRelationshipCandidateStatus(row.status) !== statusFilter) return false;
     if (typeFilter && normalizeRelationshipType(row.relationship_type) !== typeFilter) return false;
     if (memberId && row.subject_member_id !== memberId && row.object_member_id !== memberId) return false;
@@ -5629,6 +5647,11 @@ function createEmptyV3TriageBuckets() {
   return Object.fromEntries(V3_TRIAGE_BUCKETS.map((bucket) => [bucket, 0]));
 }
 
+function normalizeV3TriageBucket(value = '') {
+  const bucket = String(value || '').trim();
+  return V3_TRIAGE_BUCKETS.includes(bucket) ? bucket : '';
+}
+
 function getCandidateDatasetKey(row) {
   const metadata = safeJsonParse(row?.metadata_json, {});
   return normalizeCaoTocV2DatasetKey(metadata.datasetKey || '');
@@ -6574,7 +6597,15 @@ app.get('/api/knowledge/extracted-anniversaries', async (req, res) => {
     const type = String(req.query.type || '').trim();
     const pendingOnly = String(req.query.pendingOnly || req.query.pending || '') === '1' || String(req.query.pendingOnly || '').toLowerCase() === 'true';
     const limit = Math.max(1, Math.min(500, Number(req.query.limit || 100) || 100));
-    res.json({ candidates: await listExtractedAnniversaryCandidates({ q, status, type, pendingOnly, limit }) });
+    res.json({ candidates: await listExtractedAnniversaryCandidates({
+      q,
+      status,
+      type,
+      pendingOnly,
+      limit,
+      triageBucket: req.query.triageBucket || '',
+      datasetKey: req.query.datasetKey || ''
+    }) });
   } catch (err) {
     console.error('Failed to list extracted anniversary candidates:', err);
     res.status(500).json({ error: 'Failed to list extracted anniversary candidates.' });
@@ -6618,7 +6649,16 @@ app.get('/api/knowledge/profile-candidates', async (req, res) => {
     const sourceId = String(req.query.sourceId || '').trim();
     const memberId = String(req.query.memberId || '').trim();
     const limit = Math.max(1, Math.min(500, Number(req.query.limit || 100) || 100));
-    res.json({ candidates: await listExtractedProfileCandidates({ q, status, type, sourceId, memberId, limit }) });
+    res.json({ candidates: await listExtractedProfileCandidates({
+      q,
+      status,
+      type,
+      sourceId,
+      memberId,
+      limit,
+      triageBucket: req.query.triageBucket || '',
+      datasetKey: req.query.datasetKey || ''
+    }) });
   } catch (err) {
     console.error('Failed to list profile candidates:', err);
     res.status(500).json({ error: 'Failed to list profile candidates.' });
@@ -6663,7 +6703,9 @@ app.get('/api/knowledge/relationship-candidates', async (req, res) => {
         memberId: String(req.query.memberId || '').trim(),
         ambiguous: String(req.query.ambiguous || '').trim(),
         requiresNewMember: String(req.query.requiresNewMember || '').trim(),
-        limit
+        limit,
+        triageBucket: req.query.triageBucket || '',
+        datasetKey: req.query.datasetKey || ''
       })
     });
   } catch (err) {

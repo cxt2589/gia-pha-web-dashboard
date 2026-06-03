@@ -732,6 +732,7 @@ export default function AIGovernor({
   const [caoTocV3Triage, setCaoTocV3Triage] = useState<CaoTocV3TriageSummary | null>(null);
   const [caoTocV3TriageNote, setCaoTocV3TriageNote] = useState("");
   const [isCaoTocV3TriageRunning, setIsCaoTocV3TriageRunning] = useState(false);
+  const [selectedV3TriageBucket, setSelectedV3TriageBucket] = useState("");
   const [aiLogs, setAiLogs] = useState<AIRequestLog[]>([]);
   const [aiLogSummary, setAiLogSummary] = useState<AIRequestLogSummary | null>(null);
   const [isAiLogsLoading, setIsAiLogsLoading] = useState(false);
@@ -1201,6 +1202,37 @@ export default function AIGovernor({
     }
   };
 
+  const focusV3TriageBucket = async (bucket: string) => {
+    const nextBucket = selectedV3TriageBucket === bucket ? "" : bucket;
+    setSelectedV3TriageBucket(nextBucket);
+    setExtractedStatusFilter("pending");
+    setProfileStatusFilter("pending");
+    setRelationshipStatusFilter("pending");
+    const firstExample = caoTocV3Triage?.examples?.[bucket]?.[0];
+    const preferredGroup =
+      firstExample?.kind === "relationship" || bucket === "relationship_warning" ? "relationship" :
+      firstExample?.kind === "profile" || bucket === "do_not_apply_directly" || bucket === "needs_identity_match" ? "profile" :
+      "vital";
+    setExtractionReviewGroup(preferredGroup);
+    setCaoTocV3TriageNote(nextBucket
+      ? `Đang lọc nhóm "${V3_TRIAGE_BUCKET_LABELS[nextBucket] || nextBucket}" trong khung duyệt bên dưới.`
+      : "Đã bỏ lọc triage v3.");
+    const options = { triageBucket: nextBucket, status: "pending" };
+    if (preferredGroup === "relationship") await loadRelationshipCandidates(options);
+    else if (preferredGroup === "profile") await loadProfileCandidates(options);
+    else await loadExtractedCandidates(options);
+  };
+
+  const clearV3TriageFilter = async () => {
+    setSelectedV3TriageBucket("");
+    setCaoTocV3TriageNote("Đã bỏ lọc triage v3.");
+    await Promise.all([
+      loadExtractedCandidates({ triageBucket: "" }),
+      loadProfileCandidates({ triageBucket: "" }),
+      loadRelationshipCandidates({ triageBucket: "" })
+    ]);
+  };
+
   const runCaoTocV2Action = async (action: "import" | "rescan") => {
     setIsCaoTocV2Running(true);
     setCaoTocV2Note(action === "import" ? "Đang import dataset v2..." : "Đang rescan dataset v2 và tạo candidate...");
@@ -1231,14 +1263,22 @@ export default function AIGovernor({
     }
   };
 
-  const loadExtractedCandidates = async () => {
+  const loadExtractedCandidates = async (overrides: { triageBucket?: string; status?: string; q?: string; type?: string } = {}) => {
     setIsExtractedLoading(true);
     try {
       const params = new URLSearchParams();
       params.set("limit", "160");
-      if (extractedNameFilter.trim()) params.set("q", extractedNameFilter.trim());
-      if (extractedStatusFilter) params.set("status", extractedStatusFilter);
-      if (extractedTypeFilter) params.set("type", extractedTypeFilter);
+      const q = overrides.q ?? extractedNameFilter;
+      const status = overrides.status ?? extractedStatusFilter;
+      const type = overrides.type ?? extractedTypeFilter;
+      const triageBucket = overrides.triageBucket ?? selectedV3TriageBucket;
+      if (q.trim()) params.set("q", q.trim());
+      if (status) params.set("status", status);
+      if (type) params.set("type", type);
+      if (triageBucket) {
+        params.set("triageBucket", triageBucket);
+        params.set("datasetKey", "cao_toc_txt_knowledge_base_v3");
+      }
       const response = await fetch(`/api/knowledge/extracted-anniversaries?${params.toString()}`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Không đọc được dữ liệu trích xuất.");
@@ -1403,15 +1443,22 @@ export default function AIGovernor({
     await loadAppliedExtractions();
   };
 
-  const loadProfileCandidates = async () => {
+  const loadProfileCandidates = async (overrides: { triageBucket?: string; status?: string; q?: string; type?: string } = {}) => {
     setIsProfileCandidatesLoading(true);
     try {
       const params = new URLSearchParams();
       params.set("limit", "160");
-      if (profileNameFilter.trim()) params.set("q", profileNameFilter.trim());
-      if (profileStatusFilter) params.set("status", profileStatusFilter);
-      if (extractionReviewGroup === "name") params.set("type", "name_alias");
-      else if (profileTypeFilter) params.set("type", profileTypeFilter);
+      const q = overrides.q ?? profileNameFilter;
+      const status = overrides.status ?? profileStatusFilter;
+      const type = overrides.type ?? (extractionReviewGroup === "name" ? "name_alias" : profileTypeFilter);
+      const triageBucket = overrides.triageBucket ?? selectedV3TriageBucket;
+      if (q.trim()) params.set("q", q.trim());
+      if (status) params.set("status", status);
+      if (type) params.set("type", type);
+      if (triageBucket) {
+        params.set("triageBucket", triageBucket);
+        params.set("datasetKey", "cao_toc_txt_knowledge_base_v3");
+      }
       const response = await fetch(`/api/knowledge/profile-candidates?${params.toString()}`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Không đọc được candidate hành trạng.");
@@ -1561,14 +1608,22 @@ export default function AIGovernor({
     await loadProfileCandidates();
   };
 
-  const loadRelationshipCandidates = async () => {
+  const loadRelationshipCandidates = async (overrides: { triageBucket?: string; status?: string; q?: string; type?: string } = {}) => {
     setIsRelationshipCandidatesLoading(true);
     try {
       const params = new URLSearchParams();
       params.set("limit", "160");
-      if (relationshipNameFilter.trim()) params.set("q", relationshipNameFilter.trim());
-      if (relationshipStatusFilter) params.set("status", relationshipStatusFilter);
-      if (relationshipTypeFilter) params.set("type", relationshipTypeFilter);
+      const q = overrides.q ?? relationshipNameFilter;
+      const status = overrides.status ?? relationshipStatusFilter;
+      const type = overrides.type ?? relationshipTypeFilter;
+      const triageBucket = overrides.triageBucket ?? selectedV3TriageBucket;
+      if (q.trim()) params.set("q", q.trim());
+      if (status) params.set("status", status);
+      if (type) params.set("type", type);
+      if (triageBucket) {
+        params.set("triageBucket", triageBucket);
+        params.set("datasetKey", "cao_toc_txt_knowledge_base_v3");
+      }
       const response = await fetch(`/api/knowledge/relationship-candidates?${params.toString()}`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Không đọc được candidate quan hệ.");
@@ -4952,14 +5007,20 @@ export default function AIGovernor({
                 <>
                   <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-bold text-stone-700 md:grid-cols-4 lg:grid-cols-8">
                     {V3_TRIAGE_BUCKET_ORDER.map((bucket) => (
-                      <span key={bucket} className={`rounded px-2 py-1 ${
+                      <button
+                        key={bucket}
+                        type="button"
+                        onClick={() => void focusV3TriageBucket(bucket)}
+                        className={`rounded px-2 py-1 text-left transition hover:-translate-y-0.5 hover:shadow-sm ${
+                        selectedV3TriageBucket === bucket ? "ring-2 ring-purple-500" : ""
+                      } ${
                         bucket === "noise_reject_candidate" ? "bg-red-50 text-red-800" :
                         bucket === "ready_to_review" ? "bg-emerald-50 text-emerald-800" :
                         bucket === "do_not_apply_directly" ? "bg-amber-50 text-amber-800" :
                         "bg-white"
                       }`}>
                         {V3_TRIAGE_BUCKET_LABELS[bucket] || bucket}: {caoTocV3Triage.bucketCounts?.[bucket] ?? 0}
-                      </span>
+                      </button>
                     ))}
                   </div>
                   <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[0.8fr_1.2fr]">
@@ -5095,6 +5156,14 @@ export default function AIGovernor({
                   <p className="mt-1 text-xs leading-relaxed text-stone-500">
                     Candidate trích xuất từ tài liệu chỉ được áp dụng vào cây phả khi admin duyệt. Bao gồm ngày tháng/mộ chí và hành trạng/công lao.
                   </p>
+                  {selectedV3TriageBucket && (
+                    <div className="mt-2 inline-flex flex-wrap items-center gap-2 rounded border border-purple-200 bg-purple-50 px-2.5 py-1.5 text-[11px] font-bold text-purple-900">
+                      Đang lọc triage v3: {V3_TRIAGE_BUCKET_LABELS[selectedV3TriageBucket] || selectedV3TriageBucket}
+                      <button type="button" onClick={() => void clearV3TriageFilter()} className="rounded bg-white px-2 py-0.5 text-purple-800 hover:bg-purple-100">
+                        Bỏ lọc
+                      </button>
+                    </div>
+                  )}
                 </div>
                 <label className="min-w-[220px] text-[11px] font-bold uppercase tracking-wide text-stone-500">
                   Nhóm dữ liệu

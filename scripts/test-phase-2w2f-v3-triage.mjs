@@ -192,6 +192,27 @@ async function main() {
     results.push(result('triage-note-count', (summary.data.bucketCounts?.do_not_apply_directly || 0) >= 1, JSON.stringify(summary.data.bucketCounts)));
     results.push(result('triage-noise-count', (summary.data.bucketCounts?.noise_reject_candidate || 0) >= 2, JSON.stringify(summary.data.bucketCounts)));
 
+    const readyProfiles = await fetchJson(`/api/knowledge/profile-candidates?datasetKey=${dataset}&triageBucket=ready_to_review&status=pending`, { headers });
+    results.push(result(
+      'profile-list-filter-ready-bucket',
+      readyProfiles.response.ok && (readyProfiles.data.candidates || []).some((item) => item.id === ids.profileReady) && !(readyProfiles.data.candidates || []).some((item) => item.id === ids.profileNoise),
+      `${readyProfiles.data.candidates?.length || 0} candidates`
+    ));
+
+    const fieldWarnings = await fetchJson(`/api/knowledge/extracted-anniversaries?datasetKey=${dataset}&triageBucket=field_mapping_warning&status=pending`, { headers });
+    results.push(result(
+      'anniversary-list-filter-field-warning',
+      fieldWarnings.response.ok && (fieldWarnings.data.candidates || []).some((item) => item.id === ids.annFieldWarning),
+      `${fieldWarnings.data.candidates?.length || 0} candidates`
+    ));
+
+    const relationshipWarnings = await fetchJson(`/api/knowledge/relationship-candidates?datasetKey=${dataset}&triageBucket=relationship_warning&status=pending`, { headers });
+    results.push(result(
+      'relationship-list-filter-warning',
+      relationshipWarnings.response.ok && (relationshipWarnings.data.candidates || []).some((item) => item.id === ids.relWarning) && !(relationshipWarnings.data.candidates || []).some((item) => item.id === ids.relNoise),
+      `${relationshipWarnings.data.candidates?.length || 0} candidates`
+    ));
+
     const dryRun = await fetchJson('/api/knowledge/v3-triage/reject-noise', {
       method: 'POST',
       headers,
