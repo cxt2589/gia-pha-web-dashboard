@@ -5613,6 +5613,278 @@ async function getCaoTocV2Report({ datasetKey = '' } = {}) {
   };
 }
 
+const CAO_TOC_V3_DEFAULT_DATASET_KEY = 'cao_toc_txt_knowledge_base_v3';
+const V3_TRIAGE_BUCKETS = [
+  'ready_to_review',
+  'needs_identity_match',
+  'needs_source_check',
+  'field_mapping_warning',
+  'relationship_warning',
+  'do_not_apply_directly',
+  'noise_reject_candidate',
+  'already_reviewed'
+];
+
+function createEmptyV3TriageBuckets() {
+  return Object.fromEntries(V3_TRIAGE_BUCKETS.map((bucket) => [bucket, 0]));
+}
+
+function getCandidateDatasetKey(row) {
+  const metadata = safeJsonParse(row?.metadata_json, {});
+  return normalizeCaoTocV2DatasetKey(metadata.datasetKey || '');
+}
+
+function getCandidateDataset(row) {
+  return String(safeJsonParse(row?.metadata_json, {}).dataset || '').trim();
+}
+
+function isV3CandidateRow(row, datasetKey = CAO_TOC_V3_DEFAULT_DATASET_KEY) {
+  const normalizedDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY);
+  const rowDatasetKey = getCandidateDatasetKey(row);
+  const rowDataset = getCandidateDataset(row);
+  if (rowDatasetKey) return rowDatasetKey === normalizedDatasetKey;
+  return rowDataset === 'cao_toc_txt_knowledge_base_v3';
+}
+
+function normalizeCandidateQualityFlags(metadata = {}) {
+  return Array.isArray(metadata.quality_flags)
+    ? metadata.quality_flags.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+}
+
+function getV3CandidateIdentityConfidence(kind, row) {
+  if (kind === 'relationship') {
+    return [row.subject_match_confidence || 'none', row.object_match_confidence || 'none'];
+  }
+  return [row.match_confidence || 'none'];
+}
+
+function v3CandidateHasSourceEvidence(row, metadata = {}) {
+  return Boolean(String(metadata.evidenceQuote || metadata.evidenceWindow || row.source_quote || row.extracted_text || '').trim());
+}
+
+function classifyV3Candidate(kind, row) {
+  const metadata = safeJsonParse(row.metadata_json, {});
+  const flags = safeJsonParse(row.flags_json, {});
+  const qualityFlags = normalizeCandidateQualityFlags(metadata);
+  const normalizedStatus = kind === 'relationship'
+    ? normalizeRelationshipCandidateStatus(row.status)
+    : kind === 'profile'
+      ? normalizeProfileCandidateStatus(row.status)
+      : normalizeExtractedCandidateStatus(row.status);
+  const buckets = new Set();
+  const reasons = [];
+  if (normalizedStatus !== 'pending') {
+    buckets.add('already_reviewed');
+    reasons.push(`status=${normalizedStatus}`);
+  }
+
+  const hasEvidence = v3CandidateHasSourceEvidence(row, metadata);
+  if (!hasEvidence) {
+    buckets.add('noise_reject_candidate');
+    reasons.push('missing evidence quote/window');
+  }
+
+  if (metadata.sourceKind === 'technical_rule' || metadata.excludeFromExtraction === true) {
+    buckets.add('noise_reject_candidate');
+    reasons.push('technical source candidate');
+  }
+
+  if (metadata.notApplyDirectly === true || ['verification_note', 'clan_legacy', 'branch_legacy'].includes(row.candidate_type)) {
+    buckets.add('do_not_apply_directly');
+    reasons.push('note/legacy item, review only');
+  }
+
+  if (metadata.needsAdminReview === true || qualityFlags.some((flag) => [
+    'needs_admin_review',
+    'moved_to_verification_note',
+    'low_confidence',
+    'ambiguous_person_name'
+  ].includes(flag))) {
+    buckets.add('needs_source_check');
+    reasons.push('source asks for admin review');
+  }
+
+  if (qualityFlags.some((flag) => [
+    'mixed_hometown_context',
+    'spouse_info_nested',
+    'not_grave_context',
+    'moved_from_dates_graves',
+    'moved_from_biography',
+    'actual_grave_from_biography',
+    'normalized_legacy_type',
+    'long_biography_needs_review',
+    'normalized_field_type'
+  ].includes(flag))) {
+    buckets.add('field_mapping_warning');
+    reasons.push(`field flags: ${qualityFlags.slice(0, 4).join(', ')}`);
+  }
+
+  const identityConfidences = getV3CandidateIdentityConfidence(kind, row).map((item) => String(item || 'none'));
+  if (identityConfidences.some((item) => ['none', 'weak', 'ambiguous'].includes(item))) {
+    buckets.add('needs_identity_match');
+    reasons.push(`match=${identityConfidences.join('/')}`);
+  }
+
+  if (kind === 'relationship') {
+    if (normalizeKnowledgeText(row.subject_name) && normalizeKnowledgeText(row.subject_name) === normalizeKnowledgeText(row.object_name)) {
+      buckets.add('noise_reject_candidate');
+      reasons.push('self relationship');
+    }
+    if (
+      flags.requires_new_subject ||
+      flags.requires_new_object ||
+      flags.ambiguous_subject ||
+      flags.ambiguous_object ||
+      flags.needs_manual_review ||
+      qualityFlags.some((flag) => ['invalid_or_ambiguous_object_name', 'invalid_or_ambiguous_subject_name'].includes(flag))
+    ) {
+      buckets.add('relationship_warning');
+      reasons.push('relationship needs manual subject/object review');
+    }
+    if (!String(row.subject_name || '').trim() || !String(row.object_name || '').trim()) {
+      buckets.add('noise_reject_candidate');
+      reasons.push('missing subject/object');
+    }
+  }
+
+  if (!buckets.size) buckets.add('ready_to_review');
+  const priority = [
+    'noise_reject_candidate',
+    'do_not_apply_directly',
+    'relationship_warning',
+    'field_mapping_warning',
+    'needs_identity_match',
+    'needs_source_check',
+    'ready_to_review',
+    'already_reviewed'
+  ];
+  const primaryBucket = priority.find((bucket) => buckets.has(bucket)) || 'ready_to_review';
+  return {
+    kind,
+    id: row.id,
+    status: normalizedStatus,
+    primaryBucket,
+    buckets: [...buckets],
+    reasons,
+    group: metadata.datasetGroup || 'unknown',
+    evidenceType: metadata.evidenceType || '',
+    title: row.person_name || row.subject_name || row.matched_member_name || '',
+    target: row.object_name || row.target_field || getExtractedAnniversaryFields(row, metadata).map((field) => field.type).join(', '),
+    confidence: metadata.confidence || identityConfidences.join('/'),
+    sourceId: row.source_id,
+    chunkId: row.chunk_id,
+    sourceTitle: metadata.sourceTitle || row.knowledge_title || '',
+    quote: compactText(metadata.evidenceQuote || row.source_quote || row.extracted_text || '', 220),
+    qualityFlags: qualityFlags.slice(0, 8),
+    rawStatus: row.status
+  };
+}
+
+async function buildCaoTocV3TriageSummary({ datasetKey = CAO_TOC_V3_DEFAULT_DATASET_KEY, examplesPerBucket = 5 } = {}) {
+  const database = await getDatabase();
+  const normalizedDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY);
+  const profileRows = database.prepare('SELECT * FROM extracted_profile_candidates').all().filter((row) => isV3CandidateRow(row, normalizedDatasetKey));
+  const annRows = database.prepare('SELECT * FROM extracted_anniversary_candidates').all().filter((row) => isV3CandidateRow(row, normalizedDatasetKey));
+  const relRows = database.prepare('SELECT * FROM extracted_relationship_candidates').all().filter((row) => isV3CandidateRow(row, normalizedDatasetKey));
+  const classified = [
+    ...profileRows.map((row) => classifyV3Candidate('profile', row)),
+    ...annRows.map((row) => classifyV3Candidate('anniversary', row)),
+    ...relRows.map((row) => classifyV3Candidate('relationship', row))
+  ];
+  const bucketCounts = createEmptyV3TriageBuckets();
+  const byGroup = {};
+  const byKind = { profile: profileRows.length, anniversary: annRows.length, relationship: relRows.length };
+  const byStatus = {};
+  const examples = Object.fromEntries(V3_TRIAGE_BUCKETS.map((bucket) => [bucket, []]));
+  for (const item of classified) {
+    bucketCounts[item.primaryBucket] = (bucketCounts[item.primaryBucket] || 0) + 1;
+    byGroup[item.group] = byGroup[item.group] || createEmptyV3TriageBuckets();
+    byGroup[item.group][item.primaryBucket] = (byGroup[item.group][item.primaryBucket] || 0) + 1;
+    byStatus[item.status] = (byStatus[item.status] || 0) + 1;
+    if (examples[item.primaryBucket] && examples[item.primaryBucket].length < Math.max(1, Math.min(20, Number(examplesPerBucket) || 5))) {
+      examples[item.primaryBucket].push(item);
+    }
+  }
+  return {
+    ok: true,
+    datasetKey: normalizedDatasetKey,
+    total: classified.length,
+    byKind,
+    byStatus,
+    bucketCounts,
+    byGroup,
+    examples,
+    generatedAt: new Date().toISOString()
+  };
+}
+
+async function rejectCaoTocV3NoiseCandidates({ datasetKey = CAO_TOC_V3_DEFAULT_DATASET_KEY, dryRun = false, limit = 500 } = {}, adminUser = {}) {
+  const database = await getDatabase();
+  const normalizedDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY);
+  const max = Math.max(1, Math.min(2000, Number(limit) || 500));
+  const profileRows = database.prepare('SELECT * FROM extracted_profile_candidates').all().filter((row) => isV3CandidateRow(row, normalizedDatasetKey));
+  const annRows = database.prepare('SELECT * FROM extracted_anniversary_candidates').all().filter((row) => isV3CandidateRow(row, normalizedDatasetKey));
+  const relRows = database.prepare('SELECT * FROM extracted_relationship_candidates').all().filter((row) => isV3CandidateRow(row, normalizedDatasetKey));
+  const targets = [
+    ...profileRows.map((row) => ({ kind: 'profile', row, triage: classifyV3Candidate('profile', row) })),
+    ...annRows.map((row) => ({ kind: 'anniversary', row, triage: classifyV3Candidate('anniversary', row) })),
+    ...relRows.map((row) => ({ kind: 'relationship', row, triage: classifyV3Candidate('relationship', row) }))
+  ].filter((item) => item.triage.status === 'pending' && item.triage.primaryBucket === 'noise_reject_candidate').slice(0, max);
+  const summary = {
+    datasetKey: normalizedDatasetKey,
+    dryRun: Boolean(dryRun),
+    candidatesMatched: targets.length,
+    rejectedProfileCandidates: 0,
+    rejectedAnniversaryCandidates: 0,
+    rejectedRelationshipCandidates: 0,
+    examples: targets.slice(0, 20).map((item) => item.triage)
+  };
+  if (dryRun) return { ok: true, ...summary };
+
+  database.exec('BEGIN');
+  try {
+    const now = new Date().toISOString();
+    for (const { kind, row, triage } of targets) {
+      const metadata = {
+        ...safeJsonParse(row.metadata_json, {}),
+        triageRejectedBy: 'phase_2w2f',
+        triageRejectedAt: now,
+        triageReasons: triage.reasons,
+        triageBucket: triage.primaryBucket
+      };
+      if (kind === 'profile') {
+        const result = database.prepare(`
+          UPDATE extracted_profile_candidates
+          SET status = 'rejected', metadata_json = ?, updated_at = datetime('now')
+          WHERE id = ? AND status NOT IN ('approved', 'applied', 'rejected')
+        `).run(JSON.stringify(metadata), row.id);
+        summary.rejectedProfileCandidates += result.changes || 0;
+      } else if (kind === 'anniversary') {
+        const result = database.prepare(`
+          UPDATE extracted_anniversary_candidates
+          SET status = 'rejected', metadata_json = ?, updated_at = datetime('now')
+          WHERE id = ? AND status NOT IN ('approved', 'applied', 'rejected')
+        `).run(JSON.stringify(metadata), row.id);
+        summary.rejectedAnniversaryCandidates += result.changes || 0;
+      } else if (kind === 'relationship') {
+        const result = database.prepare(`
+          UPDATE extracted_relationship_candidates
+          SET status = 'rejected', metadata_json = ?, updated_at = datetime('now')
+          WHERE id = ? AND status NOT IN ('approved', 'applied', 'rejected')
+        `).run(JSON.stringify(metadata), row.id);
+        summary.rejectedRelationshipCandidates += result.changes || 0;
+      }
+    }
+    const logId = insertKnowledgeMaintenanceLog(database, 'triage_v3_reject_noise', summary, adminUser);
+    database.exec('COMMIT');
+    return { ok: true, ...summary, logId };
+  } catch (err) {
+    database.exec('ROLLBACK');
+    throw err;
+  }
+}
+
 async function createKnowledgeSource(payload = {}, authUser = null) {
   const title = String(payload.title || '').trim();
   const content = normalizeImportedKnowledgeContent(payload);
@@ -6236,6 +6508,34 @@ app.get('/api/knowledge/rescan-v2/report', async (req, res) => {
   } catch (err) {
     console.error('Failed to build Cao Toc v2 rescan report:', err);
     res.status(500).json({ error: 'Failed to build Cao Toc v2 rescan report.' });
+  }
+});
+
+app.get('/api/knowledge/v3-triage/summary', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json(await buildCaoTocV3TriageSummary({
+      datasetKey: req.query.datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY,
+      examplesPerBucket: req.query.examplesPerBucket || 5
+    }));
+  } catch (err) {
+    console.error('Failed to build Cao Toc v3 triage summary:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to build Cao Toc v3 triage summary.' });
+  }
+});
+
+app.post('/api/knowledge/v3-triage/reject-noise', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json(await rejectCaoTocV3NoiseCandidates({
+      datasetKey: req.body?.datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY,
+      dryRun: req.body?.dryRun === true,
+      limit: req.body?.limit || 500
+    }, admin.authUser));
+  } catch (err) {
+    console.error('Failed to reject Cao Toc v3 noisy candidates:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to reject Cao Toc v3 noisy candidates.' });
   }
 });
 
