@@ -83,9 +83,20 @@ function findNode(node, id) {
   return null;
 }
 
+function removeFixtureNodes(node) {
+  if (!node || typeof node !== 'object') return node;
+  if ([fatherId, childId].includes(node.id)) return null;
+  return {
+    ...node,
+    children: (Array.isArray(node.children) ? node.children : [])
+      .map(removeFixtureNodes)
+      .filter(Boolean)
+  };
+}
+
 function installFixture() {
   const database = getDatabase();
-  const originalTree = getState(database, 'lineage-tree', null);
+  const originalTree = removeFixtureNodes(structuredClone(getState(database, 'lineage-tree', null)));
   const tree = structuredClone(originalTree);
   if (!Array.isArray(tree.children)) tree.children = [];
   tree.children = tree.children.filter((child) => ![fatherId, childId].includes(child.id));
