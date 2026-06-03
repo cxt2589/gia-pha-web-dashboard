@@ -386,6 +386,13 @@ type AIEvalResult = {
   durationMs: number;
   knowledgeMatchesCount: number;
   knowledgeSourceIds: string[];
+  citations?: Array<{
+    sourceId: string;
+    chunkId?: string;
+    sourceTitle?: string;
+    headingPath?: string;
+    evidenceQuote?: string;
+  }>;
 };
 
 type ExtractedAnniversaryField = {
@@ -2442,8 +2449,8 @@ export default function AIGovernor({
           status: "active",
           column: 6,
           row: 3,
-          description: "Chặn bịa dữ liệu, phân biệt pending/applied và giới hạn câu trả lời theo bot.",
-          metrics: { policy: "không bịa dữ liệu" }
+          description: "Chặn bịa dữ liệu, phân biệt pending/applied, áp danh xưng theo đời và giới hạn câu trả lời theo bot.",
+          metrics: { policy: "không bịa dữ liệu", rule: "danh xưng theo đời" }
         },
         {
           id: "ai_logs",
@@ -3399,6 +3406,30 @@ export default function AIGovernor({
               {aiLogNote && <p className="mt-2 rounded bg-amber-50 p-2 text-[11px] text-amber-800">{aiLogNote}</p>}
             </div>
           </div>
+
+          <section className="rounded-xl border border-amber-200 bg-amber-50/40 p-5 shadow-sm">
+            <h3 className="mb-4 flex items-center gap-2 font-serif text-lg font-bold text-red-950">
+              <ShieldCheck className="h-5 w-5 text-amber-700" />
+              Quy tắc AI & Danh xưng
+            </h3>
+            <div className="grid grid-cols-1 gap-3 text-xs md:grid-cols-5">
+              {[
+                ["Đời 0", "Cao Tổ"],
+                ["Đời 1", "Thủy Tổ"],
+                ["Đời 2-7", "Cụ"],
+                ["Đời 8", "Ông"],
+                ["Đời 9+", "Anh"]
+              ].map(([scope, label]) => (
+                <p key={scope} className="rounded-lg border border-amber-100 bg-white p-3">
+                  <span className="block text-[10px] font-bold uppercase tracking-wide text-stone-400">{scope}</span>
+                  <strong className="mt-1 block text-red-950">{label}</strong>
+                </p>
+              ))}
+            </div>
+            <p className="mt-3 rounded-lg bg-white/80 p-3 text-xs leading-relaxed text-stone-600">
+              Rule này chỉ dùng khi AI trình bày câu trả lời. Hệ thống không ghi đè tên, tước hiệu, Hán/Nôm, ngày tháng hoặc quan hệ gốc nếu chưa có thao tác duyệt riêng của admin.
+            </p>
+          </section>
 
           <section className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
             <h3 className="mb-4 flex items-center gap-2 font-serif text-lg font-bold text-red-950">
@@ -5530,7 +5561,8 @@ export default function AIGovernor({
                   answer: "",
                   durationMs: 0,
                   knowledgeMatchesCount: 0,
-                  knowledgeSourceIds: []
+                  knowledgeSourceIds: [],
+                  citations: []
                 }))).map((result) => (
                   <article key={result.id} className="rounded border border-stone-200 bg-white p-3">
                     <div className="flex flex-wrap items-start justify-between gap-2">
@@ -5545,6 +5577,18 @@ export default function AIGovernor({
                       </span>
                     </div>
                     {result.answer && <p className="mt-2 text-xs leading-relaxed text-stone-600">{truncateText(result.answer, 260)}</p>}
+                    {result.citations?.length ? (
+                      <div className="mt-2 rounded border border-amber-100 bg-amber-50/50 p-2 text-[11px] text-stone-600">
+                        <p className="font-bold uppercase tracking-wide text-amber-800">Nguồn / citation</p>
+                        {result.citations.slice(0, 2).map((citation, index) => (
+                          <p key={`${citation.sourceId}-${citation.chunkId || index}`} className="mt-1 leading-relaxed">
+                            <strong>{citation.sourceTitle || citation.sourceId}</strong>
+                            {citation.headingPath ? ` · ${citation.headingPath}` : ""}
+                            {citation.evidenceQuote ? `: ${truncateText(citation.evidenceQuote, 160)}` : ""}
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
                     {(result.missing.length > 0 || result.forbidden.length > 0) && (
                       <p className="mt-2 text-[11px] text-red-700">
                         Thiếu: {result.missing.join(", ") || "-"} · Cấm: {result.forbidden.join(", ") || "-"}

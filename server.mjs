@@ -8,6 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI } from '@google/genai';
 import { convertLunarToSolar, formatGenealogyDateStructured, parseGenealogyDateText } from './src/utils/genealogyDate.mjs';
+import { formatPersonDisplayAddress, getLineageAddressByGeneration } from './src/utils/lineageAddress.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 loadEnv({ path: resolve(__dirname, '.env.local') });
@@ -1132,12 +1133,26 @@ function stripSearchHonorifics(value) {
 function buildKnowledgeSearchVariants(query) {
   const original = String(query || '').trim();
   const stripped = stripSearchHonorifics(original);
+  const normalized = normalizeKnowledgeText(original);
   const variants = new Set([
     original,
     stripped,
-    normalizeKnowledgeText(original),
+    normalized,
     normalizeKnowledgeText(stripped)
   ]);
+  const safeExpansions = [
+    { test: /\bcao to\b/, values: ['Cao Đình Thuật', 'Cao Tổ', 'Cao Cao Mãnh Đế Đại Tướng Quân', 'Mãnh Đế Đại Tướng Quân'] },
+    { test: /\b(thuy to|cu lang|ong lang|nhieu lang|lang)\b/, values: ['Cao Đình Lạng', 'Thủy Tổ', 'Nhiêu Lạng'] },
+    { test: /\b(thuat|cao dinh thuat|manh de|dai tuong quan)\b/, values: ['Cao Đình Thuật', 'Cao Tổ', 'Mãnh Đế Đại Tướng Quân'] },
+    { test: /\b(ruc|cao xuan ruc)\b/, values: ['Cao Xuân Rục', 'Rục'] }
+  ];
+  for (const expansion of safeExpansions) {
+    if (!expansion.test.test(normalized)) continue;
+    for (const value of expansion.values) {
+      variants.add(value);
+      variants.add(normalizeKnowledgeText(value));
+    }
+  }
   return [...variants].map((item) => String(item || '').trim()).filter(Boolean);
 }
 
@@ -1628,6 +1643,8 @@ function scoreAliasMatch(queryNorm, aliasRow) {
 
 function scoreKnowledgeChunk(queryNorm, terms, row) {
   const titleNorm = normalizeKnowledgeText(row.title || row.source_title || '');
+  const sourceTitleNorm = normalizeKnowledgeText(row.source_title || '');
+  const headingNorm = normalizeKnowledgeText(row.heading_path || '');
   const summaryNorm = normalizeKnowledgeText(row.summary || '');
   const contentNorm = String(row.content_norm || '');
   const contentAscii = String(row.content_ascii || '');
@@ -1635,12 +1652,12 @@ function scoreKnowledgeChunk(queryNorm, terms, row) {
   const entityRefs = safeJsonParse(row.entity_refs_json, []);
   const tagsNorm = normalizeKnowledgeText(tags.join(' '));
   const entityNorm = normalizeKnowledgeText(entityRefs.join(' '));
-  const searchable = [titleNorm, summaryNorm, contentNorm, contentAscii].join(' ');
+  const searchable = [titleNorm, sourceTitleNorm, headingNorm, summaryNorm, contentNorm, contentAscii].join(' ');
   const matchedTerms = terms.filter((term) => searchable.includes(term) || tagsNorm.includes(term) || entityNorm.includes(term));
   let score = 0;
   const reasons = [];
 
-  if (queryNorm && (titleNorm.includes(queryNorm) || summaryNorm.includes(queryNorm) || contentNorm.includes(queryNorm))) {
+  if (queryNorm && (titleNorm.includes(queryNorm) || sourceTitleNorm.includes(queryNorm) || headingNorm.includes(queryNorm) || summaryNorm.includes(queryNorm) || contentNorm.includes(queryNorm))) {
     score += 80;
     reasons.push('exact_phrase');
   }
@@ -1656,9 +1673,23 @@ function scoreKnowledgeChunk(queryNorm, terms, row) {
     score += tagMatches.length * 18;
     reasons.push('tag_entity_match');
   }
-  if (titleNorm.includes(queryNorm) && queryNorm) {
+  if ((titleNorm.includes(queryNorm) || sourceTitleNorm.includes(queryNorm)) && queryNorm) {
     score += 24;
-    reasons.push('title_match');
+    reasons.push('source_title_match');
+  }
+  if (headingNorm.includes(queryNorm) && queryNorm) {
+    score += 30;
+    reasons.push('heading_match');
+  }
+  const nameLikeMatches = terms.filter((term) => term.length >= 4 && entityNorm.includes(term));
+  if (nameLikeMatches.length) {
+    score += nameLikeMatches.length * 14;
+    reasons.push('person_alias_boost');
+  }
+  const contentLength = String(row.content || '').length;
+  if (contentLength > 2400 && score < 90 && matchedTerms.length <= 2) {
+    score -= 18;
+    reasons.push('long_weak_penalty');
   }
 
   return {
@@ -1681,6 +1712,14 @@ async function searchKnowledgeWithAliases(query, { limit = 8, authScope = 'admin
     .filter((row) => row.score > 0)
     .sort((a, b) => b.score - a.score || a.generation - b.generation)
     .slice(0, limit);
+  const expandedVariants = new Set(variants);
+  for (const row of aliasMatches.slice(0, 8)) {
+    expandedVariants.add(row.alias);
+    expandedVariants.add(row.canonical_name);
+    if (row.required_title) expandedVariants.add(row.required_title);
+  }
+  const expandedNorms = [...expandedVariants].map((variant) => normalizeKnowledgeText(variant)).filter(Boolean);
+  const queryWords = [...new Set(expandedNorms.flatMap((variant) => variant.split(/[^a-z0-9]+/).filter((word) => word.length >= 3)))];
 
   const chunkRows = database.prepare(`
     SELECT
@@ -1698,17 +1737,19 @@ async function searchKnowledgeWithAliases(query, { limit = 8, authScope = 'admin
     FROM knowledge_chunks kc
     JOIN knowledge_sources ks ON ks.id = kc.source_id
   `).all();
-  const queryWords = queryNorm.split(/[^a-z0-9]+/).filter((word) => word.length >= 3);
   const chunkMatches = chunkRows
     .filter((row) => canReadKnowledgeVisibility(row.visibility || row.source_visibility, authScope))
     .filter((row) => !shouldExcludeKnowledgeFromPublicChat(row, authScope))
     .map((row) => {
-      const score = scoreKnowledgeChunk(queryNorm, queryWords, {
+      const scoringRow = {
         ...row,
         tags_json: row.tags_json || row.source_tags_json,
         entity_refs_json: row.entity_refs_json || row.source_entity_refs_json,
         content_ascii: row.content_ascii || ''
-      });
+      };
+      const score = expandedNorms
+        .map((variantNorm) => scoreKnowledgeChunk(variantNorm, queryWords, scoringRow))
+        .sort((a, b) => b.score - a.score)[0] || scoreKnowledgeChunk(queryNorm, queryWords, scoringRow);
       return { ...row, ...score };
     })
     .filter((row) => row.score > 0)
@@ -1725,7 +1766,7 @@ async function searchKnowledgeWithAliases(query, { limit = 8, authScope = 'admin
 
 function isAliasLookupQuestion(query) {
   const text = normalizeKnowledgeText(query);
-  return /\b(la ai|la gi|ai la|dung khong|co phai|thuy to|cao to)\b/.test(text);
+  return /\b(la ai|la gi|ai la|dung khong|co phai|thuy to|cao to)\b/.test(text) || /\b(doi|generation)\s*\d+\b/.test(text);
 }
 
 function buildAliasLookupAnswer(searchResult) {
@@ -1752,6 +1793,14 @@ function buildAliasLookupAnswer(searchResult) {
 function buildRequiredAliasAnswer(query) {
   if (!isAliasLookupQuestion(query)) return null;
   const text = normalizeKnowledgeText(query);
+  const generationMatch = text.match(/\bdoi\s*(\d+)\b|\bgeneration\s*(\d+)\b/);
+  if (generationMatch) {
+    const generation = Number(generationMatch[1] || generationMatch[2]);
+    const address = getLineageAddressByGeneration(generation);
+    if (address) {
+      return `Theo quy tắc danh xưng AI đang dùng, đời ${generation} xưng là "${address}". Quy tắc này chỉ dùng để trình bày câu trả lời, không ghi đè dữ liệu gốc trong cây phả.`;
+    }
+  }
   if (text.includes('cao to')) {
     return [
       'Cao Tổ trong kho tri thức hiện được map về cụ Cao Đình Thuật - Cao Tổ.',
@@ -2249,6 +2298,63 @@ function formatKnowledgeContextForAI(searchResult) {
     ...aliasLines,
     ...chunkLines
   ].join('\n'), AI_GATEWAY_MAX_KNOWLEDGE_CHARS);
+}
+
+function isTechnicalCitationSource(row = {}) {
+  return isTechnicalKnowledgeSource({
+    ...row,
+    metadata_json: row.source_metadata_json || row.metadata_json,
+    title: row.source_title || row.title
+  });
+}
+
+function knowledgeCitationFromChunk(row = {}, query = '') {
+  if (!row?.source_id || isTechnicalCitationSource(row)) return null;
+  return {
+    sourceId: row.source_id,
+    chunkId: row.id || row.chunk_id || '',
+    sourceTitle: row.source_title || row.knowledge_title || row.title || '',
+    headingPath: row.heading_path || '',
+    evidenceQuote: compactText(row.evidence_quote || row.source_quote || getSnippet(row.content || '', normalizeKnowledgeText(query), 260), 320),
+    score: Number(row.score || 0),
+    reason: row.reason || ''
+  };
+}
+
+function knowledgeCitationFromCandidate(row = {}) {
+  if (!row?.source_id) return null;
+  const metadata = safeJsonParse(row.metadata_json, {});
+  const sourceKind = metadata.sourceKind || metadata.source_kind || '';
+  if (normalizeKnowledgeSourceKind(sourceKind) === 'technical_rule') return null;
+  return {
+    sourceId: row.source_id,
+    chunkId: row.chunk_id || metadata.chunkId || '',
+    sourceTitle: metadata.sourceTitle || row.knowledge_title || row.source_title || '',
+    headingPath: row.heading_path || metadata.headingPath || '',
+    evidenceQuote: compactText(metadata.evidenceQuote || row.source_quote || row.reviewed_text || row.extracted_text || '', 320),
+    evidenceType: metadata.evidenceType || ''
+  };
+}
+
+function buildKnowledgeCitations(searchResult, { query = '', candidates = [], limit = 6 } = {}) {
+  const seen = new Set();
+  const citations = [];
+  const add = (citation) => {
+    if (!citation?.sourceId) return;
+    const key = `${citation.sourceId}:${citation.chunkId}:${citation.evidenceQuote}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    citations.push(citation);
+  };
+  for (const row of candidates || []) add(knowledgeCitationFromCandidate(row));
+  for (const row of searchResult?.chunks || []) add(knowledgeCitationFromChunk(row, query || searchResult?.query || ''));
+  return citations.slice(0, limit);
+}
+
+function buildKnowledgeContextHash(searchResult, citations = []) {
+  const chunkKeys = (searchResult?.chunks || []).slice(0, 12).map((row) => `${row.source_id}:${row.id}:${Math.round(Number(row.score || 0))}`);
+  const citationKeys = (citations || []).slice(0, 8).map((item) => `${item.sourceId}:${item.chunkId}:${compactText(item.evidenceQuote || '', 80)}`);
+  return sha256Base64Url(JSON.stringify([...chunkKeys, ...citationKeys])).slice(0, 24);
 }
 
 function buildKnowledgeChunkLocalAnswer(searchResult) {
@@ -4784,6 +4890,9 @@ function publicKnowledgeResult(row, query = '') {
     reason: row.reason || '',
     matchedTerms: row.matchedTerms || [],
     headingPath: row.heading_path || '',
+    sourceTitle: row.source_title || '',
+    sourceKind: normalizeKnowledgeSourceKind(safeJsonParse(row.source_metadata_json || '{}', {}).sourceKind || safeJsonParse(row.source_metadata_json || '{}', {}).source_kind || ''),
+    citation: knowledgeCitationFromChunk(row, query),
     charCount: row.char_count || 0,
     tokenEstimate: row.token_estimate || 0
   };
@@ -6015,6 +6124,7 @@ app.get('/api/knowledge/search', async (req, res) => {
         needsVerification: Boolean(row.needs_verification)
       })),
       chunks: result.chunks.map((row) => publicKnowledgeResult(row, query)),
+      citations: buildKnowledgeCitations(result, { query, limit }),
       localAnswer: buildAliasLookupAnswer(result)
     });
   } catch (err) {
@@ -7210,6 +7320,9 @@ const AI_GATEWAY_RETRY_429 = Number(process.env.AI_GATEWAY_RETRY_429 || 1);
 const AI_GATEWAY_KNOWLEDGE_TOP_K = Number(process.env.AI_GATEWAY_KNOWLEDGE_TOP_K || 6);
 const AI_GATEWAY_MAX_KNOWLEDGE_CHARS = Number(process.env.AI_GATEWAY_MAX_KNOWLEDGE_CHARS || 3200);
 const aiGatewayCache = new Map();
+const aiGatewayPublicRate = new Map();
+const AI_GATEWAY_PUBLIC_RATE_WINDOW_MS = Number(process.env.AI_GATEWAY_PUBLIC_RATE_WINDOW_MS || 60 * 1000);
+const AI_GATEWAY_PUBLIC_RATE_MAX = Number(process.env.AI_GATEWAY_PUBLIC_RATE_MAX || 24);
 const DASHBOARD_AI_CONTEXT_TYPES = new Set([
   'chat',
   'ceremony',
@@ -8272,6 +8385,7 @@ function buildAIGatewayCacheKey(context = {}) {
     botType: context.botType,
     intent: context.intent,
     authScope: context.authScope || 'none',
+    contextHash: context.contextHash || context.localKnowledgeMatches?.contextHash || '',
     engine: context.engine,
     modelName: context.modelName,
     temperature: context.temperature,
@@ -8298,6 +8412,33 @@ function setAIGatewayCachedResponse(cacheKey, value, { enabled = true, ttlMs = A
     value,
     expiresAt: Date.now() + ttlMs
   });
+}
+
+function getRequestRateIdentity(req, requestContext = {}) {
+  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return `${requestContext.botType || 'bot'}:${forwarded || req.socket?.remoteAddress || req.ip || 'unknown'}`;
+}
+
+function checkAIGatewayPublicRate(req, requestContext = {}) {
+  if (!AI_GATEWAY_PUBLIC_RATE_MAX || !AI_GATEWAY_PUBLIC_RATE_WINDOW_MS) return { ok: true };
+  if (requestContext.authScope && requestContext.authScope !== 'anonymous' && requestContext.authScope !== 'public') return { ok: true };
+  if (requestContext.botType !== 'webview_chat' && requestContext.type !== 'webview_chat') return { ok: true };
+  const key = getRequestRateIdentity(req, requestContext);
+  const now = Date.now();
+  const entry = aiGatewayPublicRate.get(key) || { count: 0, resetAt: now + AI_GATEWAY_PUBLIC_RATE_WINDOW_MS };
+  if (entry.resetAt <= now) {
+    entry.count = 0;
+    entry.resetAt = now + AI_GATEWAY_PUBLIC_RATE_WINDOW_MS;
+  }
+  entry.count += 1;
+  aiGatewayPublicRate.set(key, entry);
+  for (const [rateKey, value] of aiGatewayPublicRate) {
+    if (value.resetAt <= now) aiGatewayPublicRate.delete(rateKey);
+  }
+  if (entry.count > AI_GATEWAY_PUBLIC_RATE_MAX) {
+    return { ok: false, retryAfterMs: Math.max(1000, entry.resetAt - now), key };
+  }
+  return { ok: true, remaining: AI_GATEWAY_PUBLIC_RATE_MAX - entry.count };
 }
 
 function parseRetryDelayMs(value) {
@@ -8554,7 +8695,8 @@ function hasSpecificMemberNameMatch(query, memberText) {
     .filter((word) => !['ngay', 'gio', 'nam', 'nay', 'roi', 'vao', 'duong', 'lich', 'cao', 'dinh', 'khong', 'phai', 'cua', 'cho', 'hoi'].includes(word));
   if (!meaningfulTerms.length) return false;
   const haystack = normalizeVietnameseSearch(memberText);
-  return meaningfulTerms.some((word) => haystack.includes(word));
+  const haystackTerms = new Set(haystack.split(/[^a-z0-9]+/).filter(Boolean));
+  return meaningfulTerms.some((word) => haystackTerms.has(word));
 }
 
 async function buildAnniversaryItems({ year, authScope = 'anonymous' } = {}) {
@@ -10463,6 +10605,29 @@ async function handleAIGatewayRequest(req, res) {
     requestContext = { ...requestContext, authScope: 'anonymous' };
   }
 
+  const publicRate = checkAIGatewayPublicRate(req, requestContext);
+  if (!publicRate.ok) {
+    const rateResponse = {
+      error: 'AI public chatbot rate limit exceeded.',
+      details: 'Bạn đang gửi quá nhiều yêu cầu trong thời gian ngắn. Vui lòng thử lại sau ít phút.',
+      botType: requestContext.botType,
+      intent: requestContext.intent,
+      retryAfterMs: publicRate.retryAfterMs
+    };
+    logGateway({
+      engine: 'rate-guard',
+      provider: 'policy',
+      model: 'rate-guard',
+      status: 429,
+      cached: false,
+      durationMs: Date.now() - startedAt,
+      errorCode: 'RATE_GUARD',
+      errorMessage: rateResponse.details
+    });
+    res.status(429).json(rateResponse);
+    return;
+  }
+
   try {
     if (requestContext.intent === 'anniversary_notice_draft' && requestContext.anniversary) {
       const text = composeAnniversaryNoticeDraft(requestContext.anniversary, {
@@ -10560,6 +10725,7 @@ async function handleAIGatewayRequest(req, res) {
         text: initialKnowledgeAnswer,
         knowledgeMatchesCount: initialKnowledge.chunks.length,
         knowledgeSourceIds: [...new Set(initialKnowledge.chunks.map((row) => row.source_id))],
+        citations: buildKnowledgeCitations(initialKnowledge, { query: userQuery || message }),
         knowledge: {
           aliases: initialKnowledge.aliases.slice(0, 4).map((row) => ({
             canonicalName: row.canonical_name,
@@ -10678,7 +10844,8 @@ async function handleAIGatewayRequest(req, res) {
         intent: requestContext.intent,
         text: extractedAnniversaryAnswer,
         knowledgeMatchesCount: localKnowledge.chunks.length + anniversaryCandidates.length,
-        knowledgeSourceIds: sourceIds.length ? sourceIds : [...new Set(localKnowledge.chunks.map((row) => row.source_id))]
+        knowledgeSourceIds: sourceIds.length ? sourceIds : [...new Set(localKnowledge.chunks.map((row) => row.source_id))],
+        citations: buildKnowledgeCitations(localKnowledge, { query: userQuery || message, candidates: anniversaryCandidates })
       };
       logGateway({
         engine: 'local-knowledge',
@@ -10703,7 +10870,8 @@ async function handleAIGatewayRequest(req, res) {
         intent: requestContext.intent,
         text: missingAnniversaryAnswer,
         knowledgeMatchesCount: localKnowledge.chunks.length,
-        knowledgeSourceIds: sourceIds
+        knowledgeSourceIds: sourceIds,
+        citations: buildKnowledgeCitations(localKnowledge, { query: userQuery || message })
       };
       logGateway({
         engine: 'local-knowledge',
@@ -10728,7 +10896,8 @@ async function handleAIGatewayRequest(req, res) {
         intent: requestContext.intent,
         text: verificationAnswer.text,
         knowledgeMatchesCount: verificationAnswer.chunks.length,
-        knowledgeSourceIds: sourceIds
+        knowledgeSourceIds: sourceIds,
+        citations: buildKnowledgeCitations({ ...localKnowledge, chunks: verificationAnswer.chunks }, { query: userQuery || message })
       };
       logGateway({
         engine: 'local-knowledge',
@@ -10753,6 +10922,7 @@ async function handleAIGatewayRequest(req, res) {
         text: localKnowledgeAnswer,
         knowledgeMatchesCount: localKnowledge.chunks.length,
         knowledgeSourceIds: [...new Set(localKnowledge.chunks.map((row) => row.source_id))],
+        citations: buildKnowledgeCitations(localKnowledge, { query: userQuery || message }),
         knowledge: {
           aliases: localKnowledge.aliases.slice(0, 4).map((row) => ({
             canonicalName: row.canonical_name,
@@ -10787,13 +10957,15 @@ async function handleAIGatewayRequest(req, res) {
 
     const localKnowledgeContext = compactText(formatKnowledgeContextForAI(localKnowledge), botConfig.maxKnowledgeChars);
     if (localKnowledgeContext) {
+      const citations = buildKnowledgeCitations(localKnowledge, { query: userQuery || message });
       message = `${message}\n\n${localKnowledgeContext}`;
       requestContext = {
         ...requestContext,
         localKnowledgeMatches: {
           aliasCount: localKnowledge.aliases.length,
           chunkCount: localKnowledge.chunks.length,
-          sourceIds: [...new Set(localKnowledge.chunks.map((row) => row.source_id))]
+          sourceIds: [...new Set(localKnowledge.chunks.map((row) => row.source_id))],
+          contextHash: buildKnowledgeContextHash(localKnowledge, citations)
         }
       };
     }
@@ -10834,7 +11006,8 @@ async function handleAIGatewayRequest(req, res) {
       intent: requestContext.intent,
       text: localKnowledgeAnswer || await buildLocalAIResponse({ ...req, body: requestContext }, userQuery),
       knowledgeMatchesCount: requestContext.localKnowledgeMatches?.chunkCount || 0,
-      knowledgeSourceIds: requestContext.localKnowledgeMatches?.sourceIds || []
+      knowledgeSourceIds: requestContext.localKnowledgeMatches?.sourceIds || [],
+      citations: buildKnowledgeCitations(gatewayKnowledgeResult, { query: userQuery || message })
     };
     setAIGatewayCachedResponse(cacheKey, localResponse, botCacheOptions);
     logGateway({
@@ -10894,7 +11067,8 @@ async function handleAIGatewayRequest(req, res) {
       botType: requestContext.botType,
       intent: requestContext.intent,
       knowledgeMatchesCount: requestContext.localKnowledgeMatches?.chunkCount || 0,
-      knowledgeSourceIds: requestContext.localKnowledgeMatches?.sourceIds || []
+      knowledgeSourceIds: requestContext.localKnowledgeMatches?.sourceIds || [],
+      citations: buildKnowledgeCitations(gatewayKnowledgeResult, { query: userQuery || message })
     };
     setAIGatewayCachedResponse(cacheKey, responsePayload, botCacheOptions);
     logGateway({
