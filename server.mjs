@@ -7127,6 +7127,12 @@ app.get('/api/auth/zalo/callback', async (req, res) => {
 
 app.get('/api/tree', async (_req, res) => {
   try {
+    res.set({
+      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+      Pragma: 'no-cache',
+      Expires: '0',
+      'Surrogate-Control': 'no-store'
+    });
     const tree = await readState(TREE_STATE_KEY);
     if (tree) {
       res.json(tree);

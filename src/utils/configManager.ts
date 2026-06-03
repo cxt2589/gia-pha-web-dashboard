@@ -230,7 +230,8 @@ export const applyConfigToStyles = (config: AppConfig) => {
 };
 
 // --- Linage tree local persistence ---
-const TREE_DATA_STORAGE_KEY = "caogia_persisted_tree_database_v2";
+// Bump this key when persisted browser copies can diverge from the backend tree.
+const TREE_DATA_STORAGE_KEY = "caogia_persisted_tree_database_v3";
 const TREE_API_URL = "/api/tree";
 const GENERATED_PLACEHOLDER_VALUES = new Set([
   "Thủy nguyên, Hải Phòng",
@@ -287,7 +288,13 @@ export const getPersistedTreeData = (fallbackTree: any): any => {
 
 export const hydratePersistedTreeDataFromBackend = async (fallbackTree: any): Promise<any> => {
   try {
-    const response = await fetch(TREE_API_URL, { headers: { "Accept": "application/json" } });
+    const response = await fetch(TREE_API_URL, {
+      cache: "no-store",
+      headers: {
+        "Accept": "application/json",
+        "Cache-Control": "no-cache"
+      }
+    });
     if (response.status === 404) {
       return getPersistedTreeData(fallbackTree);
     }
