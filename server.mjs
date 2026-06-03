@@ -2448,6 +2448,7 @@ function publicExtractedAnniversaryCandidate(row) {
     matchedMemberName: row.matched_member_name,
     matchConfidence: row.match_confidence,
     status,
+    triage: getV3CandidateReviewState('anniversary', row),
     metadata,
     fields,
     currentValues: metadata.currentValues || {},
@@ -2869,6 +2870,7 @@ async function applyExtractedAnniversaryCandidate(id, body = {}, adminUser = {})
     err.status = 400;
     throw err;
   }
+  assertV3CandidateApplyAllowed('anniversary', row, body);
 
   const memberId = String(body.memberId || row.matched_member_id || '').trim();
   if (!memberId) {
@@ -3318,6 +3320,7 @@ function publicExtractedProfileCandidate(row) {
     knowledgeTitle: row.knowledge_title,
     visibility: row.visibility,
     status: normalizeProfileCandidateStatus(row.status),
+    triage: getV3CandidateReviewState('profile', row),
     metadata,
     currentValues: metadata.currentValues || {},
     candidateMatches: Array.isArray(metadata.candidateMatches) ? metadata.candidateMatches : [],
@@ -3694,6 +3697,7 @@ async function applyExtractedProfileCandidate(id, body = {}, adminUser = {}) {
     err.status = 400;
     throw err;
   }
+  assertV3CandidateApplyAllowed('profile', row, body);
   if (['verification_note', 'clan_legacy', 'branch_legacy'].includes(row.candidate_type)) {
     const err = new Error('Candidate này là ghi chú kiểm chứng/cấp chi ngành, không áp dụng trực tiếp vào hồ sơ cá nhân.');
     err.status = 400;
@@ -3924,6 +3928,7 @@ function publicExtractedRelationshipCandidate(row) {
     knowledgeTitle: row.knowledge_title,
     visibility: row.visibility,
     status: normalizeRelationshipCandidateStatus(row.status),
+    triage: getV3CandidateReviewState('relationship', row),
     flags,
     metadata,
     subjectMatches: Array.isArray(metadata.subjectMatches) ? metadata.subjectMatches : [],
@@ -4311,6 +4316,7 @@ async function applyExtractedRelationshipCandidate(id, body = {}, adminUser = {}
     err.status = 400;
     throw err;
   }
+  assertV3CandidateApplyAllowed('relationship', row, body);
   const flags = safeJsonParse(row.flags_json, {});
   if (flags.requires_new_subject || flags.requires_new_object || body.createMissingMember === true) {
     const err = new Error('Cần tạo/gán nhân vật trước khi áp dụng quan hệ.');
@@ -5804,6 +5810,115 @@ function classifyV3Candidate(kind, row) {
   };
 }
 
+function isResolvedV3IdentityConfidence(confidence, id = '') {
+  if (!String(id || '').trim()) return false;
+  return ['manual', 'exact', 'strong', 'medium'].includes(String(confidence || '').trim().toLowerCase());
+}
+
+function getV3CandidateReviewState(kind, row, body = {}) {
+  if (!isV3CandidateRow(row)) return null;
+  const triage = classifyV3Candidate(kind, row);
+  const buckets = Array.isArray(triage.buckets) ? triage.buckets : [];
+  const blockedReasons = [];
+  const requiredConfirmations = [];
+  const requiredActions = [];
+
+  if (triage.status !== 'approved' && triage.status !== 'applied') {
+    requiredActions.push('approve_before_apply');
+  }
+
+  if (buckets.includes('noise_reject_candidate')) {
+    blockedReasons.push('noise_reject_candidate');
+    requiredActions.push('reject_or_rescan_source');
+  }
+
+  if (buckets.includes('do_not_apply_directly')) {
+    blockedReasons.push('do_not_apply_directly');
+    requiredActions.push('keep_as_verification_note');
+  }
+
+  if (buckets.includes('needs_source_check') && body.confirmSourceCheck !== true) {
+    requiredConfirmations.push('confirmSourceCheck');
+  }
+
+  if (buckets.includes('field_mapping_warning') && body.confirmFieldMapping !== true) {
+    requiredConfirmations.push('confirmFieldMapping');
+  }
+
+  if (kind === 'relationship') {
+    const flags = safeJsonParse(row.flags_json, {});
+    const subjectId = String(body.subjectMemberId || row.subject_member_id || '').trim();
+    const objectId = String(body.objectMemberId || row.object_member_id || '').trim();
+    if (!subjectId || !objectId) {
+      requiredActions.push('assign_subject_and_object');
+    }
+    if (subjectId && objectId && subjectId === objectId) {
+      blockedReasons.push('self_relationship');
+    }
+    if (flags.requires_new_subject || flags.requires_new_object) {
+      blockedReasons.push('missing_lineage_member');
+      requiredActions.push('create_or_assign_missing_member');
+    }
+    const subjectResolved = isResolvedV3IdentityConfidence(
+      body.subjectMemberId ? 'manual' : row.subject_match_confidence,
+      subjectId
+    );
+    const objectResolved = isResolvedV3IdentityConfidence(
+      body.objectMemberId ? 'manual' : row.object_match_confidence,
+      objectId
+    );
+    if ((!subjectResolved || !objectResolved) && body.confirmIdentity !== true) {
+      requiredConfirmations.push('confirmIdentity');
+      requiredActions.push('confirm_subject_object_identity');
+    }
+    if (buckets.includes('relationship_warning') && body.confirmRelationshipReview !== true) {
+      requiredConfirmations.push('confirmRelationshipReview');
+      requiredActions.push('confirm_relationship_type_direction');
+    }
+  } else {
+    const memberId = String(body.memberId || row.matched_member_id || '').trim();
+    if (!memberId) {
+      requiredActions.push('assign_member');
+    }
+    const identityResolved = isResolvedV3IdentityConfidence(
+      body.memberId ? 'manual' : row.match_confidence,
+      memberId
+    );
+    if (!identityResolved && body.confirmIdentity !== true) {
+      requiredConfirmations.push('confirmIdentity');
+      requiredActions.push('confirm_member_identity');
+    }
+  }
+
+  const uniqueConfirmations = [...new Set(requiredConfirmations)];
+  const uniqueActions = [...new Set(requiredActions)];
+  const uniqueBlockedReasons = [...new Set(blockedReasons)];
+  return {
+    isV3: true,
+    bucket: triage.primaryBucket,
+    buckets,
+    reasons: triage.reasons,
+    group: triage.group,
+    confidence: triage.confidence,
+    sourceId: triage.sourceId,
+    chunkId: triage.chunkId,
+    qualityFlags: triage.qualityFlags,
+    requiredActions: uniqueActions,
+    requiredConfirmations: uniqueConfirmations,
+    blockedReasons: uniqueBlockedReasons,
+    canApply: uniqueBlockedReasons.length === 0 && uniqueConfirmations.length === 0 && uniqueActions.filter((action) => action !== 'approve_before_apply').length === 0 && (triage.status === 'approved' || triage.status === 'applied')
+  };
+}
+
+function assertV3CandidateApplyAllowed(kind, row, body = {}) {
+  const guard = getV3CandidateReviewState(kind, row, body);
+  if (!guard || guard.canApply) return guard;
+  const err = new Error('V3 candidate requires manual triage review before apply.');
+  err.status = 409;
+  err.triageGuard = guard;
+  throw err;
+}
+
 async function buildCaoTocV3TriageSummary({ datasetKey = CAO_TOC_V3_DEFAULT_DATASET_KEY, examplesPerBucket = 5 } = {}) {
   const database = await getDatabase();
   const normalizedDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY);
@@ -6784,7 +6899,10 @@ app.post('/api/knowledge/relationship-candidates/:id/apply', async (req, res) =>
     res.json(await applyExtractedRelationshipCandidate(String(req.params.id || ''), req.body || {}, admin.authUser));
   } catch (err) {
     console.error('Failed to apply relationship candidate:', err);
-    res.status(err.status || 500).json({ error: err.message || 'Failed to apply relationship candidate.' });
+    res.status(err.status || 500).json({
+      error: err.message || 'Failed to apply relationship candidate.',
+      triageGuard: err.triageGuard || null
+    });
   }
 });
 
@@ -6859,7 +6977,8 @@ app.post('/api/knowledge/profile-candidates/:id/apply', async (req, res) => {
     console.error('Failed to apply profile candidate:', err);
     res.status(err.status || 500).json({
       error: err.message || 'Failed to apply profile candidate.',
-      conflicts: err.conflicts || []
+      conflicts: err.conflicts || [],
+      triageGuard: err.triageGuard || null
     });
   }
 });
@@ -6940,7 +7059,8 @@ app.post('/api/knowledge/extracted-anniversaries/:id/apply', async (req, res) =>
     console.error('Failed to apply extracted anniversary candidate:', err);
     res.status(err.status || 500).json({
       error: err.message || 'Failed to apply extracted anniversary candidate.',
-      conflicts: err.conflicts || []
+      conflicts: err.conflicts || [],
+      triageGuard: err.triageGuard || null
     });
   }
 });

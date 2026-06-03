@@ -190,6 +190,68 @@ const V3_TRIAGE_BUCKET_LABELS: Record<string, string> = {
   already_reviewed: "Đã xử lý"
 };
 
+const V3_TRIAGE_BUCKET_GUIDES: Record<string, { title: string; action: string; tone: string }> = {
+  ready_to_review: {
+    title: "Có thể duyệt",
+    action: "Kiểm nhanh trích dẫn, gán đúng người rồi duyệt/apply.",
+    tone: "emerald"
+  },
+  needs_identity_match: {
+    title: "Cần gán nhân vật",
+    action: "Bắt buộc chọn đúng nhân vật trong cây phả trước khi apply.",
+    tone: "amber"
+  },
+  needs_source_check: {
+    title: "Cần kiểm nguồn",
+    action: "Mở đoạn nguồn, đọc trích dẫn và xác nhận nguồn trước khi apply.",
+    tone: "amber"
+  },
+  field_mapping_warning: {
+    title: "Cảnh báo mapping",
+    action: "Bắt buộc kiểm field đích. Ví dụ mộ chí không được map nhầm quê quán.",
+    tone: "orange"
+  },
+  relationship_warning: {
+    title: "Cảnh báo quan hệ",
+    action: "Bắt buộc xác nhận chủ thể, quan hệ, đối tượng và chiều quan hệ.",
+    tone: "blue"
+  },
+  do_not_apply_directly: {
+    title: "Chỉ ghi chú",
+    action: "Không apply trực tiếp vào cá nhân. Giữ làm ghi chú kiểm chứng/cấp họ/cấp chi.",
+    tone: "amber"
+  },
+  noise_reject_candidate: {
+    title: "Nhiễu chắc chắn",
+    action: "Không apply. Nên reject hoặc rescan nguồn sau khi sửa tài liệu.",
+    tone: "red"
+  },
+  already_reviewed: {
+    title: "Đã xử lý",
+    action: "Candidate đã duyệt/từ chối/apply, chỉ mở lại nếu cần kiểm toán.",
+    tone: "stone"
+  }
+};
+
+const V3_TRIAGE_ACTION_LABELS: Record<string, string> = {
+  approve_before_apply: "Duyệt candidate trước",
+  assign_member: "Gán đúng nhân vật",
+  assign_subject_and_object: "Gán đủ chủ thể và đối tượng",
+  confirm_member_identity: "Xác nhận đúng nhân vật",
+  confirm_subject_object_identity: "Xác nhận đúng hai nhân vật",
+  confirm_relationship_type_direction: "Xác nhận loại/chiều quan hệ",
+  create_or_assign_missing_member: "Tạo hoặc gán nhân vật còn thiếu",
+  reject_or_rescan_source: "Reject hoặc quét lại nguồn",
+  keep_as_verification_note: "Giữ làm ghi chú kiểm chứng"
+};
+
+const V3_TRIAGE_CONFIRM_LABELS: Record<string, string> = {
+  confirmIdentity: "Tôi đã xác nhận đúng nhân vật liên quan",
+  confirmSourceCheck: "Tôi đã mở và kiểm tra đoạn nguồn",
+  confirmFieldMapping: "Tôi đã xác nhận field đích/mapping",
+  confirmRelationshipReview: "Tôi đã xác nhận chủ thể - quan hệ - đối tượng"
+};
+
 type AIRequestLog = {
   id: string;
   createdAt: string;
@@ -456,6 +518,22 @@ type ExtractedAnniversaryField = {
   effectiveValue?: string;
 };
 
+type V3TriageGuard = {
+  isV3?: boolean;
+  bucket?: string;
+  buckets?: string[];
+  reasons?: string[];
+  group?: string;
+  confidence?: string;
+  sourceId?: string;
+  chunkId?: string;
+  qualityFlags?: string[];
+  requiredActions?: string[];
+  requiredConfirmations?: string[];
+  blockedReasons?: string[];
+  canApply?: boolean;
+};
+
 type LineageMemberMatch = {
   memberId: string;
   fullName: string;
@@ -485,6 +563,7 @@ type ExtractedAnniversaryCandidate = {
   matchedMemberName?: string;
   matchConfidence?: string;
   status: "pending" | "approved" | "rejected" | "applied";
+  triage?: V3TriageGuard | null;
   fields: ExtractedAnniversaryField[];
   currentValues?: Record<string, string>;
   candidateMatches?: LineageMemberMatch[];
@@ -513,6 +592,7 @@ type ExtractedProfileCandidate = {
   knowledgeTitle?: string;
   visibility?: string;
   status: "pending" | "approved" | "rejected" | "applied";
+  triage?: V3TriageGuard | null;
   currentValues?: Record<string, string>;
   candidateMatches?: LineageMemberMatch[];
   updatedAt?: string;
@@ -544,6 +624,7 @@ type ExtractedRelationshipCandidate = {
   knowledgeTitle?: string;
   visibility?: string;
   status: "pending" | "approved" | "rejected" | "applied";
+  triage?: V3TriageGuard | null;
   flags?: Record<string, boolean>;
   currentValues?: any;
   subjectMatches?: LineageMemberMatch[];
@@ -946,6 +1027,89 @@ export default function AIGovernor({
     relationship: "Quan hệ",
     verification_note: "Cần kiểm chứng"
   }[type || ""] || type || "Chưa phân loại");
+
+  const triageToneClass = (tone?: string) => ({
+    emerald: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    amber: "border-amber-200 bg-amber-50 text-amber-800",
+    orange: "border-orange-200 bg-orange-50 text-orange-800",
+    blue: "border-blue-200 bg-blue-50 text-blue-800",
+    red: "border-red-200 bg-red-50 text-red-800",
+    stone: "border-stone-200 bg-stone-50 text-stone-700"
+  }[tone || ""] || "border-purple-200 bg-purple-50 text-purple-800");
+
+  const getTriageGuide = (bucket?: string) => (
+    V3_TRIAGE_BUCKET_GUIDES[bucket || ""] || {
+      title: bucket || "Candidate thường",
+      action: "Không có bucket triage v3.",
+      tone: "stone"
+    }
+  );
+
+  const hardTriageActions = new Set([
+    "assign_member",
+    "assign_subject_and_object",
+    "create_or_assign_missing_member",
+    "reject_or_rescan_source",
+    "keep_as_verification_note"
+  ]);
+
+  const hasHardTriageBlock = (guard?: V3TriageGuard | null) => Boolean(
+    guard?.blockedReasons?.length ||
+    guard?.requiredActions?.some((action) => hardTriageActions.has(action))
+  );
+
+  const triageSummaryText = (guard?: V3TriageGuard | null) => {
+    if (!guard?.isV3) return "";
+    const actions = (guard.requiredActions || []).map((item) => V3_TRIAGE_ACTION_LABELS[item] || item);
+    const confirmations = (guard.requiredConfirmations || []).map((item) => V3_TRIAGE_CONFIRM_LABELS[item] || item);
+    return [...actions, ...confirmations].filter(Boolean).join("; ");
+  };
+
+  const formatTriageError = (data: any) => {
+    const guard = data?.triageGuard as V3TriageGuard | undefined;
+    const detail = triageSummaryText(guard);
+    return detail ? `${data.error || "Chưa thể apply candidate v3."} Cần: ${detail}.` : (data.error || "Không apply được candidate.");
+  };
+
+  const confirmTriageApply = (guard?: V3TriageGuard | null) => {
+    if (!guard?.requiredConfirmations?.length) return true;
+    const guide = getTriageGuide(guard.bucket);
+    const confirmations = guard.requiredConfirmations.map((item) => `- ${V3_TRIAGE_CONFIRM_LABELS[item] || item}`).join("\n");
+    return window.confirm(`${guide.title}\n${guide.action}\n\nXác nhận trước khi apply:\n${confirmations}`);
+  };
+
+  const triageApplyPayload = (guard?: V3TriageGuard | null) => {
+    const confirmations = new Set(guard?.requiredConfirmations || []);
+    return {
+      confirmIdentity: confirmations.has("confirmIdentity") || undefined,
+      confirmSourceCheck: confirmations.has("confirmSourceCheck") || undefined,
+      confirmFieldMapping: confirmations.has("confirmFieldMapping") || undefined,
+      confirmRelationshipReview: confirmations.has("confirmRelationshipReview") || undefined
+    };
+  };
+
+  const renderTriageGuard = (guard?: V3TriageGuard | null) => {
+    if (!guard?.isV3) return null;
+    const guide = getTriageGuide(guard.bucket);
+    const detail = triageSummaryText(guard);
+    return (
+      <div className={`mt-3 rounded border p-2 text-[11px] leading-relaxed ${triageToneClass(guide.tone)}`}>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="rounded bg-white/80 px-2 py-0.5 font-bold">{guide.title}</span>
+          <span className="font-semibold">{guide.action}</span>
+          {guard.canApply ? (
+            <span className="rounded bg-white/80 px-2 py-0.5 font-bold text-emerald-700">Đủ điều kiện apply</span>
+          ) : (
+            <span className="rounded bg-white/80 px-2 py-0.5 font-bold text-red-700">Cần xử lý trước</span>
+          )}
+        </div>
+        {detail && <p className="mt-1 text-[10px] font-semibold opacity-90">Cần: {detail}</p>}
+        {!!guard.qualityFlags?.length && (
+          <p className="mt-1 text-[10px] opacity-80">Flags: {guard.qualityFlags.slice(0, 5).join(", ")}</p>
+        )}
+      </div>
+    );
+  };
 
   const renderCandidateEvidence = (candidate: {
     evidenceQuote?: string;
@@ -1425,17 +1589,26 @@ export default function AIGovernor({
       setExtractedNote("Cần gán candidate với một nhân vật trước khi áp dụng.");
       return;
     }
+    if (hasHardTriageBlock(candidate.triage)) {
+      setExtractedNote(`Candidate v3 chưa đủ điều kiện apply. Cần: ${triageSummaryText(candidate.triage) || "xử lý triage trước"}.`);
+      return;
+    }
+    if (!confirmTriageApply(candidate.triage)) return;
     const response = await fetch(`/api/knowledge/extracted-anniversaries/${encodeURIComponent(candidate.id)}/apply`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ memberId })
+      body: JSON.stringify({
+        memberId,
+        fieldTypes: candidate.fields.map((field) => field.type),
+        ...triageApplyPayload(candidate.triage)
+      })
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const conflicts = Array.isArray(data.conflicts) && data.conflicts.length
         ? ` Trường đã có dữ liệu: ${data.conflicts.map((item: any) => item.lineageField).join(", ")}.`
         : "";
-      setExtractedNote(`${data.error || "Không áp dụng được candidate."}${conflicts}`);
+      setExtractedNote(`${formatTriageError(data)}${conflicts}`);
       return;
     }
     setExtractedNote(`Đã áp dụng ${data.changes?.length ?? 0} trường vào cây phả và ghi audit log.`);
@@ -1579,11 +1752,16 @@ export default function AIGovernor({
       setProfileCandidateNote("Cần gán candidate với một nhân vật trước khi áp dụng.");
       return;
     }
+    if (hasHardTriageBlock(candidate.triage)) {
+      setProfileCandidateNote(`Candidate v3 chưa đủ điều kiện apply. Cần: ${triageSummaryText(candidate.triage) || "xử lý triage trước"}.`);
+      return;
+    }
     const targetField = editingProfileCandidateId === candidate.id ? editingProfileTargetField : candidate.targetField;
     const isNameUpdate = targetField === "name";
     if (isNameUpdate && !window.confirm("Áp dụng họ tên/danh xưng sẽ thay đổi tên hiển thị của nhân vật. Xác nhận ghi đè nếu field tên hiện tại đã có dữ liệu?")) {
       return;
     }
+    if (!confirmTriageApply(candidate.triage)) return;
     const response = await fetch(`/api/knowledge/profile-candidates/${encodeURIComponent(candidate.id)}/apply`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1592,7 +1770,8 @@ export default function AIGovernor({
         reviewedText: editingProfileCandidateId === candidate.id ? editingProfileText : undefined,
         targetField,
         appendMode: isNameUpdate ? "replace" : "append",
-        confirmOverwrite: isNameUpdate
+        confirmOverwrite: isNameUpdate,
+        ...triageApplyPayload(candidate.triage)
       })
     });
     const data = await response.json().catch(() => ({}));
@@ -1600,7 +1779,7 @@ export default function AIGovernor({
       const conflicts = Array.isArray(data.conflicts) && data.conflicts.length
         ? ` Trường đã có dữ liệu: ${data.conflicts.map((item: any) => item.field).join(", ")}.`
         : "";
-      setProfileCandidateNote(`${data.error || "Không áp dụng được candidate hành trạng."}${conflicts}`);
+      setProfileCandidateNote(`${formatTriageError(data)}${conflicts}`);
       return;
     }
     setProfileCandidateNote(`Đã áp dụng ${data.changes?.length ?? 0} trường hành trạng/công lao vào cây phả.`);
@@ -1711,18 +1890,27 @@ export default function AIGovernor({
       setRelationshipCandidateNote("Cần gán đủ hai nhân vật trước khi áp dụng quan hệ.");
       return;
     }
+    if (hasHardTriageBlock(candidate.triage)) {
+      setRelationshipCandidateNote(`Candidate v3 chưa đủ điều kiện apply. Cần: ${triageSummaryText(candidate.triage) || "xử lý triage trước"}.`);
+      return;
+    }
+    if (!confirmTriageApply(candidate.triage)) return;
     const response = await fetch(`/api/knowledge/relationship-candidates/${encodeURIComponent(candidate.id)}/apply`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         confirmOverwrite,
         appendSpouse: true,
-        applyBidirectional: candidate.relationshipType === "spouse"
+        applyBidirectional: candidate.relationshipType === "spouse",
+        subjectMemberId: candidate.subjectMemberId,
+        objectMemberId: candidate.objectMemberId,
+        relationshipType: candidate.relationshipType,
+        ...triageApplyPayload(candidate.triage)
       })
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      setRelationshipCandidateNote(data.error || "Không áp dụng được candidate quan hệ.");
+      setRelationshipCandidateNote(formatTriageError(data));
       return;
     }
     setRelationshipCandidateNote(`Đã áp dụng ${data.changes?.length ?? 0} quan hệ vào cây phả và ghi audit log.`);
@@ -5157,11 +5345,14 @@ export default function AIGovernor({
                     Candidate trích xuất từ tài liệu chỉ được áp dụng vào cây phả khi admin duyệt. Bao gồm ngày tháng/mộ chí và hành trạng/công lao.
                   </p>
                   {selectedV3TriageBucket && (
-                    <div className="mt-2 inline-flex flex-wrap items-center gap-2 rounded border border-purple-200 bg-purple-50 px-2.5 py-1.5 text-[11px] font-bold text-purple-900">
-                      Đang lọc triage v3: {V3_TRIAGE_BUCKET_LABELS[selectedV3TriageBucket] || selectedV3TriageBucket}
-                      <button type="button" onClick={() => void clearV3TriageFilter()} className="rounded bg-white px-2 py-0.5 text-purple-800 hover:bg-purple-100">
-                        Bỏ lọc
-                      </button>
+                    <div className={`mt-2 rounded border px-2.5 py-2 text-[11px] ${triageToneClass(getTriageGuide(selectedV3TriageBucket).tone)}`}>
+                      <div className="flex flex-wrap items-center gap-2 font-bold">
+                        <span>Đang lọc triage v3: {V3_TRIAGE_BUCKET_LABELS[selectedV3TriageBucket] || selectedV3TriageBucket}</span>
+                        <button type="button" onClick={() => void clearV3TriageFilter()} className="rounded bg-white px-2 py-0.5 text-purple-800 hover:bg-purple-100">
+                          Bỏ lọc
+                        </button>
+                      </div>
+                      <p className="mt-1 font-semibold">{getTriageGuide(selectedV3TriageBucket).action}</p>
                     </div>
                   )}
                 </div>
@@ -5289,6 +5480,7 @@ export default function AIGovernor({
                           <p className="mt-1 text-[11px] text-stone-500">{candidate.knowledgeTitle || "-"} · {candidate.sourceId || "-"} · {candidate.chunkId || "-"} · {candidate.visibility || "public"}</p>
                           <p className="mt-2 text-xs leading-relaxed text-stone-700">{truncateText(candidate.reviewedText || candidate.extractedText || "", 300)}</p>
                           {renderCandidateEvidence(candidate, setRelationshipCandidateNote)}
+                          {renderTriageGuard(candidate.triage)}
                           {(candidate.flags?.ambiguous_subject || candidate.flags?.ambiguous_object || candidate.flags?.requires_new_subject || candidate.flags?.requires_new_object) && (
                             <p className="mt-2 rounded bg-amber-50 p-2 text-[11px] font-semibold text-amber-800">
                               Cần rà lại: {candidate.flags?.ambiguous_subject ? "chủ thể mơ hồ; " : ""}{candidate.flags?.ambiguous_object ? "đối tượng mơ hồ; " : ""}{candidate.flags?.requires_new_subject ? "chưa có chủ thể trong cây; " : ""}{candidate.flags?.requires_new_object ? "chưa có đối tượng trong cây; " : ""}
@@ -5298,8 +5490,8 @@ export default function AIGovernor({
                         <div className="flex shrink-0 flex-wrap gap-2">
                           <button type="button" onClick={() => void patchRelationshipCandidate(candidate.id, { status: "approved" }, "Đã duyệt candidate quan hệ.")} disabled={candidate.status === "applied"} className="rounded bg-emerald-700 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-800 disabled:opacity-50">Duyệt</button>
                           <button type="button" onClick={() => void patchRelationshipCandidate(candidate.id, { status: "rejected" }, "Đã từ chối candidate quan hệ.")} disabled={candidate.status === "applied"} className="rounded border border-red-200 px-2.5 py-1.5 text-[11px] font-bold text-red-700 hover:bg-red-50 disabled:opacity-50">Từ chối</button>
-                          <button type="button" onClick={() => void applyRelationshipCandidate(candidate)} disabled={candidate.status !== "approved" && candidate.status !== "applied"} className="rounded bg-red-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-red-950 disabled:opacity-50">Áp dụng</button>
-                          <button type="button" onClick={() => void applyRelationshipCandidate(candidate, true)} disabled={candidate.status !== "approved" && candidate.status !== "applied"} className="rounded border border-amber-300 px-2.5 py-1.5 text-[11px] font-bold text-amber-800 hover:bg-amber-50 disabled:opacity-50">Ghi đè</button>
+                          <button type="button" onClick={() => void applyRelationshipCandidate(candidate)} disabled={(candidate.status !== "approved" && candidate.status !== "applied") || hasHardTriageBlock(candidate.triage)} className="rounded bg-red-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-red-950 disabled:opacity-50">Áp dụng</button>
+                          <button type="button" onClick={() => void applyRelationshipCandidate(candidate, true)} disabled={(candidate.status !== "approved" && candidate.status !== "applied") || hasHardTriageBlock(candidate.triage)} className="rounded border border-amber-300 px-2.5 py-1.5 text-[11px] font-bold text-amber-800 hover:bg-amber-50 disabled:opacity-50">Ghi đè</button>
                         </div>
                       </div>
                       <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
@@ -5421,6 +5613,7 @@ export default function AIGovernor({
                           {candidate.headingPath || "-"} · {candidate.sourceId} · {candidate.chunkId || "-"}
                         </p>
                         {renderCandidateEvidence(candidate)}
+                        {renderTriageGuard(candidate.triage)}
                         <button
                           type="button"
                           onClick={() => void openSourceChunk(candidate)}
@@ -5449,7 +5642,7 @@ export default function AIGovernor({
                         <button
                           type="button"
                           onClick={() => void handleApplyCandidate(candidate)}
-                          disabled={candidate.status !== "approved" && candidate.status !== "applied"}
+                          disabled={(candidate.status !== "approved" && candidate.status !== "applied") || hasHardTriageBlock(candidate.triage)}
                           className="rounded bg-red-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-red-950 disabled:opacity-50"
                         >
                           Áp dụng
@@ -5645,13 +5838,14 @@ export default function AIGovernor({
                             <p className="mt-1 text-[11px] text-stone-500">{candidate.knowledgeTitle || "-"} · {candidate.sourceId || "-"} · {candidate.chunkId || "-"} · {candidate.visibility || "public"}</p>
                             <p className="mt-2 text-xs leading-relaxed text-stone-700">{truncateText(candidate.reviewedText || candidate.extractedText || "", 320)}</p>
                             {renderCandidateEvidence(candidate, setProfileCandidateNote)}
+                            {renderTriageGuard(candidate.triage)}
                           </div>
                           <div className="flex shrink-0 flex-wrap gap-2">
                             <button type="button" onClick={() => void patchProfileCandidate(candidate.id, { status: "approved" }, "Đã duyệt candidate hành trạng.")} disabled={candidate.status === "applied"} className="rounded bg-emerald-700 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-800 disabled:opacity-50">Duyệt</button>
                             <button type="button" onClick={() => void patchProfileCandidate(candidate.id, { status: "rejected" }, "Đã từ chối candidate hành trạng.")} disabled={candidate.status === "applied"} className="rounded border border-red-200 px-2.5 py-1.5 text-[11px] font-bold text-red-700 hover:bg-red-50 disabled:opacity-50">Từ chối</button>
                             <button type="button" onClick={() => startEditProfileCandidate(candidate)} className="rounded border border-stone-200 px-2.5 py-1.5 text-[11px] font-bold text-stone-600 hover:bg-stone-50">Sửa</button>
                             {candidate.candidateType !== "verification_note" && candidate.candidateType !== "clan_legacy" && candidate.candidateType !== "branch_legacy" && (
-                              <button type="button" onClick={() => void applyProfileCandidate(candidate)} disabled={candidate.status !== "approved" && candidate.status !== "applied"} className="rounded bg-red-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-red-950 disabled:opacity-50">Áp dụng</button>
+                              <button type="button" onClick={() => void applyProfileCandidate(candidate)} disabled={(candidate.status !== "approved" && candidate.status !== "applied") || hasHardTriageBlock(candidate.triage)} className="rounded bg-red-900 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-red-950 disabled:opacity-50">Áp dụng</button>
                             )}
                           </div>
                         </div>
