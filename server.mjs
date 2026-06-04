@@ -6922,6 +6922,319 @@ async function buildV3MemberAppliedReport({ q = '', memberId = '', limit = 80 } 
   };
 }
 
+const MEMBER_PROFILE_EVIDENCE_FIELD_LABELS = {
+  name: 'Họ tên / danh xưng',
+  title: 'Tước vị / danh xưng',
+  rankRole: 'Vai trò / thứ bậc',
+  branch: 'Chi/ngành',
+  generation: 'Đời',
+  birthDateStructured: 'Ngày sinh có cấu trúc',
+  solarBirthDate: 'Ngày sinh dương lịch',
+  birthYear: 'Năm sinh',
+  deathDateStructured: 'Ngày mất có cấu trúc',
+  solarDeathDate: 'Ngày mất dương lịch',
+  deathYear: 'Năm mất',
+  deathAnniversaryLunarStructured: 'Ngày giỗ âm lịch có cấu trúc',
+  deathAnniversaryLunar: 'Ngày giỗ âm lịch',
+  lunarAnniversary: 'Ngày giỗ âm lịch',
+  hometown: 'Quê quán',
+  birthPlace: 'Nơi sinh / quê quán',
+  residence: 'Nơi ở',
+  grave: 'Mộ chí / nơi an táng',
+  graveLocation: 'Mộ chí / nơi an táng',
+  burialPlace: 'Nơi an táng',
+  parentId: 'Bố/Mẹ trong phả hệ',
+  father: 'Cha',
+  fatherName: 'Cha',
+  mother: 'Mẹ',
+  motherName: 'Mẹ',
+  spouse: 'Phối ngẫu',
+  relationship: 'Quan hệ gia tộc',
+  description: 'Hành trạng tiên nhân',
+  bio: 'Sự nghiệp / tích trạng',
+  achievements: 'Công lao / vinh danh',
+  value: 'Thông tin'
+};
+
+function memberEvidenceFieldLabel(field) {
+  return MEMBER_PROFILE_EVIDENCE_FIELD_LABELS[field] || field || 'Thông tin';
+}
+
+function hasMemberValue(value) {
+  if (value === undefined || value === null) return false;
+  if (Array.isArray(value)) return value.some((item) => hasMemberValue(item));
+  if (typeof value === 'object') {
+    if (value.rawText || value.day || value.month || value.year) return true;
+    return Object.values(value).some((item) => hasMemberValue(item));
+  }
+  const text = String(value || '').trim();
+  return Boolean(text && !['0', 'khuyết', 'khuyet', 'không rõ', 'khong ro', 'chưa rõ', 'chua ro', 'chưa cập nhật', 'chua cap nhat'].includes(normalizeKnowledgeText(text)));
+}
+
+function buildMemberProfileChecklist(member = {}) {
+  const spouseDetails = Array.isArray(member.spouseDetails) ? member.spouseDetails : [];
+  const childCount = Array.isArray(member.children) ? member.children.length : 0;
+  const checks = [
+    {
+      key: 'birth',
+      label: 'Ngày/năm sinh',
+      field: 'solarBirthDate',
+      status: hasMemberValue(member.birthDateStructured) || hasMemberValue(member.solarBirthDate) || hasMemberValue(member.birthYear) ? 'complete' : 'missing',
+      currentValue: member.solarBirthDate || member.birthYear || member.birthDateStructured?.rawText || ''
+    },
+    {
+      key: 'death',
+      label: 'Ngày/năm mất',
+      field: 'solarDeathDate',
+      status: !member.isDeceased || hasMemberValue(member.deathDateStructured) || hasMemberValue(member.solarDeathDate) || hasMemberValue(member.deathYear) ? 'complete' : 'missing',
+      currentValue: member.solarDeathDate || member.deathYear || member.deathDateStructured?.rawText || ''
+    },
+    {
+      key: 'anniversary',
+      label: 'Ngày giỗ âm lịch',
+      field: 'deathAnniversaryLunar',
+      status: !member.isDeceased || hasMemberValue(member.deathAnniversaryLunarStructured) || hasMemberValue(member.deathAnniversaryLunar) || hasMemberValue(member.lunarAnniversary) ? 'complete' : 'missing',
+      currentValue: member.deathAnniversaryLunar || member.lunarAnniversary || member.deathAnniversaryLunarStructured?.rawText || ''
+    },
+    {
+      key: 'hometown',
+      label: 'Quê quán / nơi ở',
+      field: 'residence',
+      status: hasMemberValue(member.birthPlace) || hasMemberValue(member.residence) ? 'complete' : 'missing',
+      currentValue: member.birthPlace || member.residence || ''
+    },
+    {
+      key: 'grave',
+      label: 'Mộ chí / nơi an táng',
+      field: 'graveLocation',
+      status: !member.isDeceased || hasMemberValue(member.graveLocation) || hasMemberValue(member.burialPlace) ? 'complete' : 'missing',
+      currentValue: member.graveLocation || member.burialPlace || ''
+    },
+    {
+      key: 'parent',
+      label: 'Bố/Mẹ trong phả hệ',
+      field: 'parentId',
+      status: member.generation === 0 || hasMemberValue(member.parentId) || hasMemberValue(member.fatherName) ? 'complete' : 'missing',
+      currentValue: member.parentId || member.fatherName || ''
+    },
+    {
+      key: 'mother',
+      label: 'Mẹ',
+      field: 'motherName',
+      status: hasMemberValue(member.motherName) ? 'complete' : 'missing',
+      currentValue: member.motherName || ''
+    },
+    {
+      key: 'spouse',
+      label: 'Phối ngẫu',
+      field: 'spouse',
+      status: hasMemberValue(member.spouse) || spouseDetails.some((item) => hasMemberValue(item?.name)) ? 'complete' : 'missing',
+      currentValue: member.spouse || spouseDetails.map((item) => item?.name || '').filter(Boolean).join(', ')
+    },
+    {
+      key: 'children',
+      label: 'Con cái',
+      field: 'children',
+      status: childCount > 0 ? 'complete' : 'missing',
+      currentValue: childCount ? `${childCount} người con/cháu trực tiếp` : ''
+    },
+    {
+      key: 'bio',
+      label: 'Hành trạng / công lao',
+      field: 'bio',
+      status: hasMemberValue(member.description) || hasMemberValue(member.bio) || hasMemberValue(member.achievements) ? 'complete' : 'missing',
+      currentValue: member.description || member.bio || (Array.isArray(member.achievements) ? member.achievements.join('; ') : '')
+    }
+  ];
+  return checks.map((item) => ({
+    ...item,
+    fieldLabel: memberEvidenceFieldLabel(item.field)
+  }));
+}
+
+function v3LogToMemberEvidenceItem(log, field = null) {
+  const fieldName = field?.field || field?.fieldType || log.kind || 'value';
+  return {
+    id: field ? `${log.id}:${fieldName}` : log.id,
+    logId: log.id,
+    candidateId: log.candidateId,
+    auditId: log.auditId,
+    kind: log.kind,
+    field: fieldName,
+    fieldLabel: memberEvidenceFieldLabel(fieldName),
+    oldValue: field?.oldValue || '',
+    newValue: field?.newValue || '',
+    status: log.rollbackStatus === 'rolled_back' || log.status === 'rolled_back' ? 'rolled_back' : 'applied',
+    reconcileStatus: log.reconcileStatus || '',
+    ok: log.ok,
+    sourceId: field?.sourceId || log.sourceId || '',
+    chunkId: field?.chunkId || log.chunkId || '',
+    sourceTitle: log.sourceTitle || '',
+    headingPath: log.headingPath || '',
+    evidenceQuote: log.evidenceQuote || '',
+    evidenceWindow: log.evidenceWindow || '',
+    appliedBy: log.appliedBy || '',
+    appliedAt: log.createdAt || '',
+    rolledBackAt: log.rolledBackAt || ''
+  };
+}
+
+function candidateSourceMetadata(row) {
+  const metadata = safeJsonParse(row.metadata_json, {});
+  return {
+    sourceTitle: metadata.sourceTitle || row.knowledge_title || '',
+    headingPath: metadata.headingPath || row.heading_path || '',
+    evidenceQuote: metadata.evidenceQuote || row.source_quote || row.extracted_text || '',
+    evidenceWindow: metadata.evidenceWindow || row.source_quote || row.extracted_text || '',
+    evidenceType: metadata.evidenceType || row.candidate_type || 'candidate'
+  };
+}
+
+function candidateRowMatchesMember(row, memberId, idFields = []) {
+  const id = String(memberId || '').trim();
+  if (!id) return false;
+  if (idFields.some((field) => String(row?.[field] || '').trim() === id)) return true;
+  const metadata = safeJsonParse(row?.metadata_json, {});
+  const candidateMatches = Array.isArray(metadata.candidateMatches) ? metadata.candidateMatches : [];
+  if (candidateMatches.some((match) => String(match?.memberId || '').trim() === id)) return true;
+  const subjectMatches = Array.isArray(metadata.subjectMatches) ? metadata.subjectMatches : [];
+  const objectMatches = Array.isArray(metadata.objectMatches) ? metadata.objectMatches : [];
+  return [...subjectMatches, ...objectMatches].some((match) => String(match?.memberId || '').trim() === id);
+}
+
+async function buildLineageMemberEvidence(memberId, { includePending = true, limit = 120 } = {}) {
+  const id = String(memberId || '').trim();
+  if (!id) {
+    const err = new Error('memberId is required.');
+    err.status = 400;
+    throw err;
+  }
+  const database = await getDatabase();
+  const tree = await readLineageTreeForAI();
+  const member = tree ? getLineageNodeById(tree, id) : null;
+  if (!member) {
+    const err = new Error('Lineage member not found.');
+    err.status = 404;
+    throw err;
+  }
+
+  const report = await buildV3MemberAppliedReport({ memberId: id, limit });
+  const reportMember = report.members?.[0] || null;
+  const activeEvidence = [];
+  const rollbackEvidence = [];
+  const driftEvidence = [];
+  for (const log of reportMember?.logs || []) {
+    const fields = Array.isArray(log.fields) && log.fields.length ? log.fields : [null];
+    for (const field of fields) {
+      const item = v3LogToMemberEvidenceItem(log, field);
+      if (item.status === 'rolled_back') rollbackEvidence.push(item);
+      else activeEvidence.push(item);
+      if (['drift', 'rolled_back_tree_changed', 'noop_unverified'].includes(log.reconcileStatus || '')) {
+        driftEvidence.push(item);
+      }
+    }
+  }
+
+  const pendingEvidence = [];
+  if (includePending) {
+    const pendingStatuses = new Set(['pending', 'approved']);
+    const anniversaryRows = database.prepare('SELECT * FROM extracted_anniversary_candidates ORDER BY updated_at DESC LIMIT 500').all()
+      .filter((row) => pendingStatuses.has(normalizeExtractedCandidateStatus(row.status)))
+      .filter((row) => candidateRowMatchesMember(row, id, ['matched_member_id']));
+    for (const row of anniversaryRows) {
+      const meta = candidateSourceMetadata(row);
+      for (const field of getExtractedAnniversaryFields(row)) {
+        pendingEvidence.push({
+          id: `${row.id}:${field.type}`,
+          candidateId: row.id,
+          kind: 'anniversary',
+          field: field.type,
+          fieldLabel: memberEvidenceFieldLabel(field.type === 'birth' ? 'solarBirthDate' : field.type === 'death' ? 'solarDeathDate' : field.type === 'lunar_anniversary' ? 'deathAnniversaryLunar' : field.type === 'grave' ? 'graveLocation' : field.type),
+          newValue: field.effectiveValue || field.value || '',
+          status: normalizeExtractedCandidateStatus(row.status),
+          matchConfidence: row.match_confidence || '',
+          sourceId: row.source_id,
+          chunkId: row.chunk_id,
+          ...meta
+        });
+      }
+    }
+
+    const profileRows = database.prepare('SELECT * FROM extracted_profile_candidates ORDER BY updated_at DESC LIMIT 500').all()
+      .filter((row) => pendingStatuses.has(normalizeProfileCandidateStatus(row.status)))
+      .filter((row) => candidateRowMatchesMember(row, id, ['matched_member_id']));
+    for (const row of profileRows) {
+      const meta = candidateSourceMetadata(row);
+      pendingEvidence.push({
+        id: row.id,
+        candidateId: row.id,
+        kind: 'profile',
+        field: row.target_field || 'description',
+        fieldLabel: memberEvidenceFieldLabel(row.target_field || 'description'),
+        newValue: row.reviewed_text || row.extracted_text || '',
+        status: normalizeProfileCandidateStatus(row.status),
+        matchConfidence: row.match_confidence || '',
+        sourceId: row.source_id,
+        chunkId: row.chunk_id,
+        ...meta
+      });
+    }
+
+    const relationshipRows = database.prepare('SELECT * FROM extracted_relationship_candidates ORDER BY updated_at DESC LIMIT 500').all()
+      .filter((row) => pendingStatuses.has(normalizeRelationshipCandidateStatus(row.status)))
+      .filter((row) => candidateRowMatchesMember(row, id, ['subject_member_id', 'object_member_id']));
+    for (const row of relationshipRows) {
+      const meta = candidateSourceMetadata(row);
+      pendingEvidence.push({
+        id: row.id,
+        candidateId: row.id,
+        kind: 'relationship',
+        field: normalizeRelationshipType(row.relationship_type),
+        fieldLabel: memberEvidenceFieldLabel(row.relationship_type || 'relationship'),
+        newValue: row.reviewed_text || row.extracted_text || [row.subject_name, row.relationship_type, row.object_name].filter(Boolean).join(' '),
+        status: normalizeRelationshipCandidateStatus(row.status),
+        matchConfidence: [row.subject_match_confidence, row.object_match_confidence].filter(Boolean).join('/'),
+        sourceId: row.source_id,
+        chunkId: row.chunk_id,
+        ...meta
+      });
+    }
+  }
+
+  const checklist = buildMemberProfileChecklist(member);
+  const activeFields = new Set(activeEvidence.map((item) => item.field).filter(Boolean));
+  const pendingFields = new Set(pendingEvidence.map((item) => item.field).filter(Boolean));
+  return {
+    ok: true,
+    member: {
+      id: member.id,
+      name: member.name,
+      displayName: getMemberDisplayName(member) || member.name,
+      generation: member.generation,
+      branch: member.branch || '',
+      isDeceased: Boolean(member.isDeceased)
+    },
+    summary: {
+      activeApplied: activeEvidence.length,
+      rolledBack: rollbackEvidence.length,
+      drift: driftEvidence.length,
+      pending: pendingEvidence.filter((item) => item.status === 'pending').length,
+      approvedNotApplied: pendingEvidence.filter((item) => item.status === 'approved').length,
+      checklistMissing: checklist.filter((item) => item.status === 'missing').length,
+      checklistComplete: checklist.filter((item) => item.status === 'complete').length
+    },
+    checklist: checklist.map((item) => ({
+      ...item,
+      hasAppliedEvidence: activeFields.has(item.field) || (item.key === 'birth' && (activeFields.has('birthYear') || activeFields.has('birthDateStructured'))) || (item.key === 'bio' && (activeFields.has('description') || activeFields.has('achievements'))),
+      hasPendingEvidence: pendingFields.has(item.field)
+    })),
+    activeEvidence: activeEvidence.slice(0, 120),
+    rollbackEvidence: rollbackEvidence.slice(0, 80),
+    driftEvidence: driftEvidence.slice(0, 80),
+    pendingEvidence: pendingEvidence.slice(0, 120)
+  };
+}
+
 async function rollbackV3PilotApplyLog(logId, body = {}, adminUser = {}) {
   const database = await getDatabase();
   const row = database.prepare('SELECT * FROM cao_toc_v3_pilot_apply_logs WHERE id = ? OR audit_id = ?').get(String(logId || ''), String(logId || ''));
@@ -7847,6 +8160,19 @@ app.get('/api/knowledge/v3-member-applied-report', async (req, res) => {
   } catch (err) {
     console.error('Failed to build V3 member applied report:', err);
     res.status(500).json({ error: 'Failed to build V3 member applied report.' });
+  }
+});
+
+app.get('/api/lineage/members/:id/evidence', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json(await buildLineageMemberEvidence(req.params.id, {
+      includePending: req.query.includePending !== 'false',
+      limit: req.query.limit || 120
+    }));
+  } catch (err) {
+    console.error('Failed to build lineage member evidence:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to build lineage member evidence.' });
   }
 });
 
