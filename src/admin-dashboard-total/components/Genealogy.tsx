@@ -88,6 +88,7 @@ type MemberEvidenceItem = {
   id: string;
   candidateId?: string;
   logId?: string;
+  auditId?: string;
   kind: string;
   field: string;
   fieldLabel: string;
@@ -95,13 +96,22 @@ type MemberEvidenceItem = {
   newValue?: string;
   status: string;
   reconcileStatus?: string;
+  matchConfidence?: string;
   sourceId?: string;
   chunkId?: string;
   sourceTitle?: string;
   headingPath?: string;
   evidenceQuote?: string;
   evidenceWindow?: string;
+  evidenceType?: string;
+  appliedBy?: string;
   appliedAt?: string;
+  rolledBackAt?: string;
+};
+
+type MemberEvidenceDisplayItem = MemberEvidenceItem & {
+  evidenceGroup: "applied" | "pending" | "rolled_back" | "drift";
+  evidenceGroupLabel: string;
 };
 
 type MemberEvidenceResponse = {
@@ -185,6 +195,10 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   const [memberEvidence, setMemberEvidence] = useState<MemberEvidenceResponse | null>(null);
   const [memberEvidenceLoading, setMemberEvidenceLoading] = useState(false);
   const [memberEvidenceNote, setMemberEvidenceNote] = useState("");
+  const [isMemberEvidenceDrawerOpen, setIsMemberEvidenceDrawerOpen] = useState(false);
+  const [selectedMemberEvidenceKey, setSelectedMemberEvidenceKey] = useState("");
+  const [memberEvidenceStatusFilter, setMemberEvidenceStatusFilter] = useState<"all" | "applied" | "pending" | "approved" | "rolled_back" | "drift">("all");
+  const [memberEvidenceFieldFilter, setMemberEvidenceFieldFilter] = useState("all");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
 
@@ -410,6 +424,11 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     } finally {
       setMemberEvidenceLoading(false);
     }
+  };
+
+  const openMemberEvidenceDrawer = (itemKey = "") => {
+    setSelectedMemberEvidenceKey(itemKey);
+    setIsMemberEvidenceDrawerOpen(true);
   };
 
   const loadExcelImportSessions = async () => {
@@ -1431,6 +1450,57 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   const recentAppliedEvidence = memberEvidence?.activeEvidence || [];
   const recentPendingEvidence = memberEvidence?.pendingEvidence || [];
   const hasEvidencePanelData = Boolean(memberEvidenceSummary || recentAppliedEvidence.length || recentPendingEvidence.length || missingEvidenceChecklist.length);
+  const allMemberEvidenceItems = useMemo<MemberEvidenceDisplayItem[]>(() => {
+    const rows: MemberEvidenceDisplayItem[] = [
+      ...(memberEvidence?.activeEvidence || []).map((item) => ({
+        ...item,
+        evidenceGroup: "applied" as const,
+        evidenceGroupLabel: "Đã áp dụng"
+      })),
+      ...(memberEvidence?.pendingEvidence || []).map((item) => ({
+        ...item,
+        evidenceGroup: "pending" as const,
+        evidenceGroupLabel: item.status === "approved" ? "Đã duyệt, chưa áp dụng" : "Chờ duyệt"
+      })),
+      ...(memberEvidence?.rollbackEvidence || []).map((item) => ({
+        ...item,
+        evidenceGroup: "rolled_back" as const,
+        evidenceGroupLabel: "Đã rollback"
+      })),
+      ...(memberEvidence?.driftEvidence || []).map((item) => ({
+        ...item,
+        evidenceGroup: "drift" as const,
+        evidenceGroupLabel: "Cần đối soát lại"
+      }))
+    ];
+    const seen = new Set<string>();
+    return rows.filter((item) => {
+      const key = `${item.evidenceGroup}:${item.id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [memberEvidence]);
+  const memberEvidenceFieldOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const item of allMemberEvidenceItems) {
+      if (item.field) map.set(item.field, displayText(item.fieldLabel || item.field));
+    }
+    return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1], "vi"));
+  }, [allMemberEvidenceItems]);
+  const filteredMemberEvidenceItems = useMemo(() => {
+    return allMemberEvidenceItems.filter((item) => {
+      const statusMatch = memberEvidenceStatusFilter === "all"
+        || item.evidenceGroup === memberEvidenceStatusFilter
+        || item.status === memberEvidenceStatusFilter;
+      const fieldMatch = memberEvidenceFieldFilter === "all" || item.field === memberEvidenceFieldFilter;
+      return statusMatch && fieldMatch;
+    });
+  }, [allMemberEvidenceItems, memberEvidenceFieldFilter, memberEvidenceStatusFilter]);
+  const selectedMemberEvidenceItem = filteredMemberEvidenceItems.find((item) => `${item.evidenceGroup}:${item.id}` === selectedMemberEvidenceKey)
+    || filteredMemberEvidenceItems[0]
+    || allMemberEvidenceItems[0]
+    || null;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -1709,6 +1779,16 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                     ))}
                   </div>
 
+                  <button
+                    type="button"
+                    onClick={() => openMemberEvidenceDrawer()}
+                    disabled={!allMemberEvidenceItems.length && !memberEvidence?.checklist?.length}
+                    className="w-full inline-flex items-center justify-center gap-1.5 rounded-md border border-amber-200 bg-white px-2 py-1.5 text-[10px] font-bold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                  >
+                    <Eye className="h-3.5 w-3.5" />
+                    Xem chi tiết nguồn & checklist
+                  </button>
+
                   {(missingEvidenceChecklist.length > 0 || completeEvidenceChecklist.length > 0) && (
                     <div className="rounded-md border border-stone-150 bg-white p-2">
                       <div className="flex items-center justify-between gap-2 mb-1.5">
@@ -1742,24 +1822,34 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                   {(recentAppliedEvidence.length > 0 || recentPendingEvidence.length > 0) && (
                     <div className="max-h-52 overflow-y-auto pr-1 space-y-1.5">
                       {recentAppliedEvidence.slice(0, 3).map((item) => (
-                        <div key={item.id} className="rounded-md border border-emerald-100 bg-white px-2 py-1.5">
+                        <button
+                          type="button"
+                          key={item.id}
+                          onClick={() => openMemberEvidenceDrawer(`applied:${item.id}`)}
+                          className="w-full text-left rounded-md border border-emerald-100 bg-white px-2 py-1.5 hover:border-emerald-300 hover:bg-emerald-50/40"
+                        >
                           <div className="flex items-center justify-between gap-2">
                             <span className="font-bold text-emerald-800 line-clamp-1">{displayText(item.fieldLabel)}</span>
                             <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[9px] font-bold uppercase text-emerald-700">applied</span>
                           </div>
                           <p className="text-stone-700 line-clamp-1">{compactEvidenceText(item.newValue || item.evidenceQuote, 112)}</p>
                           <p className="text-[10px] text-stone-400 line-clamp-1">{compactEvidenceText(item.sourceTitle || item.headingPath || item.sourceId, 100)}</p>
-                        </div>
+                        </button>
                       ))}
                       {recentPendingEvidence.slice(0, 3).map((item) => (
-                        <div key={item.id} className="rounded-md border border-amber-100 bg-white px-2 py-1.5">
+                        <button
+                          type="button"
+                          key={item.id}
+                          onClick={() => openMemberEvidenceDrawer(`pending:${item.id}`)}
+                          className="w-full text-left rounded-md border border-amber-100 bg-white px-2 py-1.5 hover:border-amber-300 hover:bg-amber-50/60"
+                        >
                           <div className="flex items-center justify-between gap-2">
                             <span className="font-bold text-amber-900 line-clamp-1">{displayText(item.fieldLabel)}</span>
                             <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[9px] font-bold uppercase text-amber-700">{displayText(item.status)}</span>
                           </div>
                           <p className="text-stone-700 line-clamp-1">{compactEvidenceText(item.newValue || item.evidenceQuote, 112)}</p>
                           <p className="text-[10px] text-stone-400 line-clamp-1">{compactEvidenceText(item.sourceTitle || item.headingPath || item.sourceId, 100)}</p>
-                        </div>
+                        </button>
                       ))}
                     </div>
                   )}
@@ -1866,6 +1956,267 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
           </div>
         </div>
       </div>
+
+      <AnimatePresence>
+        {isMemberEvidenceDrawerOpen && (
+          <div className="fixed inset-0 bg-black/55 backdrop-blur-xs z-50 flex items-stretch justify-center p-3 sm:p-5">
+            <motion.div
+              initial={{ opacity: 0, y: 18, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 18, scale: 0.98 }}
+              className="bg-[#fbfaf6] rounded-xl shadow-2xl border border-amber-200 w-full max-w-6xl overflow-hidden flex flex-col max-h-[94vh]"
+            >
+              <div className="bg-red-950 text-amber-50 px-4 sm:px-5 py-3.5 flex items-start justify-between gap-3 border-b border-amber-900/50">
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-amber-300 font-bold">Phase 2W.2O · Hồ sơ có nguồn</p>
+                  <h3 className="font-serif font-bold text-lg leading-tight truncate">
+                    Nguồn đối soát: {displayText(bioAncestor?.name)}
+                  </h3>
+                  <p className="text-[11px] text-amber-100/80 leading-snug">
+                    Xem trích dẫn, nguồn, trạng thái apply và checklist dữ liệu thiếu của từng trường hồ sơ.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsMemberEvidenceDrawerOpen(false)}
+                  className="rounded-full hover:bg-white/10 p-1 text-amber-100 transition-all shrink-0"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-0 min-h-0 flex-1">
+                <aside className="lg:col-span-4 border-b lg:border-b-0 lg:border-r border-amber-100 bg-white/70 min-h-0 flex flex-col">
+                  <div className="p-3 border-b border-amber-100 space-y-2">
+                    <div className="grid grid-cols-2 gap-2 text-[11px]">
+                      <label className="space-y-1">
+                        <span className="font-bold text-stone-600">Trạng thái</span>
+                        <select
+                          value={memberEvidenceStatusFilter}
+                          onChange={(event) => {
+                            setMemberEvidenceStatusFilter(event.target.value as typeof memberEvidenceStatusFilter);
+                            setSelectedMemberEvidenceKey("");
+                          }}
+                          className="w-full rounded-md border border-stone-200 bg-white px-2 py-1.5 text-[11px] text-stone-800 focus:outline-none focus:border-amber-400"
+                        >
+                          <option value="all">Tất cả</option>
+                          <option value="applied">Đã áp dụng</option>
+                          <option value="pending">Chờ duyệt</option>
+                          <option value="approved">Đã duyệt, chưa áp dụng</option>
+                          <option value="rolled_back">Đã rollback</option>
+                          <option value="drift">Cần đối soát lại</option>
+                        </select>
+                      </label>
+                      <label className="space-y-1">
+                        <span className="font-bold text-stone-600">Trường</span>
+                        <select
+                          value={memberEvidenceFieldFilter}
+                          onChange={(event) => {
+                            setMemberEvidenceFieldFilter(event.target.value);
+                            setSelectedMemberEvidenceKey("");
+                          }}
+                          className="w-full rounded-md border border-stone-200 bg-white px-2 py-1.5 text-[11px] text-stone-800 focus:outline-none focus:border-amber-400"
+                        >
+                          <option value="all">Tất cả</option>
+                          {memberEvidenceFieldOptions.map(([field, label]) => (
+                            <option key={field} value={field}>{label}</option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-1.5 text-center text-[10px]">
+                      {[
+                        ["Applied", memberEvidenceSummary?.activeApplied || 0, "text-emerald-800"],
+                        ["Pending", (memberEvidenceSummary?.pending || 0) + (memberEvidenceSummary?.approvedNotApplied || 0), "text-amber-800"],
+                        ["Thiếu", memberEvidenceSummary?.checklistMissing || 0, "text-red-800"],
+                        ["Rollback", (memberEvidenceSummary?.rolledBack || 0) + (memberEvidenceSummary?.drift || 0), "text-stone-700"]
+                      ].map(([label, value, cls]) => (
+                        <div key={String(label)} className="rounded-md border border-stone-150 bg-stone-50 px-1.5 py-1">
+                          <strong className={`block text-sm ${cls}`}>{value}</strong>
+                          <span className="uppercase tracking-wide text-stone-400">{label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="overflow-y-auto p-3 space-y-2 min-h-0">
+                    {filteredMemberEvidenceItems.length > 0 ? (
+                      filteredMemberEvidenceItems.map((item) => {
+                        const itemKey = `${item.evidenceGroup}:${item.id}`;
+                        const isSelected = selectedMemberEvidenceKey
+                          ? selectedMemberEvidenceKey === itemKey
+                          : selectedMemberEvidenceItem?.id === item.id && selectedMemberEvidenceItem?.evidenceGroup === item.evidenceGroup;
+                        const tone = item.evidenceGroup === "applied"
+                          ? "border-emerald-200 bg-emerald-50/60"
+                          : item.evidenceGroup === "rolled_back" || item.evidenceGroup === "drift"
+                            ? "border-red-200 bg-red-50/60"
+                            : "border-amber-200 bg-amber-50/60";
+                        return (
+                          <button
+                            type="button"
+                            key={`${item.evidenceGroup}:${item.id}`}
+                            onClick={() => setSelectedMemberEvidenceKey(itemKey)}
+                            className={`w-full text-left rounded-lg border px-3 py-2 transition-all ${isSelected ? "ring-2 ring-amber-400 " : ""}${tone}`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="font-bold text-stone-850 line-clamp-1">{displayText(item.fieldLabel)}</p>
+                                <p className="text-[10px] text-stone-500 line-clamp-1">{displayText(item.evidenceGroupLabel)} · {displayText(item.kind)}</p>
+                              </div>
+                              <span className="rounded bg-white/80 px-1.5 py-0.5 text-[9px] font-bold uppercase text-stone-600 shrink-0">
+                                {displayText(item.status)}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-[11px] text-stone-700 line-clamp-2">
+                              {compactEvidenceText(item.newValue || item.evidenceQuote || item.evidenceWindow, 150)}
+                            </p>
+                          </button>
+                        );
+                      })
+                    ) : (
+                      <div className="rounded-lg border border-stone-150 bg-stone-50 px-3 py-4 text-center text-[11px] text-stone-500">
+                        Không có nguồn phù hợp với bộ lọc hiện tại.
+                      </div>
+                    )}
+                  </div>
+                </aside>
+
+                <main className="lg:col-span-8 min-h-0 overflow-y-auto p-4 sm:p-5 space-y-4">
+                  {selectedMemberEvidenceItem ? (
+                    <>
+                      <div className="rounded-xl border border-stone-150 bg-white p-4 space-y-3">
+                        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-[10px] uppercase tracking-[0.16em] text-stone-400 font-bold">
+                              {displayText(selectedMemberEvidenceItem.evidenceGroupLabel)}
+                            </p>
+                            <h4 className="font-serif text-xl font-bold text-red-950 leading-tight">
+                              {displayText(selectedMemberEvidenceItem.fieldLabel)}
+                            </h4>
+                            <p className="text-[11px] text-stone-500">
+                              Loại: {displayText(selectedMemberEvidenceItem.kind)} · Trạng thái: {displayText(selectedMemberEvidenceItem.status)}
+                              {selectedMemberEvidenceItem.reconcileStatus ? ` · Đối soát: ${displayText(selectedMemberEvidenceItem.reconcileStatus)}` : ""}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const copyText = [
+                                selectedMemberEvidenceItem.sourceTitle,
+                                selectedMemberEvidenceItem.headingPath,
+                                selectedMemberEvidenceItem.evidenceQuote || selectedMemberEvidenceItem.evidenceWindow,
+                                selectedMemberEvidenceItem.candidateId ? `candidate: ${selectedMemberEvidenceItem.candidateId}` : ""
+                              ].filter(Boolean).join("\n");
+                              void navigator.clipboard?.writeText(copyText);
+                            }}
+                            className="inline-flex items-center justify-center gap-1 rounded-md border border-stone-200 bg-stone-50 px-2.5 py-1.5 text-[11px] font-bold text-stone-700 hover:bg-stone-100"
+                          >
+                            <Copy className="h-3.5 w-3.5" />
+                            Sao chép nguồn
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
+                          <div className="rounded-lg border border-stone-100 bg-stone-50 p-3">
+                            <span className="block text-stone-400 font-bold uppercase tracking-wide">Giá trị hiện tại/cũ</span>
+                            <p className="mt-1 text-stone-700 whitespace-pre-wrap break-words">
+                              {displayText(selectedMemberEvidenceItem.oldValue || "Không có dữ liệu cũ")}
+                            </p>
+                          </div>
+                          <div className="rounded-lg border border-emerald-100 bg-emerald-50/60 p-3">
+                            <span className="block text-emerald-700 font-bold uppercase tracking-wide">Giá trị từ nguồn</span>
+                            <p className="mt-1 text-stone-800 whitespace-pre-wrap break-words">
+                              {displayText(selectedMemberEvidenceItem.newValue || selectedMemberEvidenceItem.evidenceQuote || "Chưa có giá trị tách riêng")}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-4 space-y-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="font-bold text-stone-850">Trích dẫn tài liệu</p>
+                            <p className="text-[11px] text-stone-500">Ưu tiên quote/evidence quanh đúng trường đang xem.</p>
+                          </div>
+                          <span className="rounded-full border border-amber-200 bg-white px-2 py-1 text-[10px] font-bold text-amber-900">
+                            {displayText(selectedMemberEvidenceItem.evidenceType || selectedMemberEvidenceItem.field)}
+                          </span>
+                        </div>
+                        <blockquote className="rounded-lg border border-amber-200 bg-white p-3 text-[12px] leading-relaxed text-stone-800 whitespace-pre-wrap break-words">
+                          {displayText(selectedMemberEvidenceItem.evidenceQuote || selectedMemberEvidenceItem.evidenceWindow || "Chưa có trích dẫn nguồn cho mục này.")}
+                        </blockquote>
+                        {selectedMemberEvidenceItem.evidenceWindow && selectedMemberEvidenceItem.evidenceWindow !== selectedMemberEvidenceItem.evidenceQuote && (
+                          <details className="rounded-lg border border-stone-150 bg-white p-3 text-[11px] text-stone-700">
+                            <summary className="cursor-pointer font-bold text-stone-800">Mở đoạn nguồn rộng hơn</summary>
+                            <p className="mt-2 whitespace-pre-wrap break-words leading-relaxed">
+                              {displayText(selectedMemberEvidenceItem.evidenceWindow)}
+                            </p>
+                          </details>
+                        )}
+                      </div>
+
+                      <div className="rounded-xl border border-stone-150 bg-white p-4">
+                        <p className="font-bold text-stone-850 mb-2">Thông tin nguồn</p>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] text-stone-600">
+                          {[
+                            ["Tài liệu", selectedMemberEvidenceItem.sourceTitle],
+                            ["Heading", selectedMemberEvidenceItem.headingPath],
+                            ["Source ID", selectedMemberEvidenceItem.sourceId],
+                            ["Chunk ID", selectedMemberEvidenceItem.chunkId],
+                            ["Candidate ID", selectedMemberEvidenceItem.candidateId],
+                            ["Log/Audit", selectedMemberEvidenceItem.logId || selectedMemberEvidenceItem.auditId],
+                            ["Người áp dụng", selectedMemberEvidenceItem.appliedBy],
+                            ["Thời điểm", selectedMemberEvidenceItem.appliedAt || selectedMemberEvidenceItem.rolledBackAt]
+                          ].map(([label, value]) => (
+                            <div key={label} className="rounded border border-stone-100 bg-stone-50 px-2 py-1.5 min-w-0">
+                              <span className="block text-[9px] uppercase tracking-wide text-stone-400 font-bold">{label}</span>
+                              <strong className="block text-stone-700 break-words">{displayText(value || "Chưa có")}</strong>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-stone-150 bg-white p-4">
+                        <div className="flex items-center justify-between gap-3 mb-2">
+                          <p className="font-bold text-stone-850">Checklist hồ sơ</p>
+                          <span className="text-[10px] text-stone-500">
+                            {completeEvidenceChecklist.length}/{memberEvidence?.checklist?.length || 0} mục đủ
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {(memberEvidence?.checklist || []).map((item) => (
+                            <div
+                              key={item.key}
+                              className={`rounded-lg border px-2.5 py-2 text-[11px] ${item.status === "complete" ? "border-emerald-100 bg-emerald-50/50" : "border-red-100 bg-red-50/50"}`}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <strong className={item.status === "complete" ? "text-emerald-800" : "text-red-800"}>{item.label}</strong>
+                                <span className="text-[9px] uppercase font-bold">{item.status === "complete" ? "đủ" : "thiếu"}</span>
+                              </div>
+                              <p className="mt-1 text-stone-600 line-clamp-2">
+                                {displayText(item.currentValue || (item.hasPendingEvidence ? "Có nguồn chờ duyệt" : "Chưa có dữ liệu"))}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="h-full min-h-[320px] flex items-center justify-center rounded-xl border border-dashed border-stone-200 bg-white text-center p-8">
+                      <div>
+                        <Database className="h-8 w-8 text-stone-300 mx-auto mb-2" />
+                        <p className="font-bold text-stone-700">Chưa có nguồn để hiển thị</p>
+                        <p className="text-[11px] text-stone-500">Hãy chọn hồ sơ khác hoặc apply/candidate dữ liệu từ kho tri thức.</p>
+                      </div>
+                    </div>
+                  )}
+                </main>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Add New Member Modal Overlay */}
       <AnimatePresence>
