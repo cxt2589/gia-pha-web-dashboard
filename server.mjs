@@ -6448,6 +6448,160 @@ async function listV3PilotApplyLogs({ limit = 50 } = {}) {
   };
 }
 
+function scoreV3PilotProposal(item) {
+  const confidence = normalizeKnowledgeText(item.matchConfidence || '');
+  let score = 0;
+  if (item.bucket === 'ready_to_review') score += 50;
+  if (confidence.includes('exact')) score += 35;
+  if (confidence.includes('high')) score += 25;
+  if (item.kind === 'anniversary') score += 8;
+  if (item.kind === 'profile') score += 6;
+  if (item.kind === 'relationship') score += 4;
+  if (item.sourceId && item.chunkId) score += 8;
+  if (item.evidenceQuote) score += 6;
+  if (item.qualityFlags?.length) score -= Math.min(25, item.qualityFlags.length * 5);
+  if (item.reasons?.length) score -= Math.min(20, item.reasons.length * 3);
+  return score;
+}
+
+async function listV3PilotApplyProposals({ datasetKey = CAO_TOC_V3_DEFAULT_DATASET_KEY, limit = 20 } = {}) {
+  const queue = await listCaoTocV3ReviewQueue({
+    datasetKey,
+    status: 'approved',
+    limit: 500
+  });
+  const items = (queue.items || [])
+    .filter((item) => item.canApply && !item.hardBlocked && item.status === 'approved')
+    .map((item) => ({
+      kind: item.kind,
+      id: item.id,
+      score: scoreV3PilotProposal(item),
+      reason: [
+        item.matchConfidence ? `match=${item.matchConfidence}` : '',
+        item.sourceId && item.chunkId ? 'has_source' : '',
+        item.evidenceQuote ? 'has_evidence' : '',
+        item.fieldTypes?.length ? `fields=${item.fieldTypes.join(',')}` : ''
+      ].filter(Boolean),
+      item
+    }))
+    .sort((a, b) => b.score - a.score || String(b.item.updatedAt || '').localeCompare(String(a.item.updatedAt || '')))
+    .slice(0, Math.max(1, Math.min(50, Number(limit) || 20)));
+  return {
+    ok: true,
+    datasetKey: normalizeCaoTocV2DatasetKey(datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY),
+    total: items.length,
+    maxPilotItems: 5,
+    items
+  };
+}
+
+function stringifyPilotCompareValue(value) {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value || '').trim();
+}
+
+function pilotValuesMatch(currentValue, expectedValue) {
+  const current = stringifyPilotCompareValue(currentValue);
+  const expected = stringifyPilotCompareValue(expectedValue);
+  if (current === expected) return true;
+  return normalizeKnowledgeText(current) === normalizeKnowledgeText(expected);
+}
+
+function reconcileV3PilotLogRow(database, row, tree) {
+  const log = publicV3PilotApplyLog(row);
+  const result = safeJsonParse(row.result_json, {});
+  const changes = Array.isArray(result?.changes) ? result.changes : [];
+  const currentTreeHash = treeSnapshotHash(tree);
+  const candidateBefore = safeJsonParse(row.candidate_before_json, {});
+  const candidateCurrent = getV3PilotCandidateRow(database, row.kind, row.candidate_id);
+  const checks = [];
+
+  if (row.rollback_status === 'rolled_back' || row.status === 'rolled_back') {
+    const restoredByHash = Boolean(row.before_tree_hash && currentTreeHash === row.before_tree_hash);
+    return {
+      ...log,
+      reconcileStatus: restoredByHash ? 'rolled_back_restored' : 'rolled_back_tree_changed',
+      ok: restoredByHash,
+      currentTreeHash,
+      expectedTreeHash: row.before_tree_hash || '',
+      candidateStatus: candidateCurrent?.status || '',
+      expectedCandidateStatus: candidateBefore?.status || '',
+      checks
+    };
+  }
+
+  if (!changes.length) {
+    return {
+      ...log,
+      reconcileStatus: row.after_tree_hash && currentTreeHash === row.after_tree_hash ? 'noop_hash_match' : 'noop_unverified',
+      ok: Boolean(row.after_tree_hash && currentTreeHash === row.after_tree_hash),
+      currentTreeHash,
+      expectedTreeHash: row.after_tree_hash || '',
+      candidateStatus: candidateCurrent?.status || '',
+      checks
+    };
+  }
+
+  if (row.kind === 'relationship') {
+    for (const change of changes) {
+      const subject = getLineageNodeById(tree, change.subjectId);
+      const object = getLineageNodeById(tree, change.objectId);
+      const currentValue = relationCurrentValues(subject, object);
+      checks.push({
+        field: change.relationshipType || 'relationship',
+        subjectId: change.subjectId || '',
+        objectId: change.objectId || '',
+        expected: change.newValue || {},
+        current: currentValue,
+        ok: pilotValuesMatch(currentValue, change.newValue || {})
+      });
+    }
+  } else {
+    const fallbackMemberId = String(row.member_id || '').trim();
+    for (const change of changes) {
+      const memberId = String(change.memberId || fallbackMemberId || '').trim();
+      const node = getLineageNodeById(tree, memberId);
+      const field = change.lineageField || change.field || '';
+      const currentValue = field ? node?.[field] : undefined;
+      checks.push({
+        field,
+        memberId,
+        expected: change.newValue,
+        current: currentValue,
+        ok: Boolean(node && field && pilotValuesMatch(currentValue, change.newValue))
+      });
+    }
+  }
+
+  const allFieldsMatch = checks.length > 0 && checks.every((item) => item.ok);
+  const hashMatch = Boolean(row.after_tree_hash && currentTreeHash === row.after_tree_hash);
+  return {
+    ...log,
+    reconcileStatus: allFieldsMatch ? (hashMatch ? 'in_sync' : 'fields_match_tree_changed') : 'drift',
+    ok: allFieldsMatch,
+    currentTreeHash,
+    expectedTreeHash: row.after_tree_hash || '',
+    candidateStatus: candidateCurrent?.status || '',
+    checks
+  };
+}
+
+async function reconcileV3PilotApplyLogs({ limit = 50 } = {}) {
+  const database = await getDatabase();
+  const tree = await readLineageTreeForAI();
+  const rows = database.prepare('SELECT * FROM cao_toc_v3_pilot_apply_logs ORDER BY created_at DESC LIMIT ?')
+    .all(Math.max(1, Math.min(200, Number(limit) || 50)));
+  const items = rows.map((row) => reconcileV3PilotLogRow(database, row, tree || {}));
+  return {
+    ok: true,
+    total: items.length,
+    inSync: items.filter((item) => ['in_sync', 'fields_match_tree_changed', 'rolled_back_restored'].includes(item.reconcileStatus)).length,
+    drift: items.filter((item) => ['drift', 'rolled_back_tree_changed', 'noop_unverified'].includes(item.reconcileStatus)).length,
+    items
+  };
+}
+
 async function rollbackV3PilotApplyLog(logId, body = {}, adminUser = {}) {
   const database = await getDatabase();
   const row = database.prepare('SELECT * FROM cao_toc_v3_pilot_apply_logs WHERE id = ? OR audit_id = ?').get(String(logId || ''), String(logId || ''));
@@ -7336,6 +7490,29 @@ app.get('/api/knowledge/v3-pilot-apply/logs', async (req, res) => {
   } catch (err) {
     console.error('Failed to list Cao Toc v3 pilot apply logs:', err);
     res.status(err.status || 500).json({ error: err.message || 'Failed to list Cao Toc v3 pilot apply logs.' });
+  }
+});
+
+app.get('/api/knowledge/v3-pilot-apply/proposals', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json(await listV3PilotApplyProposals({
+      datasetKey: req.query.datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY,
+      limit: req.query.limit || 20
+    }));
+  } catch (err) {
+    console.error('Failed to list Cao Toc v3 pilot apply proposals:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to list Cao Toc v3 pilot apply proposals.' });
+  }
+});
+
+app.get('/api/knowledge/v3-pilot-apply/reconcile', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json(await reconcileV3PilotApplyLogs({ limit: req.query.limit || 50 }));
+  } catch (err) {
+    console.error('Failed to reconcile Cao Toc v3 pilot apply logs:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to reconcile Cao Toc v3 pilot apply logs.' });
   }
 });
 

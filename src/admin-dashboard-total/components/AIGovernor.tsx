@@ -245,6 +245,32 @@ type V3PilotApplyLog = {
   rolledBackAt?: string;
 };
 
+type V3PilotProposal = {
+  kind: string;
+  id: string;
+  score: number;
+  reason?: string[];
+  item: V3ReviewQueueItem;
+};
+
+type V3PilotReconcileItem = V3PilotApplyLog & {
+  reconcileStatus?: string;
+  ok?: boolean;
+  currentTreeHash?: string;
+  expectedTreeHash?: string;
+  candidateStatus?: string;
+  expectedCandidateStatus?: string;
+  checks?: Array<{
+    field?: string;
+    memberId?: string;
+    subjectId?: string;
+    objectId?: string;
+    expected?: unknown;
+    current?: unknown;
+    ok?: boolean;
+  }>;
+};
+
 const V3_TRIAGE_BUCKET_ORDER = [
   "ready_to_review",
   "needs_identity_match",
@@ -899,6 +925,8 @@ export default function AIGovernor({
   const [selectedV3PilotItems, setSelectedV3PilotItems] = useState<V3ReviewQueueItem[]>([]);
   const [v3PilotPreview, setV3PilotPreview] = useState<V3PilotApplyResult[]>([]);
   const [v3PilotLogs, setV3PilotLogs] = useState<V3PilotApplyLog[]>([]);
+  const [v3PilotProposals, setV3PilotProposals] = useState<V3PilotProposal[]>([]);
+  const [v3PilotReconcile, setV3PilotReconcile] = useState<V3PilotReconcileItem[]>([]);
   const [v3PilotNote, setV3PilotNote] = useState("");
   const [isV3PilotRunning, setIsV3PilotRunning] = useState(false);
   const [aiLogs, setAiLogs] = useState<AIRequestLog[]>([]);
@@ -1466,6 +1494,35 @@ export default function AIGovernor({
     });
   };
 
+  const addV3PilotProposal = (proposal: V3PilotProposal) => {
+    setSelectedV3PilotItems((current) => {
+      const key = v3PilotKey(proposal.item);
+      if (current.some((selected) => v3PilotKey(selected) === key)) return current;
+      if (current.length >= 5) {
+        setV3PilotNote("Chế độ pilot chỉ cho chọn tối đa 5 candidate mỗi lượt.");
+        return current;
+      }
+      setV3PilotNote(`Đã thêm đề xuất ${proposal.id} vào danh sách pilot.`);
+      return [...current, proposal.item];
+    });
+  };
+
+  const loadV3PilotProposals = async () => {
+    setIsV3PilotRunning(true);
+    setV3PilotNote("Đang tải đề xuất lô apply 2W.2K...");
+    try {
+      const response = await fetch("/api/knowledge/v3-pilot-apply/proposals?datasetKey=cao_toc_txt_knowledge_base_v3&limit=20");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không đọc được đề xuất pilot 2W.2K.");
+      setV3PilotProposals(Array.isArray(data.items) ? data.items : []);
+      setV3PilotNote(`Đã tải ${data.total || 0} đề xuất candidate an toàn để chọn pilot.`);
+    } catch (err: any) {
+      setV3PilotNote(`Lỗi tải đề xuất 2W.2K: ${err?.message || "không xác định"}`);
+    } finally {
+      setIsV3PilotRunning(false);
+    }
+  };
+
   const loadV3PilotLogs = async () => {
     try {
       const response = await fetch("/api/knowledge/v3-pilot-apply/logs?limit=20");
@@ -1476,6 +1533,22 @@ export default function AIGovernor({
     } catch (err: any) {
       setV3PilotNote(`Lỗi tải log pilot: ${err?.message || "không xác định"}`);
       return [];
+    }
+  };
+
+  const reconcileV3PilotLogs = async () => {
+    setIsV3PilotRunning(true);
+    setV3PilotNote("Đang đối soát log pilot với cây phả hiện tại...");
+    try {
+      const response = await fetch("/api/knowledge/v3-pilot-apply/reconcile?limit=50");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không đối soát được pilot apply.");
+      setV3PilotReconcile(Array.isArray(data.items) ? data.items : []);
+      setV3PilotNote(`Đối soát xong: ${data.inSync || 0} khớp, ${data.drift || 0} cần kiểm tra.`);
+    } catch (err: any) {
+      setV3PilotNote(`Lỗi đối soát pilot: ${err?.message || "không xác định"}`);
+    } finally {
+      setIsV3PilotRunning(false);
     }
   };
 
@@ -5681,6 +5754,74 @@ export default function AIGovernor({
                         </button>
                       </div>
                     </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void loadV3PilotProposals()}
+                        disabled={isV3PilotRunning}
+                        className="rounded border border-emerald-300 bg-white px-3 py-1.5 text-[11px] font-bold text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
+                      >
+                        Đề xuất 2W.2K
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void reconcileV3PilotLogs()}
+                        disabled={isV3PilotRunning}
+                        className="rounded border border-amber-300 bg-white px-3 py-1.5 text-[11px] font-bold text-amber-800 hover:bg-amber-50 disabled:opacity-50"
+                      >
+                        Đối soát
+                      </button>
+                    </div>
+                    {!!v3PilotProposals.length && (
+                      <div className="mt-3 rounded border border-emerald-100 bg-white p-2">
+                        <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-900">Đề xuất lô apply thật 2W.2K</p>
+                        <div className="mt-2 max-h-44 space-y-2 overflow-y-auto pr-1">
+                          {v3PilotProposals.map((proposal) => {
+                            const selected = selectedV3PilotItems.some((item) => v3PilotKey(item) === v3PilotKey(proposal.item));
+                            return (
+                              <div key={`${proposal.kind}-${proposal.id}`} className="flex flex-col gap-2 rounded border border-emerald-100 bg-emerald-50/60 p-2 text-[11px] md:flex-row md:items-center md:justify-between">
+                                <div className="min-w-0">
+                                  <p className="font-bold text-stone-800">{proposal.kind}: {truncateText(proposal.item.title, 100)}</p>
+                                  <p className="text-stone-600">{truncateText(proposal.item.target || proposal.item.evidenceQuote || "", 140)}</p>
+                                  <p className="mt-0.5 text-emerald-800">Điểm {proposal.score} · {(proposal.reason || []).join(", ") || "ready_to_review"}</p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => addV3PilotProposal(proposal)}
+                                  disabled={selected || selectedV3PilotItems.length >= 5}
+                                  className="shrink-0 rounded bg-emerald-800 px-2.5 py-1.5 font-bold text-white hover:bg-emerald-900 disabled:opacity-50"
+                                >
+                                  {selected ? "Đã chọn" : "Thêm vào pilot"}
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    {!!v3PilotReconcile.length && (
+                      <div className="mt-3 rounded border border-amber-100 bg-white p-2">
+                        <p className="text-[11px] font-bold uppercase tracking-wide text-amber-900">Đối soát sau pilot apply</p>
+                        <div className="mt-2 max-h-44 space-y-2 overflow-y-auto pr-1">
+                          {v3PilotReconcile.map((item) => (
+                            <div key={item.id} className={`rounded border p-2 text-[11px] ${item.ok ? "border-emerald-100 bg-emerald-50/60" : "border-red-100 bg-red-50/60"}`}>
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <b className="text-stone-800">{item.kind}: {item.candidateId}</b>
+                                <span className={`rounded px-2 py-0.5 font-bold ${item.ok ? "bg-emerald-100 text-emerald-800" : "bg-red-100 text-red-800"}`}>
+                                  {item.reconcileStatus || "unknown"}
+                                </span>
+                              </div>
+                              <p className="mt-0.5 text-stone-500">Log {item.id} · {item.createdAt || ""}</p>
+                              {!!item.checks?.length && (
+                                <p className="mt-1 text-stone-600">
+                                  {item.checks.slice(0, 3).map((check) => `${check.field || "relationship"}:${check.ok ? "khớp" : "lệch"}`).join(" · ")}
+                                </p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold text-stone-700">
                       <span className="rounded bg-white px-2 py-1">Đã chọn: {selectedV3PilotItems.length}/5</span>
                       {selectedV3PilotItems.map((item) => (
