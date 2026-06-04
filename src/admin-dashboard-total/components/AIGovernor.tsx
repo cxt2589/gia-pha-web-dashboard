@@ -271,6 +271,34 @@ type V3PilotReconcileItem = V3PilotApplyLog & {
   }>;
 };
 
+type V3GroupApplyGroup = {
+  key: string;
+  label: string;
+  description?: string;
+  total: number;
+  pending: number;
+  approved: number;
+  applied: number;
+  rejected: number;
+  readyToPilot: number;
+  blocked: number;
+  needsIdentity: number;
+  needsSource: number;
+  fieldWarnings: number;
+  relationshipWarnings: number;
+  doNotApply: number;
+  noise: number;
+  topCandidates?: V3PilotProposal[];
+};
+
+type V3GroupApplyReport = {
+  ok?: boolean;
+  datasetKey?: string;
+  total?: number;
+  maxPilotItems?: number;
+  groups?: V3GroupApplyGroup[];
+};
+
 const V3_TRIAGE_BUCKET_ORDER = [
   "ready_to_review",
   "needs_identity_match",
@@ -927,6 +955,9 @@ export default function AIGovernor({
   const [v3PilotLogs, setV3PilotLogs] = useState<V3PilotApplyLog[]>([]);
   const [v3PilotProposals, setV3PilotProposals] = useState<V3PilotProposal[]>([]);
   const [v3PilotReconcile, setV3PilotReconcile] = useState<V3PilotReconcileItem[]>([]);
+  const [v3GroupApplyReport, setV3GroupApplyReport] = useState<V3GroupApplyReport | null>(null);
+  const [v3GroupApplyCandidates, setV3GroupApplyCandidates] = useState<V3PilotProposal[]>([]);
+  const [selectedV3GroupApply, setSelectedV3GroupApply] = useState("vital");
   const [v3PilotNote, setV3PilotNote] = useState("");
   const [isV3PilotRunning, setIsV3PilotRunning] = useState(false);
   const [aiLogs, setAiLogs] = useState<AIRequestLog[]>([]);
@@ -1547,6 +1578,125 @@ export default function AIGovernor({
       setV3PilotNote(`Đối soát xong: ${data.inSync || 0} khớp, ${data.drift || 0} cần kiểm tra.`);
     } catch (err: any) {
       setV3PilotNote(`Lỗi đối soát pilot: ${err?.message || "không xác định"}`);
+    } finally {
+      setIsV3PilotRunning(false);
+    }
+  };
+
+  const loadV3GroupApplyReport = async () => {
+    setIsV3PilotRunning(true);
+    setV3PilotNote("Đang tải báo cáo apply theo nhóm 2W.2L...");
+    try {
+      const response = await fetch("/api/knowledge/v3-group-apply/report?datasetKey=cao_toc_txt_knowledge_base_v3&limitPerGroup=5");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không tải được báo cáo apply theo nhóm.");
+      setV3GroupApplyReport(data);
+      setV3PilotNote(`Đã tải báo cáo 2W.2L cho ${data.groups?.length || 0} nhóm dữ liệu.`);
+    } catch (err: any) {
+      setV3PilotNote(`Lỗi tải báo cáo nhóm: ${err?.message || "không xác định"}`);
+    } finally {
+      setIsV3PilotRunning(false);
+    }
+  };
+
+  const loadV3GroupApplyCandidates = async (group = selectedV3GroupApply) => {
+    setIsV3PilotRunning(true);
+    setV3PilotNote(`Đang tải candidate nhóm ${group}...`);
+    try {
+      const params = new URLSearchParams({
+        datasetKey: "cao_toc_txt_knowledge_base_v3",
+        group,
+        limit: "20"
+      });
+      const response = await fetch(`/api/knowledge/v3-group-apply/candidates?${params.toString()}`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không tải được candidate theo nhóm.");
+      setV3GroupApplyCandidates(Array.isArray(data.items) ? data.items : []);
+      setV3PilotNote(`Nhóm ${group} có ${data.total || 0} candidate đủ điều kiện pilot.`);
+    } catch (err: any) {
+      setV3PilotNote(`Lỗi tải candidate nhóm: ${err?.message || "không xác định"}`);
+    } finally {
+      setIsV3PilotRunning(false);
+    }
+  };
+
+  const addV3GroupTopCandidatesToPilot = () => {
+    const candidates = v3GroupApplyCandidates.length
+      ? v3GroupApplyCandidates
+      : (v3GroupApplyReport?.groups || []).find((group) => group.key === selectedV3GroupApply)?.topCandidates || [];
+    setSelectedV3PilotItems((current) => {
+      const next = [...current];
+      for (const proposal of candidates) {
+        if (next.length >= 5) break;
+        if (!next.some((selected) => v3PilotKey(selected) === v3PilotKey(proposal.item))) {
+          next.push(proposal.item);
+        }
+      }
+      setV3PilotNote(`Đã đưa ${next.length - current.length} candidate nhóm ${selectedV3GroupApply} vào danh sách pilot.`);
+      return next;
+    });
+  };
+
+  const previewV3GroupPilotBatch = async () => {
+    setIsV3PilotRunning(true);
+    setV3PilotNote(`Đang preview nhóm ${selectedV3GroupApply}...`);
+    try {
+      const items = v3GroupApplyCandidates.slice(0, 5).map((proposal) => ({ kind: proposal.kind, id: proposal.id }));
+      const response = await fetch("/api/knowledge/v3-group-apply/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          datasetKey: "cao_toc_txt_knowledge_base_v3",
+          group: selectedV3GroupApply,
+          items,
+          limit: 5
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không preview được nhóm.");
+      setV3PilotPreview(Array.isArray(data.results) ? data.results : []);
+      setV3PilotNote(data.ok ? `Nhóm ${selectedV3GroupApply} đã sẵn sàng apply pilot.` : `Nhóm ${selectedV3GroupApply} còn candidate bị chặn.`);
+    } catch (err: any) {
+      setV3PilotNote(`Lỗi preview nhóm: ${err?.message || "không xác định"}`);
+    } finally {
+      setIsV3PilotRunning(false);
+    }
+  };
+
+  const applyV3GroupPilotBatch = async () => {
+    const items = v3GroupApplyCandidates.slice(0, 5).map((proposal) => ({ kind: proposal.kind, id: proposal.id }));
+    if (!window.confirm(`Apply nhóm ${selectedV3GroupApply} sẽ ghi tối đa 5 candidate vào cây phả thật và có log rollback. Chỉ tiếp tục nếu đã kiểm tra nguồn.`)) return;
+    setIsV3PilotRunning(true);
+    setV3PilotNote(`Đang apply nhóm ${selectedV3GroupApply}...`);
+    try {
+      const response = await fetch("/api/knowledge/v3-group-apply/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          datasetKey: "cao_toc_txt_knowledge_base_v3",
+          group: selectedV3GroupApply,
+          confirmGroupPilotApply: true,
+          items,
+          limit: 5,
+          note: `Phase 2W.2L group apply từ AI Tổng Quản: ${selectedV3GroupApply}`
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setV3PilotPreview(Array.isArray(data.preview?.results) ? data.preview.results : []);
+        throw new Error(data.error || "Không apply được nhóm.");
+      }
+      setV3PilotPreview(Array.isArray(data.results) ? data.results : []);
+      setV3PilotNote(`Đã apply nhóm ${selectedV3GroupApply}: ${data.applied || 0}/${data.total || 0} candidate.`);
+      await Promise.all([
+        loadV3PilotLogs(),
+        reconcileV3PilotLogs(),
+        loadV3GroupApplyReport(),
+        loadV3GroupApplyCandidates(selectedV3GroupApply),
+        loadV3ReviewQueue()
+      ]);
+    } catch (err: any) {
+      setV3PilotNote(`Lỗi apply nhóm: ${err?.message || "không xác định"}`);
     } finally {
       setIsV3PilotRunning(false);
     }
@@ -5822,6 +5972,129 @@ export default function AIGovernor({
                         </div>
                       </div>
                     )}
+                    <div className="mt-3 rounded border border-sky-100 bg-sky-50/70 p-3">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                        <div>
+                          <p className="text-[11px] font-bold uppercase tracking-wide text-sky-900">Apply theo nhóm 2W.2L</p>
+                          <p className="mt-1 text-[11px] leading-relaxed text-sky-900/80">
+                            Chọn từng nhóm dữ liệu, preview và apply pilot tối đa 5 candidate/lượt. Mỗi lượt vẫn có log đối soát và rollback.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void loadV3GroupApplyReport()}
+                            disabled={isV3PilotRunning}
+                            className="rounded border border-sky-300 bg-white px-3 py-1.5 text-[11px] font-bold text-sky-800 hover:bg-sky-50 disabled:opacity-50"
+                          >
+                            Báo cáo 2W.2L
+                          </button>
+                          <select
+                            value={selectedV3GroupApply}
+                            onChange={(event) => {
+                              const nextGroup = event.target.value;
+                              setSelectedV3GroupApply(nextGroup);
+                              void loadV3GroupApplyCandidates(nextGroup);
+                            }}
+                            className="rounded border border-sky-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-sky-900"
+                          >
+                            <option value="vital">Ngày tháng & mộ chí</option>
+                            <option value="name">Họ tên & danh xưng</option>
+                            <option value="profile">Hành trạng & công lao</option>
+                            <option value="relationship">Quan hệ gia tộc</option>
+                            <option value="note">Ghi chú kiểm chứng</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void loadV3GroupApplyCandidates(selectedV3GroupApply)}
+                          disabled={isV3PilotRunning}
+                          className="rounded border border-sky-300 bg-white px-3 py-1.5 text-[11px] font-bold text-sky-800 hover:bg-sky-50 disabled:opacity-50"
+                        >
+                          Tải nhóm
+                        </button>
+                        <button
+                          type="button"
+                          onClick={addV3GroupTopCandidatesToPilot}
+                          disabled={isV3PilotRunning}
+                          className="rounded border border-emerald-300 bg-white px-3 py-1.5 text-[11px] font-bold text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
+                        >
+                          Đưa vào pilot
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void previewV3GroupPilotBatch()}
+                          disabled={isV3PilotRunning}
+                          className="rounded border border-amber-300 bg-white px-3 py-1.5 text-[11px] font-bold text-amber-800 hover:bg-amber-50 disabled:opacity-50"
+                        >
+                          Preview nhóm
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void applyV3GroupPilotBatch()}
+                          disabled={isV3PilotRunning || !v3GroupApplyCandidates.length}
+                          className="rounded bg-sky-800 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-sky-900 disabled:opacity-50"
+                        >
+                          Apply nhóm 5 mục
+                        </button>
+                      </div>
+                      {!!v3GroupApplyReport?.groups?.length && (
+                        <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-5">
+                          {v3GroupApplyReport.groups.map((group) => (
+                            <article key={group.key} className={`rounded border bg-white p-2 text-[11px] ${group.key === selectedV3GroupApply ? "border-sky-400 ring-2 ring-sky-200" : "border-sky-100"}`}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedV3GroupApply(group.key);
+                                  void loadV3GroupApplyCandidates(group.key);
+                                }}
+                                className="block w-full text-left"
+                              >
+                                <p className="font-bold text-sky-950">{group.label}</p>
+                                <p className="mt-1 text-stone-600">{truncateText(group.description || "", 92)}</p>
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                  <span className="rounded bg-sky-50 px-1.5 py-0.5 font-bold text-sky-800">Tổng {group.total || 0}</span>
+                                  <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-bold text-emerald-800">Ready {group.readyToPilot || 0}</span>
+                                  <span className="rounded bg-red-50 px-1.5 py-0.5 font-bold text-red-700">Chặn {group.blocked || 0}</span>
+                                </div>
+                              </button>
+                            </article>
+                          ))}
+                        </div>
+                      )}
+                      {!!v3GroupApplyCandidates.length && (
+                        <div className="mt-3 rounded border border-sky-100 bg-white p-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="text-[11px] font-bold uppercase tracking-wide text-sky-900">Candidate nhóm {selectedV3GroupApply}</p>
+                            <span className="rounded bg-sky-50 px-2 py-1 text-[11px] font-bold text-sky-800">{v3GroupApplyCandidates.length} mục</span>
+                          </div>
+                          <div className="mt-2 max-h-52 space-y-2 overflow-y-auto pr-1">
+                            {v3GroupApplyCandidates.slice(0, 20).map((proposal) => {
+                              const selected = selectedV3PilotItems.some((item) => v3PilotKey(item) === v3PilotKey(proposal.item));
+                              return (
+                                <div key={`group-${proposal.kind}-${proposal.id}`} className="flex flex-col gap-2 rounded border border-sky-100 bg-sky-50/60 p-2 text-[11px] md:flex-row md:items-center md:justify-between">
+                                  <div className="min-w-0">
+                                    <p className="font-bold text-stone-800">{proposal.kind}: {truncateText(proposal.item.title, 100)}</p>
+                                    <p className="text-stone-600">{truncateText(proposal.item.target || proposal.item.evidenceQuote || "", 150)}</p>
+                                    <p className="mt-0.5 text-sky-800">Điểm {proposal.score} · {(proposal.reason || []).join(", ") || "ready_to_apply"}</p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => addV3PilotProposal(proposal)}
+                                    disabled={selected || selectedV3PilotItems.length >= 5}
+                                    className="shrink-0 rounded bg-sky-800 px-2.5 py-1.5 font-bold text-white hover:bg-sky-900 disabled:opacity-50"
+                                  >
+                                    {selected ? "Đã chọn" : "Thêm"}
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
                     <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold text-stone-700">
                       <span className="rounded bg-white px-2 py-1">Đã chọn: {selectedV3PilotItems.length}/5</span>
                       {selectedV3PilotItems.map((item) => (

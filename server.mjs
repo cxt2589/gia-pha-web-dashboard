@@ -6131,6 +6131,24 @@ async function listCaoTocV3ReviewQueue({ datasetKey = CAO_TOC_V3_DEFAULT_DATASET
   };
 }
 
+async function listAllCaoTocV3ReviewQueueItems({ datasetKey = CAO_TOC_V3_DEFAULT_DATASET_KEY, kind = '', status = 'all' } = {}) {
+  const database = await getDatabase();
+  const normalizedDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY);
+  const kindFilter = String(kind || '').trim().toLowerCase();
+  const statusFilter = String(status || '').trim().toLowerCase();
+  return [
+    ...database.prepare('SELECT * FROM extracted_profile_candidates').all().map((row) => ({ kind: 'profile', row })),
+    ...database.prepare('SELECT * FROM extracted_anniversary_candidates').all().map((row) => ({ kind: 'anniversary', row })),
+    ...database.prepare('SELECT * FROM extracted_relationship_candidates').all().map((row) => ({ kind: 'relationship', row }))
+  ].filter(({ kind: itemKind, row }) => {
+    if (kindFilter && itemKind !== kindFilter) return false;
+    if (!isV3CandidateRow(row, normalizedDatasetKey)) return false;
+    const item = publicV3ReviewQueueItem(itemKind, row);
+    if (statusFilter && statusFilter !== 'all' && item.status !== statusFilter) return false;
+    return true;
+  }).map(({ kind: itemKind, row }) => publicV3ReviewQueueItem(itemKind, row));
+}
+
 async function keepV3ProfileCandidateAsVerificationNote(id, body = {}, adminUser = {}) {
   const database = await getDatabase();
   const row = database.prepare('SELECT * FROM extracted_profile_candidates WHERE id = ?').get(String(id || ''));
@@ -6465,12 +6483,8 @@ function scoreV3PilotProposal(item) {
 }
 
 async function listV3PilotApplyProposals({ datasetKey = CAO_TOC_V3_DEFAULT_DATASET_KEY, limit = 20 } = {}) {
-  const queue = await listCaoTocV3ReviewQueue({
-    datasetKey,
-    status: 'approved',
-    limit: 500
-  });
-  const items = (queue.items || [])
+  const queueItems = await listAllCaoTocV3ReviewQueueItems({ datasetKey, status: 'approved' });
+  const items = queueItems
     .filter((item) => item.canApply && !item.hardBlocked && item.status === 'approved')
     .map((item) => ({
       kind: item.kind,
@@ -6492,6 +6506,151 @@ async function listV3PilotApplyProposals({ datasetKey = CAO_TOC_V3_DEFAULT_DATAS
     total: items.length,
     maxPilotItems: 5,
     items
+  };
+}
+
+const V3_GROUP_APPLY_GROUPS = [
+  { key: 'vital', label: 'Ngay thang va mo chi', description: 'Ngay sinh, ngay mat, ngay gio am lich, que quan, mo chi/noi an tang.' },
+  { key: 'name', label: 'Ho ten va danh xung', description: 'Ho ten, ten huy, danh xung can doi chieu voi cay pha.' },
+  { key: 'profile', label: 'Hanh trang va cong lao', description: 'Tieu su, hanh trang, su nghiep, cong lao di san.' },
+  { key: 'relationship', label: 'Quan he gia toc', description: 'Cha/me/con/phoi ngau, can kiem tra chieu quan he truoc khi apply.' },
+  { key: 'note', label: 'Ghi chu kiem chung', description: 'Ghi chu, nghi van, du lieu cap ho/chi nganh, khong apply truc tiep vao ca nhan.' }
+];
+
+function emptyV3GroupApplyStats(group) {
+  return {
+    key: group.key,
+    label: group.label,
+    description: group.description,
+    total: 0,
+    pending: 0,
+    approved: 0,
+    applied: 0,
+    rejected: 0,
+    readyToPilot: 0,
+    blocked: 0,
+    needsIdentity: 0,
+    needsSource: 0,
+    fieldWarnings: 0,
+    relationshipWarnings: 0,
+    doNotApply: 0,
+    noise: 0,
+    topCandidates: []
+  };
+}
+
+function groupV3PilotProposalFromItem(item) {
+  return {
+    kind: item.kind,
+    id: item.id,
+    score: scoreV3PilotProposal(item),
+    reason: [
+      item.matchConfidence ? `match=${item.matchConfidence}` : '',
+      item.sourceId && item.chunkId ? 'has_source' : '',
+      item.evidenceQuote ? 'has_evidence' : '',
+      item.fieldTypes?.length ? `fields=${item.fieldTypes.join(',')}` : ''
+    ].filter(Boolean),
+    item
+  };
+}
+
+async function buildV3GroupApplyReport({ datasetKey = CAO_TOC_V3_DEFAULT_DATASET_KEY, limitPerGroup = 5 } = {}) {
+  const normalizedDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY);
+  const items = await listAllCaoTocV3ReviewQueueItems({ datasetKey: normalizedDatasetKey, status: 'all' });
+  const groups = Object.fromEntries(V3_GROUP_APPLY_GROUPS.map((group) => [group.key, emptyV3GroupApplyStats(group)]));
+  for (const item of items) {
+    const key = groups[item.reviewGroup] ? item.reviewGroup : 'profile';
+    const group = groups[key];
+    group.total += 1;
+    group[item.status] = (group[item.status] || 0) + 1;
+    if (item.canApply && !item.hardBlocked && item.status === 'approved') group.readyToPilot += 1;
+    if (item.hardBlocked || !item.canApply) group.blocked += 1;
+    if (item.buckets?.includes('needs_identity_match')) group.needsIdentity += 1;
+    if (item.buckets?.includes('needs_source_check')) group.needsSource += 1;
+    if (item.buckets?.includes('field_mapping_warning')) group.fieldWarnings += 1;
+    if (item.buckets?.includes('relationship_warning')) group.relationshipWarnings += 1;
+    if (item.buckets?.includes('do_not_apply_directly')) group.doNotApply += 1;
+    if (item.buckets?.includes('noise_reject_candidate')) group.noise += 1;
+    if (item.canApply && !item.hardBlocked && item.status === 'approved') {
+      group.topCandidates.push(groupV3PilotProposalFromItem(item));
+    }
+  }
+  const safeLimit = Math.max(1, Math.min(20, Number(limitPerGroup) || 5));
+  const resultGroups = Object.values(groups).map((group) => ({
+    ...group,
+    topCandidates: group.topCandidates
+      .sort((a, b) => b.score - a.score || String(b.item.updatedAt || '').localeCompare(String(a.item.updatedAt || '')))
+      .slice(0, safeLimit)
+  }));
+  return {
+    ok: true,
+    datasetKey: normalizedDatasetKey,
+    total: items.length,
+    maxPilotItems: 5,
+    groups: resultGroups
+  };
+}
+
+async function listV3GroupApplyCandidates({ datasetKey = CAO_TOC_V3_DEFAULT_DATASET_KEY, group = '', limit = 20 } = {}) {
+  const normalizedGroup = String(group || '').trim() || 'vital';
+  const items = await listAllCaoTocV3ReviewQueueItems({ datasetKey, status: 'approved' });
+  const candidates = items
+    .filter((item) => item.reviewGroup === normalizedGroup)
+    .filter((item) => item.canApply && !item.hardBlocked && item.status === 'approved')
+    .map(groupV3PilotProposalFromItem)
+    .sort((a, b) => b.score - a.score || String(b.item.updatedAt || '').localeCompare(String(a.item.updatedAt || '')))
+    .slice(0, Math.max(1, Math.min(100, Number(limit) || 20)));
+  return {
+    ok: true,
+    datasetKey: normalizeCaoTocV2DatasetKey(datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY),
+    group: normalizedGroup,
+    total: candidates.length,
+    maxPilotItems: 5,
+    items: candidates
+  };
+}
+
+async function previewV3GroupPilotBatch(body = {}) {
+  const group = String(body.group || '').trim() || 'vital';
+  const explicitItems = normalizeV3PilotItems(body.items || []);
+  const items = explicitItems.length
+    ? explicitItems
+    : (await listV3GroupApplyCandidates({
+        datasetKey: body.datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY,
+        group,
+        limit: body.limit || 5
+      })).items.map((candidate) => ({ kind: candidate.kind, id: candidate.id }));
+  return {
+    group,
+    ...(await previewV3PilotApply(items.slice(0, 5), { datasetKey: body.datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY }))
+  };
+}
+
+async function applyV3GroupPilotBatch(body = {}, adminUser = {}) {
+  if (body.confirmGroupPilotApply !== true) {
+    const err = new Error('confirmGroupPilotApply=true is required for grouped pilot apply.');
+    err.status = 409;
+    throw err;
+  }
+  const group = String(body.group || '').trim() || 'vital';
+  const preview = await previewV3GroupPilotBatch(body);
+  const items = (preview.results || [])
+    .filter((item) => item.canPilotApply)
+    .map((item) => ({ kind: item.kind, id: item.id }));
+  if (!items.length) {
+    const err = new Error('No grouped pilot candidates are ready to apply.');
+    err.status = 409;
+    err.preview = preview;
+    throw err;
+  }
+  return {
+    group,
+    ...(await applyV3PilotCandidates({
+      datasetKey: body.datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY,
+      confirmPilotApply: true,
+      note: String(body.note || `Phase 2W.2L grouped pilot apply: ${group}`).trim(),
+      items
+    }, adminUser))
   };
 }
 
@@ -7513,6 +7672,57 @@ app.get('/api/knowledge/v3-pilot-apply/reconcile', async (req, res) => {
   } catch (err) {
     console.error('Failed to reconcile Cao Toc v3 pilot apply logs:', err);
     res.status(err.status || 500).json({ error: err.message || 'Failed to reconcile Cao Toc v3 pilot apply logs.' });
+  }
+});
+
+app.get('/api/knowledge/v3-group-apply/report', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json(await buildV3GroupApplyReport({
+      datasetKey: req.query.datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY,
+      limitPerGroup: req.query.limitPerGroup || 5
+    }));
+  } catch (err) {
+    console.error('Failed to build Cao Toc v3 group apply report:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to build Cao Toc v3 group apply report.' });
+  }
+});
+
+app.get('/api/knowledge/v3-group-apply/candidates', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json(await listV3GroupApplyCandidates({
+      datasetKey: req.query.datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY,
+      group: req.query.group || 'vital',
+      limit: req.query.limit || 20
+    }));
+  } catch (err) {
+    console.error('Failed to list Cao Toc v3 group apply candidates:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to list Cao Toc v3 group apply candidates.' });
+  }
+});
+
+app.post('/api/knowledge/v3-group-apply/preview', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json(await previewV3GroupPilotBatch(req.body || {}));
+  } catch (err) {
+    console.error('Failed to preview Cao Toc v3 group pilot apply:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to preview Cao Toc v3 group pilot apply.' });
+  }
+});
+
+app.post('/api/knowledge/v3-group-apply/apply', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json(await applyV3GroupPilotBatch(req.body || {}, admin.authUser));
+  } catch (err) {
+    console.error('Failed to apply Cao Toc v3 grouped pilot candidates:', err);
+    res.status(err.status || 500).json({
+      error: err.message || 'Failed to apply Cao Toc v3 grouped pilot candidates.',
+      preview: err.preview || null
+    });
   }
 });
 

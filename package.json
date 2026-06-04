@@ -35,6 +35,7 @@
     "test:phase2w2i-review-queue": "node scripts/test-phase-2w2i-review-queue.mjs",
     "test:phase2w2j-pilot-apply": "node scripts/test-phase-2w2j-pilot-apply.mjs",
     "test:phase2w2k-pilot-reconcile": "node scripts/test-phase-2w2k-pilot-reconcile.mjs",
+    "test:phase2w2l-group-apply": "node scripts/test-phase-2w2l-group-apply.mjs",
     "build:cao-toc-v3": "node scripts/build-cao-toc-v3-cleaned.mjs",
     "import:cao-toc-txt": "node scripts/import-cao-toc-txt-knowledge.mjs",
     "import:cao-toc-04": "node scripts/import-cao-toc-04-anniversaries.mjs",
