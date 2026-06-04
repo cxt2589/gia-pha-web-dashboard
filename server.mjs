@@ -1406,13 +1406,40 @@ function isTechnicalKnowledgeSource(row = {}) {
   ].some((needle) => title.includes(needle) || fileName.includes(normalizeGatewayText(needle)));
 }
 
+function getKnowledgeSourceMetadata(row = {}) {
+  return safeJsonParse(row.source_metadata_json || row.metadata_json || '{}', {});
+}
+
+function getKnowledgeSourceDatasetKey(row = {}) {
+  const metadata = getKnowledgeSourceMetadata(row);
+  return normalizeCaoTocV2DatasetKey(metadata.datasetKey || metadata.dataset || '');
+}
+
+function isArchivedKnowledgeSource(row = {}) {
+  const metadata = getKnowledgeSourceMetadata(row);
+  const status = normalizeGatewayText(row.source_status || row.status || '');
+  return (
+    status === 'archived' ||
+    status === 'superseded' ||
+    metadata.archived === true ||
+    Boolean(metadata.supersededBy)
+  );
+}
+
+function isCanonicalKnowledgeSource(row = {}, activeDatasetKey = KNOWLEDGE_CANONICAL_DATASET_KEY) {
+  const datasetKey = getKnowledgeSourceDatasetKey(row);
+  if (!datasetKey) return false;
+  return datasetKey === normalizeCaoTocV2DatasetKey(activeDatasetKey || KNOWLEDGE_CANONICAL_DATASET_KEY);
+}
+
 function shouldExcludeKnowledgeFromExtraction(row = {}) {
   const metadata = safeJsonParse(row.source_metadata_json || row.metadata_json || '{}', {});
   const sourceKind = normalizeKnowledgeSourceKind(metadata.sourceKind || metadata.source_kind);
-  return metadata.excludeFromExtraction === true || sourceKind === 'technical_rule' || isTechnicalKnowledgeSource(row);
+  return isArchivedKnowledgeSource(row) || metadata.excludeFromExtraction === true || sourceKind === 'technical_rule' || isTechnicalKnowledgeSource(row);
 }
 
 function shouldExcludeKnowledgeFromPublicChat(row = {}, authScope = 'admin') {
+  if (isArchivedKnowledgeSource(row)) return true;
   if (authScope === 'admin') return false;
   const metadata = safeJsonParse(row.source_metadata_json || row.metadata_json || '{}', {});
   return metadata.excludeFromPublicChat === true || isTechnicalKnowledgeSource(row);
@@ -1640,16 +1667,26 @@ async function ensurePhase2AliasKnowledgeSeeded() {
 
 async function getKnowledgeStatus() {
   const database = await getDatabase();
-  const sourceCount = database.prepare('SELECT COUNT(*) AS count FROM knowledge_sources').get();
-  const chunkCount = database.prepare('SELECT COUNT(*) AS count FROM knowledge_chunks').get();
+  const sourceRows = database.prepare('SELECT * FROM knowledge_sources').all();
+  const activeSourceRows = sourceRows.filter((row) => !isArchivedKnowledgeSource(row));
+  const archivedSourceRows = sourceRows.filter((row) => isArchivedKnowledgeSource(row));
+  const activeSourceIds = activeSourceRows.map((row) => row.id);
+  const chunkCount = activeSourceIds.length
+    ? database.prepare(`SELECT COUNT(*) AS count FROM knowledge_chunks WHERE source_id IN (${activeSourceIds.map(() => '?').join(',')})`).get(...activeSourceIds)
+    : { count: 0 };
   const aliasCount = database.prepare('SELECT COUNT(*) AS count FROM entity_aliases').get();
-  const indexedCount = database.prepare("SELECT COUNT(*) AS count FROM knowledge_sources WHERE status = 'indexed'").get();
+  const indexedCount = activeSourceRows.filter((row) => row.status === 'indexed').length;
+  const canonicalSources = activeSourceRows.filter((row) => isCanonicalKnowledgeSource(row)).length;
   return {
     ok: true,
-    sources: Number(sourceCount?.count || 0),
+    sources: activeSourceRows.length,
+    totalSources: sourceRows.length,
+    archivedSources: archivedSourceRows.length,
+    canonicalSources,
     chunks: Number(chunkCount?.count || 0),
     aliases: Number(aliasCount?.count || 0),
-    indexedSources: Number(indexedCount?.count || 0),
+    indexedSources: Number(indexedCount || 0),
+    activeDatasetKey: KNOWLEDGE_CANONICAL_DATASET_KEY,
     seed: PHASE2_ALIAS_SEED_SLUG
   };
 }
@@ -4971,13 +5008,14 @@ function publicKnowledgeSource(row) {
   };
 }
 
-async function listKnowledgeSources({ authScope = 'admin', limit = 80 } = {}) {
+async function listKnowledgeSources({ authScope = 'admin', limit = 80, includeArchived = false } = {}) {
   await ensurePhase2AliasKnowledgeSeeded();
   const database = await getDatabase();
   return database
     .prepare('SELECT * FROM knowledge_sources ORDER BY updated_at DESC LIMIT ?')
     .all(limit)
     .filter((row) => canReadKnowledgeVisibility(row.visibility, authScope))
+    .filter((row) => includeArchived || !isArchivedKnowledgeSource(row))
     .map(publicKnowledgeSource);
 }
 
@@ -5011,6 +5049,250 @@ function insertKnowledgeMaintenanceLog(database, action, summary, adminUser = {}
     adminUser?.username || adminUser?.fullName || adminUser?.id || ''
   );
   return id;
+}
+
+function collectKnowledgeReferencesFromValue(value, refs) {
+  if (!value) return;
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectKnowledgeReferencesFromValue(item, refs));
+    return;
+  }
+  if (typeof value === 'object') {
+    for (const [key, nested] of Object.entries(value)) {
+      if ((key === 'sourceId' || key === 'source_id') && nested) refs.sourceIds.add(String(nested));
+      if ((key === 'chunkId' || key === 'chunk_id') && nested) refs.chunkIds.add(String(nested));
+      collectKnowledgeReferencesFromValue(nested, refs);
+    }
+  }
+}
+
+function collectAppliedKnowledgeReferences(database) {
+  const refs = { sourceIds: new Set(), chunkIds: new Set() };
+  const add = (sourceId, chunkId) => {
+    if (sourceId) refs.sourceIds.add(String(sourceId));
+    if (chunkId) refs.chunkIds.add(String(chunkId));
+  };
+
+  for (const table of ['extracted_anniversary_candidates', 'extracted_profile_candidates', 'extracted_relationship_candidates']) {
+    const columns = database.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name);
+    if (!columns.includes('source_id') || !columns.includes('chunk_id')) continue;
+    for (const row of database.prepare(`SELECT source_id, chunk_id, metadata_json FROM ${table} WHERE status = 'applied'`).all()) {
+      add(row.source_id, row.chunk_id);
+      collectKnowledgeReferencesFromValue(safeJsonParse(row.metadata_json, {}), refs);
+    }
+  }
+
+  try {
+    for (const row of database.prepare("SELECT candidate_before_json, candidate_after_json, result_json, metadata_json FROM cao_toc_v3_pilot_apply_logs WHERE status = 'applied' AND COALESCE(rollback_status, '') != 'rolled_back'").all()) {
+      collectKnowledgeReferencesFromValue(safeJsonParse(row.candidate_before_json, {}), refs);
+      collectKnowledgeReferencesFromValue(safeJsonParse(row.candidate_after_json, {}), refs);
+      collectKnowledgeReferencesFromValue(safeJsonParse(row.result_json, {}), refs);
+      collectKnowledgeReferencesFromValue(safeJsonParse(row.metadata_json, {}), refs);
+    }
+  } catch {
+    // Older databases may not have the pilot log table yet.
+  }
+
+  const lineageTreeJson = database.prepare('SELECT value FROM app_state WHERE key = ?').get(TREE_STATE_KEY)?.value || '';
+  for (const match of String(lineageTreeJson).matchAll(/"sourceId"\s*:\s*"([^"]+)"/g)) refs.sourceIds.add(match[1]);
+  for (const match of String(lineageTreeJson).matchAll(/"chunkId"\s*:\s*"([^"]+)"/g)) refs.chunkIds.add(match[1]);
+
+  return refs;
+}
+
+function sourceShouldRemainActive(row, activeDatasetKey = KNOWLEDGE_CANONICAL_DATASET_KEY) {
+  if (isCanonicalKnowledgeSource(row, activeDatasetKey) && !isTechnicalKnowledgeSource(row)) return true;
+  const metadata = getKnowledgeSourceMetadata(row);
+  const sourceKind = normalizeKnowledgeSourceKind(metadata.sourceKind || metadata.source_kind);
+  return isCanonicalKnowledgeSource(row, activeDatasetKey) && sourceKind === 'verification_notes';
+}
+
+function buildKnowledgeDatasetPolicyReport({ activeDatasetKey = KNOWLEDGE_CANONICAL_DATASET_KEY } = {}) {
+  const database = db || new DatabaseSync(DATABASE_FILE);
+  const normalizedActiveDatasetKey = normalizeCaoTocV2DatasetKey(activeDatasetKey || KNOWLEDGE_CANONICAL_DATASET_KEY);
+  const refs = collectAppliedKnowledgeReferences(database);
+  const sourceRows = database.prepare('SELECT * FROM knowledge_sources ORDER BY updated_at DESC, id').all();
+  const chunkRows = database.prepare('SELECT source_id, COUNT(*) AS count FROM knowledge_chunks GROUP BY source_id').all();
+  const chunkCountBySource = new Map(chunkRows.map((row) => [row.source_id, Number(row.count || 0)]));
+  const sources = sourceRows.map((row) => {
+    const metadata = getKnowledgeSourceMetadata(row);
+    const datasetKey = getKnowledgeSourceDatasetKey(row) || 'no_dataset';
+    const sourceKind = normalizeKnowledgeSourceKind(metadata.sourceKind || metadata.source_kind) || row.source_type || '';
+    const referencedByAppliedData = refs.sourceIds.has(row.id);
+    const active = sourceShouldRemainActive(row, normalizedActiveDatasetKey);
+    const archived = isArchivedKnowledgeSource(row);
+    const plannedAction = active
+      ? 'keep_active'
+      : archived
+        ? 'already_archived'
+        : referencedByAppliedData
+          ? 'archive_hide_keep_reference'
+          : 'archive_hide_legacy';
+    return {
+      id: row.id,
+      title: row.title,
+      sourceType: row.source_type,
+      visibility: row.visibility,
+      status: row.status,
+      datasetKey,
+      datasetGroup: metadata.datasetGroup || '',
+      sourceKind,
+      chunks: chunkCountBySource.get(row.id) || 0,
+      referencedByAppliedData,
+      archived,
+      plannedAction
+    };
+  });
+  const candidateTables = [
+    ['extracted_profile_candidates', 'profile'],
+    ['extracted_anniversary_candidates', 'anniversary'],
+    ['extracted_relationship_candidates', 'relationship']
+  ];
+  const candidates = [];
+  for (const [table, kind] of candidateTables) {
+    for (const row of database.prepare(`SELECT id, status, source_id, metadata_json FROM ${table}`).all()) {
+      const metadata = safeJsonParse(row.metadata_json, {});
+      const datasetKey = normalizeCaoTocV2DatasetKey(metadata.datasetKey || metadata.dataset || '') || 'no_dataset';
+      const sourcePlan = sources.find((source) => source.id === row.source_id);
+      const isActiveDataset = datasetKey === normalizedActiveDatasetKey;
+      const shouldArchive = row.status !== 'applied' && (!isActiveDataset || sourcePlan?.plannedAction?.startsWith('archive'));
+      candidates.push({
+        id: row.id,
+        kind,
+        status: row.status || '',
+        datasetKey,
+        sourceId: row.source_id || '',
+        plannedAction: shouldArchive ? 'archive_candidate' : 'keep_candidate'
+      });
+    }
+  }
+  const bySourceAction = sources.reduce((acc, source) => {
+    acc[source.plannedAction] = (acc[source.plannedAction] || 0) + 1;
+    return acc;
+  }, {});
+  const byCandidateAction = candidates.reduce((acc, candidate) => {
+    acc[candidate.plannedAction] = (acc[candidate.plannedAction] || 0) + 1;
+    return acc;
+  }, {});
+  const activeSources = sources.filter((source) => source.plannedAction === 'keep_active');
+  const archiveSources = sources.filter((source) => source.plannedAction.startsWith('archive'));
+  return {
+    ok: true,
+    activeDatasetKey: normalizedActiveDatasetKey,
+    totals: {
+      sources: sources.length,
+      chunks: sources.reduce((sum, source) => sum + source.chunks, 0),
+      activeSources: activeSources.length,
+      archiveSources: archiveSources.length,
+      referencedSources: sources.filter((source) => source.referencedByAppliedData).length,
+      candidates: candidates.length
+    },
+    bySourceAction,
+    byCandidateAction,
+    activeSources,
+    archiveSources,
+    candidatesToArchive: candidates.filter((candidate) => candidate.plannedAction === 'archive_candidate').slice(0, 200),
+    sources
+  };
+}
+
+async function canonicalizeKnowledgeDatasets({ activeDatasetKey = KNOWLEDGE_CANONICAL_DATASET_KEY, dryRun = true } = {}, adminUser = {}) {
+  await ensurePhase2AliasKnowledgeSeeded();
+  const database = await getDatabase();
+  const report = buildKnowledgeDatasetPolicyReport({ activeDatasetKey });
+  if (dryRun) return { ...report, dryRun: true };
+
+  const now = new Date().toISOString();
+  const archiveSourceIds = new Set(report.archiveSources.map((source) => source.id));
+  const sourceRows = database.prepare('SELECT * FROM knowledge_sources').all();
+  const sourceUpdate = database.prepare(`
+    UPDATE knowledge_sources
+    SET metadata_json = ?, visibility = CASE WHEN visibility IN ('public','global','kyc') THEN 'private' ELSE visibility END, status = 'archived', updated_at = datetime('now')
+    WHERE id = ?
+  `);
+  const chunkUpdate = database.prepare(`
+    UPDATE knowledge_chunks
+    SET metadata_json = ?, visibility = CASE WHEN visibility IN ('public','global','kyc') THEN 'private' ELSE visibility END, updated_at = datetime('now')
+    WHERE id = ?
+  `);
+  const candidateTables = [
+    ['extracted_profile_candidates', 'profile'],
+    ['extracted_anniversary_candidates', 'anniversary'],
+    ['extracted_relationship_candidates', 'relationship']
+  ];
+
+  let archivedSources = 0;
+  let updatedChunks = 0;
+  let archivedCandidates = 0;
+  database.exec('BEGIN');
+  try {
+    for (const row of sourceRows) {
+      if (!archiveSourceIds.has(row.id)) continue;
+      const metadata = {
+        ...safeJsonParse(row.metadata_json, {}),
+        archived: true,
+        archivedAt: now,
+        supersededBy: report.activeDatasetKey,
+        archiveReason: 'canonical_dataset_policy',
+        excludeFromExtraction: true,
+        excludeFromPublicChat: true
+      };
+      sourceUpdate.run(JSON.stringify(metadata), row.id);
+      archivedSources += 1;
+      const chunkRows = database.prepare('SELECT id, metadata_json FROM knowledge_chunks WHERE source_id = ?').all(row.id);
+      for (const chunk of chunkRows) {
+        const chunkMetadata = {
+          ...safeJsonParse(chunk.metadata_json, {}),
+          archived: true,
+          archivedAt: now,
+          supersededBy: report.activeDatasetKey,
+          archiveReason: 'canonical_dataset_policy'
+        };
+        chunkUpdate.run(JSON.stringify(chunkMetadata), chunk.id);
+        updatedChunks += 1;
+      }
+    }
+
+    for (const [table] of candidateTables) {
+      const rows = database.prepare(`SELECT id, status, source_id, metadata_json FROM ${table}`).all();
+      const update = database.prepare(`UPDATE ${table} SET status = 'archived', metadata_json = ?, updated_at = datetime('now') WHERE id = ?`);
+      for (const row of rows) {
+        if (row.status === 'applied') continue;
+        const metadata = safeJsonParse(row.metadata_json, {});
+        const datasetKey = normalizeCaoTocV2DatasetKey(metadata.datasetKey || metadata.dataset || '');
+        const shouldArchive = datasetKey !== report.activeDatasetKey || archiveSourceIds.has(row.source_id);
+        if (!shouldArchive) continue;
+        update.run(JSON.stringify({
+          ...metadata,
+          archived: true,
+          archivedAt: now,
+          supersededBy: report.activeDatasetKey,
+          archiveReason: 'canonical_dataset_policy'
+        }), row.id);
+        archivedCandidates += 1;
+      }
+    }
+
+    const summary = {
+      activeDatasetKey: report.activeDatasetKey,
+      archivedSources,
+      updatedChunks,
+      archivedCandidates,
+      before: report.totals
+    };
+    insertKnowledgeMaintenanceLog(database, 'canonicalize_knowledge_datasets', summary, adminUser);
+    database.exec('COMMIT');
+    return {
+      ok: true,
+      dryRun: false,
+      ...summary,
+      after: buildKnowledgeDatasetPolicyReport({ activeDatasetKey: report.activeDatasetKey }).totals,
+      status: await getKnowledgeStatus()
+    };
+  } catch (err) {
+    database.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 async function lockTechnicalKnowledgeSources(adminUser = {}) {
@@ -5667,6 +5949,7 @@ async function getCaoTocV2Report({ datasetKey = '' } = {}) {
 }
 
 const CAO_TOC_V3_DEFAULT_DATASET_KEY = 'cao_toc_txt_knowledge_base_v3';
+const KNOWLEDGE_CANONICAL_DATASET_KEY = CAO_TOC_V3_DEFAULT_DATASET_KEY;
 const V3_TRIAGE_BUCKETS = [
   'ready_to_review',
   'needs_identity_match',
@@ -8001,6 +8284,32 @@ app.get('/api/knowledge/maintenance/logs', async (req, res) => {
   }
 });
 
+app.get('/api/knowledge/dataset-policy/report', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json(buildKnowledgeDatasetPolicyReport({
+      activeDatasetKey: req.query.activeDatasetKey || KNOWLEDGE_CANONICAL_DATASET_KEY
+    }));
+  } catch (err) {
+    console.error('Failed to build knowledge dataset policy report:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to build knowledge dataset policy report.' });
+  }
+});
+
+app.post('/api/knowledge/maintenance/canonicalize-datasets', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json(await canonicalizeKnowledgeDatasets({
+      activeDatasetKey: req.body?.activeDatasetKey || KNOWLEDGE_CANONICAL_DATASET_KEY,
+      dryRun: req.body?.dryRun !== false
+    }, admin.authUser));
+  } catch (err) {
+    console.error('Failed to canonicalize knowledge datasets:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to canonicalize knowledge datasets.' });
+  }
+});
+
 app.post('/api/knowledge/maintenance/lock-technical-sources', async (req, res) => {
   try {
     const admin = await requireAdmin(req, res);
@@ -8260,8 +8569,9 @@ app.post('/api/knowledge/v3-triage/reject-noise', async (req, res) => {
 app.get('/api/knowledge/sources', async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(200, Number(req.query.limit || 80) || 80));
+    const includeArchived = ['1', 'true', 'yes'].includes(String(req.query.includeArchived || '').toLowerCase());
     const { authScope } = await getRequestAuthContext(req);
-    res.json({ sources: await listKnowledgeSources({ authScope, limit }) });
+    res.json({ sources: await listKnowledgeSources({ authScope, limit, includeArchived }) });
   } catch (err) {
     console.error('Failed to list knowledge sources:', err);
     res.status(500).json({ error: 'Failed to list knowledge sources.' });

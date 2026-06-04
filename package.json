@@ -39,6 +39,7 @@
     "test:phase2w2m-member-applied-report": "node scripts/test-phase-2w2m-member-applied-report.mjs",
     "test:phase2w2n-member-evidence": "node scripts/test-phase-2w2n-member-evidence.mjs",
     "test:phase2w2p-member-evidence-actions": "node scripts/test-phase-2w2p-member-evidence-actions.mjs",
+    "test:phase2w2q-knowledge-canonicalization": "node scripts/test-phase-2w2q-knowledge-canonicalization.mjs",
     "build:cao-toc-v3": "node scripts/build-cao-toc-v3-cleaned.mjs",
     "import:cao-toc-txt": "node scripts/import-cao-toc-txt-knowledge.mjs",
     "import:cao-toc-04": "node scripts/import-cao-toc-04-anniversaries.mjs",
