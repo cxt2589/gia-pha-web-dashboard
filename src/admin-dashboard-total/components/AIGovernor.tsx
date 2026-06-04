@@ -271,6 +271,65 @@ type V3PilotReconcileItem = V3PilotApplyLog & {
   }>;
 };
 
+type V3MemberAppliedField = {
+  field: string;
+  fieldType?: string;
+  oldValue?: string;
+  newValue?: string;
+  rawText?: string;
+  sourceId?: string;
+  chunkId?: string;
+  ok?: boolean;
+};
+
+type V3MemberAppliedLog = {
+  id: string;
+  kind: string;
+  candidateId: string;
+  auditId?: string;
+  status?: string;
+  rollbackStatus?: string;
+  reconcileStatus?: string;
+  ok?: boolean;
+  createdAt?: string;
+  rolledBackAt?: string;
+  appliedBy?: string;
+  sourceId?: string;
+  chunkId?: string;
+  sourceTitle?: string;
+  headingPath?: string;
+  evidenceQuote?: string;
+  title?: string;
+  fields?: V3MemberAppliedField[];
+};
+
+type V3MemberAppliedReportItem = {
+  memberId: string;
+  memberName: string;
+  generation?: number | string;
+  branch?: string;
+  totalLogs: number;
+  activeApplied: number;
+  rolledBack: number;
+  inSync: number;
+  drift: number;
+  latestAt?: string;
+  fields?: string[];
+  logs?: V3MemberAppliedLog[];
+};
+
+type V3MemberAppliedReport = {
+  ok?: boolean;
+  total?: number;
+  summary?: {
+    logs?: number;
+    activeApplied?: number;
+    rolledBack?: number;
+    drift?: number;
+  };
+  members?: V3MemberAppliedReportItem[];
+};
+
 type V3GroupApplyGroup = {
   key: string;
   label: string;
@@ -1006,6 +1065,10 @@ export default function AIGovernor({
   const [appliedExtractionNote, setAppliedExtractionNote] = useState("");
   const [appliedExtractionFilter, setAppliedExtractionFilter] = useState("");
   const [appliedExtractionFieldFilter, setAppliedExtractionFieldFilter] = useState("");
+  const [v3MemberAppliedReport, setV3MemberAppliedReport] = useState<V3MemberAppliedReport | null>(null);
+  const [v3MemberAppliedQuery, setV3MemberAppliedQuery] = useState("");
+  const [v3MemberAppliedNote, setV3MemberAppliedNote] = useState("");
+  const [isV3MemberAppliedLoading, setIsV3MemberAppliedLoading] = useState(false);
   const [aiBotConfigs, setAiBotConfigs] = useState<AIBotConfig[]>([]);
   const [isAiBotConfigsLoading, setIsAiBotConfigsLoading] = useState(false);
   const [aiBotConfigNote, setAiBotConfigNote] = useState("");
@@ -1967,6 +2030,24 @@ export default function AIGovernor({
       setAppliedExtractionNote(`Không đọc được dữ liệu đã áp dụng: ${err?.message || "lỗi không xác định"}`);
     } finally {
       setIsAppliedExtractionsLoading(false);
+    }
+  };
+
+  const loadV3MemberAppliedReport = async () => {
+    setIsV3MemberAppliedLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("limit", "120");
+      if (v3MemberAppliedQuery.trim()) params.set("q", v3MemberAppliedQuery.trim());
+      const response = await fetch(`/api/knowledge/v3-member-applied-report?${params.toString()}`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không đọc được báo cáo applied theo hồ sơ.");
+      setV3MemberAppliedReport(data);
+      setV3MemberAppliedNote(`Đã tải ${data.total || 0} hồ sơ có dữ liệu pilot/applied.`);
+    } catch (err: any) {
+      setV3MemberAppliedNote(`Không đọc được báo cáo applied theo hồ sơ: ${err?.message || "lỗi không xác định"}`);
+    } finally {
+      setIsV3MemberAppliedLoading(false);
     }
   };
 
@@ -6229,6 +6310,81 @@ export default function AIGovernor({
                   <Search className="h-4 w-4" />
                   Lọc
                 </button>
+              </div>
+              <div className="mt-4 rounded border border-emerald-100 bg-white p-3">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-wide text-emerald-900">Đối soát theo hồ sơ 2W.2M</p>
+                    <p className="mt-1 text-[11px] leading-relaxed text-stone-500">
+                      Gom các log pilot/applied theo từng nhân vật, kèm field đã ghi, nguồn trích dẫn và trạng thái đối soát/rollback.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      value={v3MemberAppliedQuery}
+                      onChange={(event) => setV3MemberAppliedQuery(event.target.value)}
+                      className="min-w-[220px] rounded border border-emerald-100 bg-emerald-50/50 px-3 py-2 text-xs outline-none focus:border-emerald-500"
+                      placeholder="Lọc theo người, field, nguồn..."
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void loadV3MemberAppliedReport()}
+                      disabled={isV3MemberAppliedLoading}
+                      className="inline-flex items-center justify-center gap-2 rounded bg-emerald-800 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-900 disabled:opacity-60"
+                    >
+                      <RefreshCw className={`h-4 w-4 ${isV3MemberAppliedLoading ? "animate-spin" : ""}`} />
+                      Tải đối soát
+                    </button>
+                  </div>
+                </div>
+                {v3MemberAppliedNote && <p className="mt-2 rounded bg-emerald-50 p-2 text-[11px] leading-relaxed text-emerald-900">{v3MemberAppliedNote}</p>}
+                {v3MemberAppliedReport?.summary && (
+                  <div className="mt-3 grid gap-2 sm:grid-cols-4">
+                    <div className="rounded border border-stone-100 bg-stone-50 p-2 text-[11px]"><b>{v3MemberAppliedReport.summary.logs || 0}</b><br />log pilot</div>
+                    <div className="rounded border border-emerald-100 bg-emerald-50 p-2 text-[11px]"><b>{v3MemberAppliedReport.summary.activeApplied || 0}</b><br />đang áp dụng</div>
+                    <div className="rounded border border-amber-100 bg-amber-50 p-2 text-[11px]"><b>{v3MemberAppliedReport.summary.rolledBack || 0}</b><br />đã rollback</div>
+                    <div className="rounded border border-red-100 bg-red-50 p-2 text-[11px]"><b>{v3MemberAppliedReport.summary.drift || 0}</b><br />cần kiểm tra</div>
+                  </div>
+                )}
+                {!!v3MemberAppliedReport?.members?.length && (
+                  <div className="mt-3 max-h-96 space-y-2 overflow-y-auto pr-1">
+                    {v3MemberAppliedReport.members.map((member) => (
+                      <article key={member.memberId} className="rounded border border-emerald-100 bg-emerald-50/40 p-3 text-[11px]">
+                        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                          <div>
+                            <p className="text-sm font-bold text-stone-900">{member.memberName || member.memberId}</p>
+                            <p className="text-stone-500">ID {member.memberId} · Đời {member.generation ?? "-"} · {member.branch || "Chưa rõ chi/ngành"}</p>
+                            <p className="mt-1 text-emerald-800">Field: {(member.fields || []).slice(0, 8).join(", ") || "chưa rõ"}</p>
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            <span className="rounded bg-white px-2 py-1 font-bold text-stone-700">Log {member.totalLogs || 0}</span>
+                            <span className="rounded bg-emerald-100 px-2 py-1 font-bold text-emerald-800">Active {member.activeApplied || 0}</span>
+                            <span className="rounded bg-amber-100 px-2 py-1 font-bold text-amber-800">Rollback {member.rolledBack || 0}</span>
+                            {!!member.drift && <span className="rounded bg-red-100 px-2 py-1 font-bold text-red-800">Drift {member.drift}</span>}
+                          </div>
+                        </div>
+                        <div className="mt-2 grid gap-2 md:grid-cols-2">
+                          {(member.logs || []).slice(0, 4).map((log) => (
+                            <div key={log.id} className="rounded border border-stone-100 bg-white p-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <b className="text-stone-800">{log.kind}: {truncateText(log.title || log.candidateId, 80)}</b>
+                                <span className={`rounded px-1.5 py-0.5 font-bold ${log.reconcileStatus === "drift" ? "bg-red-100 text-red-700" : log.rollbackStatus === "rolled_back" ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
+                                  {log.reconcileStatus || log.status || "unknown"}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-stone-500">{truncateText(log.headingPath || log.sourceTitle || log.sourceId || "-", 110)}</p>
+                              <p className="mt-1 text-stone-600">{truncateText((log.fields || []).map((field) => `${field.field}: ${field.newValue}`).join(" · "), 150)}</p>
+                              {log.evidenceQuote && <p className="mt-1 italic text-stone-500">{truncateText(log.evidenceQuote, 150)}</p>}
+                            </div>
+                          ))}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+                {v3MemberAppliedReport && !v3MemberAppliedReport.members?.length && (
+                  <p className="mt-3 rounded bg-stone-50 p-3 text-center text-xs text-stone-500">Chưa có hồ sơ phù hợp bộ lọc đối soát.</p>
+                )}
               </div>
               {appliedExtractionNote && <p className="mt-2 rounded bg-white p-2 text-[11px] leading-relaxed text-stone-700">{appliedExtractionNote}</p>}
               <div className="mt-3 max-h-72 overflow-y-auto rounded border border-emerald-100 bg-white">

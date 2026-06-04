@@ -6761,6 +6761,167 @@ async function reconcileV3PilotApplyLogs({ limit = 50 } = {}) {
   };
 }
 
+function stringifyAppliedValue(value) {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'object') return compactText(JSON.stringify(value), 180);
+  return compactText(String(value || ''), 180);
+}
+
+function getV3PilotLogMemberIds(log) {
+  const ids = new Set();
+  const addId = (value) => {
+    const text = String(value || '').trim();
+    if (!text) return;
+    text.split(/\s*->\s*/).map((item) => item.trim()).filter(Boolean).forEach((item) => ids.add(item));
+  };
+  addId(log.memberId);
+  const changes = Array.isArray(log.result?.changes) ? log.result.changes : [];
+  for (const change of changes) {
+    addId(change.memberId);
+    addId(change.subjectId);
+    addId(change.objectId);
+  }
+  const matches = Array.isArray(log.result?.candidate?.candidateMatches) ? log.result.candidate.candidateMatches : [];
+  for (const match of matches) addId(match.memberId);
+  return [...ids].filter(Boolean);
+}
+
+function summarizeV3PilotLogFields(log) {
+  const changes = Array.isArray(log.result?.changes) ? log.result.changes : [];
+  if (!changes.length && log.kind === 'relationship') {
+    return [{
+      field: log.result?.candidate?.relationshipType || 'relationship',
+      fieldType: 'relationship',
+      oldValue: '',
+      newValue: [log.result?.candidate?.subjectName, log.result?.candidate?.relationshipType, log.result?.candidate?.objectName].filter(Boolean).join(' ')
+    }];
+  }
+  return changes.map((change) => ({
+    field: change.lineageField || change.relationshipType || change.fieldType || 'value',
+    fieldType: change.fieldType || (change.relationshipType ? 'relationship' : ''),
+    oldValue: stringifyAppliedValue(change.oldValue),
+    newValue: stringifyAppliedValue(change.newValue),
+    rawText: change.rawText || '',
+    sourceId: change.sourceId || log.result?.candidate?.sourceId || '',
+    chunkId: change.chunkId || log.result?.candidate?.chunkId || '',
+    ok: typeof change.ok === 'boolean' ? change.ok : undefined
+  }));
+}
+
+function buildV3AppliedLogForMember(log, memberId = '') {
+  const candidate = log.result?.candidate || {};
+  const checks = Array.isArray(log.checks) ? log.checks : [];
+  const relevantChecks = checks.filter((check) => {
+    if (!memberId) return true;
+    return [check.memberId, check.subjectId, check.objectId].map((item) => String(item || '').trim()).includes(String(memberId || '').trim());
+  });
+  return {
+    id: log.id,
+    kind: log.kind,
+    candidateId: log.candidateId,
+    auditId: log.auditId,
+    status: log.status,
+    rollbackStatus: log.rollbackStatus,
+    rollbackAuditId: log.rollbackAuditId,
+    reconcileStatus: log.reconcileStatus,
+    ok: log.ok,
+    createdAt: log.createdAt,
+    rolledBackAt: log.rolledBackAt,
+    appliedBy: log.adminUser,
+    sourceId: candidate.sourceId || '',
+    chunkId: candidate.chunkId || '',
+    sourceTitle: candidate.sourceTitle || log.result?.metadata?.sourceTitle || '',
+    headingPath: candidate.headingPath || log.result?.metadata?.headingPath || '',
+    evidenceQuote: candidate.evidenceQuote || candidate.sourceQuote || '',
+    evidenceWindow: candidate.evidenceWindow || '',
+    title: candidate.personName || candidate.matchedMemberName || [candidate.subjectName, candidate.relationshipType, candidate.objectName].filter(Boolean).join(' ') || log.candidateId,
+    fields: summarizeV3PilotLogFields(log),
+    checks: relevantChecks
+  };
+}
+
+async function buildV3MemberAppliedReport({ q = '', memberId = '', limit = 80 } = {}) {
+  const database = await getDatabase();
+  const tree = await readLineageTreeForAI();
+  const members = tree ? flattenLineageTree(tree) : [];
+  const memberIndex = new Map(members.map((member) => [String(member.id || ''), member]));
+  const rows = database.prepare('SELECT * FROM cao_toc_v3_pilot_apply_logs ORDER BY created_at DESC LIMIT ?')
+    .all(Math.max(1, Math.min(500, Number(limit) || 80)));
+  const reconciledLogs = rows.map((row) => reconcileV3PilotLogRow(database, row, tree || {}));
+  const queryNorm = normalizeKnowledgeText(q);
+  const memberFilter = String(memberId || '').trim();
+  const grouped = new Map();
+
+  for (const log of reconciledLogs) {
+    const memberIds = getV3PilotLogMemberIds(log);
+    for (const id of memberIds) {
+      if (memberFilter && id !== memberFilter) continue;
+      const member = memberIndex.get(id) || { id, name: id, generation: '', branch: '' };
+      const logItem = buildV3AppliedLogForMember(log, id);
+      const haystack = normalizeKnowledgeText([
+        member.id,
+        member.name,
+        member.generation,
+        member.branch,
+        logItem.id,
+        logItem.kind,
+        logItem.candidateId,
+        logItem.sourceTitle,
+        logItem.headingPath,
+        logItem.evidenceQuote,
+        logItem.fields.map((field) => [field.field, field.fieldType, field.newValue].join(' ')).join(' ')
+      ].join(' '));
+      if (queryNorm && !haystack.includes(queryNorm)) continue;
+      if (!grouped.has(id)) {
+        grouped.set(id, {
+          memberId: id,
+          memberName: member.name || id,
+          generation: member.generation,
+          branch: member.branch || '',
+          totalLogs: 0,
+          activeApplied: 0,
+          rolledBack: 0,
+          inSync: 0,
+          drift: 0,
+          latestAt: '',
+          fields: new Set(),
+          logs: []
+        });
+      }
+      const group = grouped.get(id);
+      group.totalLogs += 1;
+      if (log.rollbackStatus === 'rolled_back' || log.status === 'rolled_back') group.rolledBack += 1;
+      else group.activeApplied += 1;
+      if (['in_sync', 'fields_match_tree_changed', 'rolled_back_restored'].includes(log.reconcileStatus)) group.inSync += 1;
+      if (['drift', 'rolled_back_tree_changed', 'noop_unverified'].includes(log.reconcileStatus)) group.drift += 1;
+      if (!group.latestAt || String(log.createdAt || '') > String(group.latestAt || '')) group.latestAt = log.createdAt || '';
+      for (const field of logItem.fields) group.fields.add(field.field || field.fieldType || 'value');
+      group.logs.push(logItem);
+    }
+  }
+
+  const memberReports = [...grouped.values()]
+    .map((group) => ({
+      ...group,
+      fields: [...group.fields].filter(Boolean),
+      logs: group.logs.slice(0, 20)
+    }))
+    .sort((a, b) => String(b.latestAt || '').localeCompare(String(a.latestAt || '')))
+    .slice(0, Math.max(1, Math.min(200, Number(limit) || 80)));
+
+  return {
+    ok: true,
+    total: memberReports.length,
+    summary: {
+      logs: reconciledLogs.length,
+      activeApplied: memberReports.reduce((sum, member) => sum + member.activeApplied, 0),
+      rolledBack: memberReports.reduce((sum, member) => sum + member.rolledBack, 0),
+      drift: memberReports.reduce((sum, member) => sum + member.drift, 0)
+    },
+    members: memberReports
+  };
+}
+
 async function rollbackV3PilotApplyLog(logId, body = {}, adminUser = {}) {
   const database = await getDatabase();
   const row = database.prepare('SELECT * FROM cao_toc_v3_pilot_apply_logs WHERE id = ? OR audit_id = ?').get(String(logId || ''), String(logId || ''));
@@ -7672,6 +7833,20 @@ app.get('/api/knowledge/v3-pilot-apply/reconcile', async (req, res) => {
   } catch (err) {
     console.error('Failed to reconcile Cao Toc v3 pilot apply logs:', err);
     res.status(err.status || 500).json({ error: err.message || 'Failed to reconcile Cao Toc v3 pilot apply logs.' });
+  }
+});
+
+app.get('/api/knowledge/v3-member-applied-report', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json(await buildV3MemberAppliedReport({
+      q: req.query.q || '',
+      memberId: req.query.memberId || '',
+      limit: req.query.limit || 80
+    }));
+  } catch (err) {
+    console.error('Failed to build V3 member applied report:', err);
+    res.status(500).json({ error: 'Failed to build V3 member applied report.' });
   }
 });
 
