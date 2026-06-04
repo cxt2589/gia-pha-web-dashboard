@@ -199,6 +199,8 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   const [selectedMemberEvidenceKey, setSelectedMemberEvidenceKey] = useState("");
   const [memberEvidenceStatusFilter, setMemberEvidenceStatusFilter] = useState<"all" | "applied" | "pending" | "approved" | "rolled_back" | "drift">("all");
   const [memberEvidenceFieldFilter, setMemberEvidenceFieldFilter] = useState("all");
+  const [memberEvidenceActionBusy, setMemberEvidenceActionBusy] = useState("");
+  const [memberEvidenceActionNote, setMemberEvidenceActionNote] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
 
@@ -407,6 +409,33 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
   };
 
+  const getMemberEvidenceCandidateEndpoint = (item: MemberEvidenceDisplayItem) => {
+    const id = encodeURIComponent(item.candidateId || item.id);
+    if (item.kind === "profile") return `/api/knowledge/profile-candidates/${id}`;
+    if (item.kind === "relationship") return `/api/knowledge/relationship-candidates/${id}`;
+    return `/api/knowledge/extracted-anniversaries/${id}`;
+  };
+
+  const buildMemberEvidenceApplyItem = (item: MemberEvidenceDisplayItem, confirmOverwrite = false) => {
+    const payload: Record<string, any> = {
+      kind: item.kind,
+      id: item.candidateId || item.id,
+      memberId: bioAncestor?.id,
+      confirmOverwrite,
+      confirmIdentity: true,
+      confirmSourceCheck: true,
+      confirmFieldMapping: true,
+      confirmRelationshipReview: true
+    };
+    if (item.kind === "anniversary" && item.field) payload.fieldTypes = [item.field];
+    if (item.kind === "profile") {
+      payload.targetField = item.field;
+      if (item.newValue) payload.reviewedText = item.newValue;
+    }
+    if (item.kind === "relationship") payload.relationshipType = item.field;
+    return payload;
+  };
+
   const loadMemberEvidence = async (memberId: string) => {
     if (!memberId) return;
     setMemberEvidenceLoading(true);
@@ -429,6 +458,125 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   const openMemberEvidenceDrawer = (itemKey = "") => {
     setSelectedMemberEvidenceKey(itemKey);
     setIsMemberEvidenceDrawerOpen(true);
+  };
+
+  const updateMemberEvidenceCandidateStatus = async (item: MemberEvidenceDisplayItem, status: "approved" | "rejected") => {
+    if (!item.candidateId && !item.id) return;
+    const actionKey = `${status}:${item.evidenceGroup}:${item.id}`;
+    setMemberEvidenceActionBusy(actionKey);
+    setMemberEvidenceActionNote(status === "approved" ? "Đang duyệt nguồn..." : "Đang từ chối nguồn...");
+    try {
+      const res = await fetch(getMemberEvidenceCandidateEndpoint(item), {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Không cập nhật được trạng thái nguồn.");
+      setMemberEvidenceActionNote(status === "approved" ? "Đã duyệt nguồn. Có thể áp dụng vào hồ sơ." : "Đã từ chối nguồn.");
+      if (bioAncestor?.id) await loadMemberEvidence(bioAncestor.id);
+    } catch (err: any) {
+      setMemberEvidenceActionNote(err.message || "Không cập nhật được trạng thái nguồn.");
+    } finally {
+      setMemberEvidenceActionBusy("");
+    }
+  };
+
+  const applyMemberEvidenceCandidate = async (item: MemberEvidenceDisplayItem, confirmOverwrite = false, autoApproved = false): Promise<any> => {
+    const body = {
+      datasetKey: "cao_toc_txt_knowledge_base_v3",
+      confirmPilotApply: true,
+      items: [buildMemberEvidenceApplyItem(item, confirmOverwrite)],
+      note: "Phase 2W.2P member evidence drawer apply"
+    };
+    const res = await fetch("/api/knowledge/v3-pilot-apply/apply", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false || data.results?.some((result: any) => !result.ok)) {
+      const failed = data.results?.find((result: any) => !result.ok);
+      const error = new Error(failed?.error || data.error || "Không áp dụng được nguồn vào hồ sơ.") as Error & {
+        status?: number;
+        data?: any;
+      };
+      error.status = res.status || failed?.statusCode;
+      error.data = failed || data;
+      throw error;
+    }
+    setMemberEvidenceActionNote(autoApproved ? "Đã duyệt và áp dụng nguồn vào hồ sơ." : "Đã áp dụng nguồn vào hồ sơ.");
+    if (bioAncestor?.id) await loadMemberEvidence(bioAncestor.id);
+    setSelectedMemberEvidenceKey("");
+    return data;
+  };
+
+  const handleMemberEvidenceApply = async (item: MemberEvidenceDisplayItem) => {
+    if (!item.candidateId && !item.id) return;
+    const isPending = item.status === "pending";
+    const confirmMessage = isPending
+      ? "Nguồn này đang chờ duyệt. Bạn muốn duyệt và áp dụng nguồn này vào hồ sơ không?"
+      : "Áp dụng nguồn này vào hồ sơ nhân vật hiện tại?";
+    if (!window.confirm(confirmMessage)) return;
+
+    const actionKey = `apply:${item.evidenceGroup}:${item.id}`;
+    setMemberEvidenceActionBusy(actionKey);
+    setMemberEvidenceActionNote(isPending ? "Đang duyệt và áp dụng nguồn..." : "Đang áp dụng nguồn...");
+    try {
+      if (isPending) {
+        const reviewRes = await fetch(getMemberEvidenceCandidateEndpoint(item), {
+          method: "PATCH",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "approved" })
+        });
+        const reviewData = await reviewRes.json().catch(() => ({}));
+        if (!reviewRes.ok) throw new Error(reviewData.error || "Không duyệt được nguồn trước khi áp dụng.");
+      }
+      await applyMemberEvidenceCandidate({ ...item, status: "approved" }, false, isPending);
+    } catch (err: any) {
+      const message = err.message || "Không áp dụng được nguồn.";
+      const conflicts = err.data?.conflicts || err.data?.result?.conflicts || [];
+      const needsOverwrite = err.status === 409 && (/overwrite|ghi đè|không rỗng|not empty/i.test(message) || conflicts.length);
+      if (needsOverwrite && window.confirm(`${message}\n\nTrường hiện tại có thể đã có dữ liệu. Bạn có muốn ghi đè không?`)) {
+        try {
+          await applyMemberEvidenceCandidate({ ...item, status: "approved" }, true, isPending);
+        } catch (overwriteErr: any) {
+          setMemberEvidenceActionNote(overwriteErr.message || "Không áp dụng được sau khi xác nhận ghi đè.");
+        }
+      } else {
+        setMemberEvidenceActionNote(message);
+      }
+    } finally {
+      setMemberEvidenceActionBusy("");
+    }
+  };
+
+  const handleMemberEvidenceRollback = async (item: MemberEvidenceDisplayItem) => {
+    if (!item.logId) return;
+    if (!window.confirm("Rollback nguồn đã áp dụng này? Dữ liệu hồ sơ sẽ quay về trạng thái trước khi apply nếu cây phả chưa thay đổi lệch.")) return;
+    const actionKey = `rollback:${item.evidenceGroup}:${item.id}`;
+    setMemberEvidenceActionBusy(actionKey);
+    setMemberEvidenceActionNote("Đang rollback nguồn đã áp dụng...");
+    try {
+      const res = await fetch(`/api/knowledge/v3-pilot-apply/${encodeURIComponent(item.logId)}/rollback`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmRollback: true })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Không rollback được nguồn.");
+      setMemberEvidenceActionNote("Đã rollback nguồn đã áp dụng.");
+      if (bioAncestor?.id) await loadMemberEvidence(bioAncestor.id);
+      setSelectedMemberEvidenceKey("");
+    } catch (err: any) {
+      setMemberEvidenceActionNote(err.message || "Không rollback được nguồn.");
+    } finally {
+      setMemberEvidenceActionBusy("");
+    }
   };
 
   const loadExcelImportSessions = async () => {
@@ -2086,7 +2234,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                   {selectedMemberEvidenceItem ? (
                     <>
                       <div className="rounded-xl border border-stone-150 bg-white p-4 space-y-3">
-                        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                        <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-3">
                           <div className="min-w-0">
                             <p className="text-[10px] uppercase tracking-[0.16em] text-stone-400 font-bold">
                               {displayText(selectedMemberEvidenceItem.evidenceGroupLabel)}
@@ -2099,23 +2247,75 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                               {selectedMemberEvidenceItem.reconcileStatus ? ` · Đối soát: ${displayText(selectedMemberEvidenceItem.reconcileStatus)}` : ""}
                             </p>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const copyText = [
-                                selectedMemberEvidenceItem.sourceTitle,
-                                selectedMemberEvidenceItem.headingPath,
-                                selectedMemberEvidenceItem.evidenceQuote || selectedMemberEvidenceItem.evidenceWindow,
-                                selectedMemberEvidenceItem.candidateId ? `candidate: ${selectedMemberEvidenceItem.candidateId}` : ""
-                              ].filter(Boolean).join("\n");
-                              void navigator.clipboard?.writeText(copyText);
-                            }}
-                            className="inline-flex items-center justify-center gap-1 rounded-md border border-stone-200 bg-stone-50 px-2.5 py-1.5 text-[11px] font-bold text-stone-700 hover:bg-stone-100"
-                          >
-                            <Copy className="h-3.5 w-3.5" />
-                            Sao chép nguồn
-                          </button>
+                          <div className="flex flex-wrap items-center gap-2 shrink-0">
+                            {selectedMemberEvidenceItem.evidenceGroup === "pending" && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => updateMemberEvidenceCandidateStatus(selectedMemberEvidenceItem, "approved")}
+                                  disabled={Boolean(memberEvidenceActionBusy)}
+                                  className="inline-flex items-center justify-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-bold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
+                                >
+                                  <Check className="h-3.5 w-3.5" />
+                                  Duyệt
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => updateMemberEvidenceCandidateStatus(selectedMemberEvidenceItem, "rejected")}
+                                  disabled={Boolean(memberEvidenceActionBusy)}
+                                  className="inline-flex items-center justify-center gap-1 rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-[11px] font-bold text-red-800 hover:bg-red-100 disabled:opacity-50"
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                  Từ chối
+                                </button>
+                              </>
+                            )}
+                            {["pending", "approved"].includes(selectedMemberEvidenceItem.status) && selectedMemberEvidenceItem.candidateId && (
+                              <button
+                                type="button"
+                                onClick={() => handleMemberEvidenceApply(selectedMemberEvidenceItem)}
+                                disabled={Boolean(memberEvidenceActionBusy)}
+                                className="inline-flex items-center justify-center gap-1 rounded-md border border-red-200 bg-red-950 px-2.5 py-1.5 text-[11px] font-bold text-amber-50 hover:bg-red-900 disabled:opacity-50"
+                              >
+                                <ArrowRight className="h-3.5 w-3.5" />
+                                Áp dụng
+                              </button>
+                            )}
+                            {selectedMemberEvidenceItem.evidenceGroup === "applied" && selectedMemberEvidenceItem.logId && (
+                              <button
+                                type="button"
+                                onClick={() => handleMemberEvidenceRollback(selectedMemberEvidenceItem)}
+                                disabled={Boolean(memberEvidenceActionBusy)}
+                                className="inline-flex items-center justify-center gap-1 rounded-md border border-stone-200 bg-stone-50 px-2.5 py-1.5 text-[11px] font-bold text-stone-700 hover:bg-stone-100 disabled:opacity-50"
+                              >
+                                <RefreshCw className="h-3.5 w-3.5" />
+                                Rollback
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const copyText = [
+                                  selectedMemberEvidenceItem.sourceTitle,
+                                  selectedMemberEvidenceItem.headingPath,
+                                  selectedMemberEvidenceItem.evidenceQuote || selectedMemberEvidenceItem.evidenceWindow,
+                                  selectedMemberEvidenceItem.candidateId ? `candidate: ${selectedMemberEvidenceItem.candidateId}` : ""
+                                ].filter(Boolean).join("\n");
+                                void navigator.clipboard?.writeText(copyText);
+                              }}
+                              className="inline-flex items-center justify-center gap-1 rounded-md border border-stone-200 bg-stone-50 px-2.5 py-1.5 text-[11px] font-bold text-stone-700 hover:bg-stone-100"
+                            >
+                              <Copy className="h-3.5 w-3.5" />
+                              Sao chép nguồn
+                            </button>
+                          </div>
                         </div>
+
+                        {memberEvidenceActionNote && (
+                          <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-900">
+                            {memberEvidenceActionBusy ? "Đang xử lý... " : ""}{memberEvidenceActionNote}
+                          </div>
+                        )}
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
                           <div className="rounded-lg border border-stone-100 bg-stone-50 p-3">
