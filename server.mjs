@@ -688,6 +688,27 @@ async function getDatabase() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS cao_toc_v3_pilot_apply_logs (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL DEFAULT '',
+      candidate_id TEXT NOT NULL DEFAULT '',
+      audit_id TEXT NOT NULL DEFAULT '',
+      member_id TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'applied',
+      rollback_status TEXT NOT NULL DEFAULT '',
+      rollback_audit_id TEXT NOT NULL DEFAULT '',
+      before_tree_hash TEXT NOT NULL DEFAULT '',
+      after_tree_hash TEXT NOT NULL DEFAULT '',
+      before_tree_json TEXT NOT NULL DEFAULT '',
+      candidate_before_json TEXT NOT NULL DEFAULT '{}',
+      candidate_after_json TEXT NOT NULL DEFAULT '{}',
+      result_json TEXT NOT NULL DEFAULT '{}',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      admin_user TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      rolled_back_at TEXT NOT NULL DEFAULT ''
+    );
+
     CREATE TABLE IF NOT EXISTS knowledge_maintenance_logs (
       id TEXT PRIMARY KEY,
       action TEXT NOT NULL DEFAULT '',
@@ -842,6 +863,9 @@ async function getDatabase() {
     CREATE INDEX IF NOT EXISTS idx_extracted_rel_source ON extracted_relationship_candidates(source_id);
     CREATE INDEX IF NOT EXISTS idx_extracted_rel_audit_candidate ON extracted_relationship_audit_logs(candidate_id);
     CREATE INDEX IF NOT EXISTS idx_extracted_rel_audit_created ON extracted_relationship_audit_logs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_v3_pilot_logs_candidate ON cao_toc_v3_pilot_apply_logs(candidate_id);
+    CREATE INDEX IF NOT EXISTS idx_v3_pilot_logs_audit ON cao_toc_v3_pilot_apply_logs(audit_id);
+    CREATE INDEX IF NOT EXISTS idx_v3_pilot_logs_created ON cao_toc_v3_pilot_apply_logs(created_at);
     CREATE INDEX IF NOT EXISTS idx_anniversary_drafts_member ON anniversary_event_drafts(member_id);
     CREATE INDEX IF NOT EXISTS idx_anniversary_drafts_status ON anniversary_event_drafts(status);
     CREATE INDEX IF NOT EXISTS idx_anniversary_drafts_updated ON anniversary_event_drafts(updated_at);
@@ -6176,6 +6200,350 @@ async function keepV3ProfileCandidateAsVerificationNote(id, body = {}, adminUser
   };
 }
 
+function normalizeV3PilotKind(kind) {
+  const value = String(kind || '').trim().toLowerCase();
+  return ['profile', 'anniversary', 'relationship'].includes(value) ? value : '';
+}
+
+function v3PilotCandidateTable(kind) {
+  switch (normalizeV3PilotKind(kind)) {
+    case 'profile':
+      return 'extracted_profile_candidates';
+    case 'anniversary':
+      return 'extracted_anniversary_candidates';
+    case 'relationship':
+      return 'extracted_relationship_candidates';
+    default:
+      return '';
+  }
+}
+
+function getV3PilotCandidateRow(database, kind, id) {
+  const table = v3PilotCandidateTable(kind);
+  if (!table) return null;
+  return database.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(String(id || ''));
+}
+
+function replaceV3PilotCandidateRow(database, kind, row) {
+  const table = v3PilotCandidateTable(kind);
+  if (!table || !row?.id) return false;
+  const columns = database.prepare(`PRAGMA table_info(${table})`).all().map((item) => item.name).filter(Boolean);
+  const rowColumns = columns.filter((column) => Object.prototype.hasOwnProperty.call(row, column));
+  if (!rowColumns.length) return false;
+  const placeholders = rowColumns.map(() => '?').join(', ');
+  database.prepare(`
+    INSERT OR REPLACE INTO ${table} (${rowColumns.join(', ')})
+    VALUES (${placeholders})
+  `).run(...rowColumns.map((column) => row[column]));
+  return true;
+}
+
+function normalizeV3PilotItems(items) {
+  const normalized = Array.isArray(items) ? items : [];
+  return normalized
+    .map((item) => ({
+      ...item,
+      kind: normalizeV3PilotKind(item?.kind),
+      id: String(item?.id || item?.candidateId || '').trim()
+    }))
+    .filter((item) => item.kind && item.id);
+}
+
+function buildV3PilotApplyPayload(kind, item = {}) {
+  const payload = item.payload && typeof item.payload === 'object' ? { ...item.payload } : {};
+  for (const key of [
+    'confirmOverwrite',
+    'force',
+    'confirmIdentity',
+    'confirmSourceCheck',
+    'confirmFieldMapping',
+    'confirmRelationshipReview',
+    'memberId',
+    'targetField',
+    'reviewedText',
+    'appendMode',
+    'subjectMemberId',
+    'objectMemberId',
+    'relationshipType',
+    'fieldTypes'
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(item, key)) payload[key] = item[key];
+  }
+  if (kind === 'anniversary' && Array.isArray(item.fieldTypes) && item.fieldTypes.length) {
+    payload.fieldTypes = item.fieldTypes.map((field) => String(field || '').trim()).filter(Boolean);
+  }
+  payload.pilotApply = true;
+  return payload;
+}
+
+function treeSnapshotHash(tree) {
+  return sha256Hex(JSON.stringify(tree || null));
+}
+
+function getPilotResultMemberId(kind, result, payload = {}) {
+  if (kind === 'relationship') {
+    const change = Array.isArray(result?.changes) ? result.changes[0] : null;
+    const subjectId = payload.subjectMemberId || change?.subjectId || '';
+    const objectId = payload.objectMemberId || change?.objectId || '';
+    return [subjectId, objectId].filter(Boolean).join(' -> ');
+  }
+  const change = Array.isArray(result?.changes) ? result.changes[0] : null;
+  return String(payload.memberId || result?.candidate?.matchedMemberId || change?.memberId || '').trim();
+}
+
+function publicV3PilotApplyLog(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    kind: row.kind,
+    candidateId: row.candidate_id,
+    auditId: row.audit_id,
+    memberId: row.member_id,
+    status: row.status,
+    rollbackStatus: row.rollback_status,
+    rollbackAuditId: row.rollback_audit_id,
+    beforeTreeHash: row.before_tree_hash,
+    afterTreeHash: row.after_tree_hash,
+    result: safeJsonParse(row.result_json, {}),
+    metadata: safeJsonParse(row.metadata_json, {}),
+    adminUser: row.admin_user,
+    createdAt: row.created_at,
+    rolledBackAt: row.rolled_back_at
+  };
+}
+
+async function previewV3PilotApply(items = [], { datasetKey = CAO_TOC_V3_DEFAULT_DATASET_KEY } = {}) {
+  const database = await getDatabase();
+  const normalizedDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY);
+  const normalizedItems = normalizeV3PilotItems(items).slice(0, 5);
+  const results = normalizedItems.map((item) => {
+    const row = getV3PilotCandidateRow(database, item.kind, item.id);
+    if (!row) {
+      return { ...item, ok: false, canPilotApply: false, reason: 'not_found' };
+    }
+    if (!isV3CandidateRow(row, normalizedDatasetKey)) {
+      return { ...item, ok: false, canPilotApply: false, reason: 'not_v3_dataset' };
+    }
+    const queueItem = publicV3ReviewQueueItem(item.kind, row);
+    const blockers = [];
+    if (queueItem.status !== 'approved') blockers.push('candidate_must_be_approved');
+    if (queueItem.hardBlocked) blockers.push('triage_hard_blocked');
+    if (!queueItem.canApply) blockers.push('triage_confirmations_required');
+    return {
+      ...item,
+      ok: blockers.length === 0,
+      canPilotApply: blockers.length === 0,
+      blockers,
+      queueItem
+    };
+  });
+  return {
+    ok: results.every((item) => item.ok),
+    maxItems: 5,
+    total: normalizedItems.length,
+    results
+  };
+}
+
+async function applyV3PilotCandidates(body = {}, adminUser = {}) {
+  const items = normalizeV3PilotItems(body.items || []);
+  if (!items.length) {
+    const err = new Error('Missing pilot apply items.');
+    err.status = 400;
+    throw err;
+  }
+  if (items.length > 5) {
+    const err = new Error('Pilot apply allows at most 5 candidates per run.');
+    err.status = 400;
+    throw err;
+  }
+  if (body.confirmPilotApply !== true) {
+    const err = new Error('confirmPilotApply=true is required for pilot apply.');
+    err.status = 409;
+    throw err;
+  }
+
+  const preview = await previewV3PilotApply(items, { datasetKey: body.datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY });
+  const blocked = preview.results.filter((item) => !item.canPilotApply);
+  if (blocked.length) {
+    const err = new Error('Some pilot candidates are not ready to apply.');
+    err.status = 409;
+    err.preview = preview;
+    throw err;
+  }
+
+  const database = await getDatabase();
+  const results = [];
+  for (const item of items) {
+    const kind = normalizeV3PilotKind(item.kind);
+    const candidateBefore = getV3PilotCandidateRow(database, kind, item.id);
+    const treeBefore = await readLineageTreeForAI();
+    const beforeTreeJson = JSON.stringify(treeBefore || null);
+    const beforeTreeHash = sha256Hex(beforeTreeJson);
+    const payload = buildV3PilotApplyPayload(kind, item);
+    try {
+      const applied = kind === 'profile'
+        ? await applyExtractedProfileCandidate(item.id, payload, adminUser)
+        : kind === 'relationship'
+          ? await applyExtractedRelationshipCandidate(item.id, payload, adminUser)
+          : await applyExtractedAnniversaryCandidate(item.id, payload, adminUser);
+      const treeAfter = await readLineageTreeForAI();
+      const afterTreeHash = treeSnapshotHash(treeAfter);
+      const candidateAfter = getV3PilotCandidateRow(database, kind, item.id);
+      const logId = `v3_pilot_${sha256Base64Url(`${kind}:${item.id}:${Date.now()}:${Math.random()}`).slice(0, 24)}`;
+      database.prepare(`
+        INSERT INTO cao_toc_v3_pilot_apply_logs
+          (id, kind, candidate_id, audit_id, member_id, status, before_tree_hash, after_tree_hash,
+           before_tree_json, candidate_before_json, candidate_after_json, result_json, metadata_json,
+           admin_user, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `).run(
+        logId,
+        kind,
+        item.id,
+        applied.auditId || '',
+        getPilotResultMemberId(kind, applied, payload),
+        'applied',
+        beforeTreeHash,
+        afterTreeHash,
+        beforeTreeJson,
+        JSON.stringify(candidateBefore || {}),
+        JSON.stringify(candidateAfter || {}),
+        JSON.stringify(applied),
+        JSON.stringify({
+          datasetKey: body.datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY,
+          note: String(body.note || '').trim(),
+          pilot: true
+        }),
+        adminUser?.username || adminUser?.fullName || 'admin'
+      );
+      results.push({ ok: true, kind, id: item.id, logId, auditId: applied.auditId || '', result: applied });
+    } catch (err) {
+      results.push({
+        ok: false,
+        kind,
+        id: item.id,
+        error: err.message || String(err),
+        statusCode: err.status || 500,
+        conflicts: err.conflicts || [],
+        triageGuard: err.triageGuard || null
+      });
+    }
+  }
+  return {
+    ok: results.every((item) => item.ok),
+    total: items.length,
+    applied: results.filter((item) => item.ok).length,
+    failed: results.filter((item) => !item.ok).length,
+    results
+  };
+}
+
+async function listV3PilotApplyLogs({ limit = 50 } = {}) {
+  const database = await getDatabase();
+  return {
+    logs: database.prepare('SELECT * FROM cao_toc_v3_pilot_apply_logs ORDER BY created_at DESC LIMIT ?')
+      .all(Math.max(1, Math.min(200, Number(limit) || 50)))
+      .map(publicV3PilotApplyLog)
+  };
+}
+
+async function rollbackV3PilotApplyLog(logId, body = {}, adminUser = {}) {
+  const database = await getDatabase();
+  const row = database.prepare('SELECT * FROM cao_toc_v3_pilot_apply_logs WHERE id = ? OR audit_id = ?').get(String(logId || ''), String(logId || ''));
+  if (!row) {
+    const err = new Error('Pilot apply log not found.');
+    err.status = 404;
+    throw err;
+  }
+  if (row.rollback_status === 'rolled_back') {
+    const err = new Error('Pilot apply log has already been rolled back.');
+    err.status = 409;
+    throw err;
+  }
+  if (body.confirmRollback !== true) {
+    const err = new Error('confirmRollback=true is required to rollback pilot apply.');
+    err.status = 409;
+    throw err;
+  }
+  const currentTree = await readLineageTreeForAI();
+  const currentHash = treeSnapshotHash(currentTree);
+  if (row.after_tree_hash && currentHash !== row.after_tree_hash && body.confirmCurrentTreeChanged !== true) {
+    const err = new Error('Current lineage tree has changed since pilot apply. Confirm with confirmCurrentTreeChanged=true.');
+    err.status = 409;
+    err.currentTreeHash = currentHash;
+    err.expectedTreeHash = row.after_tree_hash;
+    throw err;
+  }
+  const beforeTree = safeJsonParse(row.before_tree_json, null);
+  if (!beforeTree) {
+    const err = new Error('Pilot rollback snapshot is missing.');
+    err.status = 500;
+    throw err;
+  }
+  await writeState(TREE_STATE_KEY, beforeTree);
+  const candidateBefore = safeJsonParse(row.candidate_before_json, {});
+  replaceV3PilotCandidateRow(database, row.kind, candidateBefore);
+
+  const rollbackAuditId = `v3_pilot_rollback_${sha256Base64Url(`${row.id}:${Date.now()}`).slice(0, 18)}`;
+  const adminName = adminUser?.username || adminUser?.fullName || 'admin';
+  if (row.kind === 'relationship') {
+    database.prepare(`
+      INSERT INTO extracted_relationship_audit_logs
+        (id, candidate_id, action, subject_member_id, object_member_id, relationship_type,
+         old_value_json, new_value_json, source_id, chunk_id, admin_user, status, error, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', datetime('now'))
+    `).run(
+      rollbackAuditId,
+      row.candidate_id,
+      'pilot_rollback',
+      candidateBefore.subject_member_id || '',
+      candidateBefore.object_member_id || '',
+      candidateBefore.relationship_type || '',
+      JSON.stringify({ pilotLogId: row.id, treeHash: currentHash }),
+      JSON.stringify({ restoredTreeHash: row.before_tree_hash, restoredCandidateStatus: candidateBefore.status || '' }),
+      candidateBefore.source_id || '',
+      candidateBefore.chunk_id || '',
+      adminName,
+      'rolled_back'
+    );
+  } else {
+    const table = row.kind === 'profile' ? 'extracted_profile_audit_logs' : 'extracted_anniversary_audit_logs';
+    database.prepare(`
+      INSERT INTO ${table}
+        (id, candidate_id, member_id, action, field_changes_json, source_id, chunk_id, admin_user, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `).run(
+      rollbackAuditId,
+      row.candidate_id,
+      row.member_id || candidateBefore.matched_member_id || '',
+      'pilot_rollback',
+      JSON.stringify({
+        pilotLogId: row.id,
+        restoredCandidateStatus: candidateBefore.status || '',
+        beforeTreeHash: row.before_tree_hash,
+        afterTreeHash: row.after_tree_hash
+      }),
+      candidateBefore.source_id || '',
+      candidateBefore.chunk_id || '',
+      adminName
+    );
+  }
+  database.prepare(`
+    UPDATE cao_toc_v3_pilot_apply_logs
+    SET rollback_status = 'rolled_back',
+        rollback_audit_id = ?,
+        status = 'rolled_back',
+        rolled_back_at = datetime('now')
+    WHERE id = ?
+  `).run(rollbackAuditId, row.id);
+  return {
+    ok: true,
+    log: publicV3PilotApplyLog(database.prepare('SELECT * FROM cao_toc_v3_pilot_apply_logs WHERE id = ?').get(row.id)),
+    rollbackAuditId
+  };
+}
+
 async function buildCaoTocV3TriageSummary({ datasetKey = CAO_TOC_V3_DEFAULT_DATASET_KEY, examplesPerBucket = 5 } = {}) {
   const database = await getDatabase();
   const normalizedDatasetKey = normalizeCaoTocV2DatasetKey(datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY);
@@ -6932,6 +7300,57 @@ app.get('/api/knowledge/v3-review-queue', async (req, res) => {
   } catch (err) {
     console.error('Failed to list Cao Toc v3 review queue:', err);
     res.status(err.status || 500).json({ error: err.message || 'Failed to list Cao Toc v3 review queue.' });
+  }
+});
+
+app.post('/api/knowledge/v3-pilot-apply/preview', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json(await previewV3PilotApply(req.body?.items || [], {
+      datasetKey: req.body?.datasetKey || CAO_TOC_V3_DEFAULT_DATASET_KEY
+    }));
+  } catch (err) {
+    console.error('Failed to preview Cao Toc v3 pilot apply:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to preview Cao Toc v3 pilot apply.' });
+  }
+});
+
+app.post('/api/knowledge/v3-pilot-apply/apply', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json(await applyV3PilotCandidates(req.body || {}, admin.authUser));
+  } catch (err) {
+    console.error('Failed to apply Cao Toc v3 pilot candidates:', err);
+    res.status(err.status || 500).json({
+      error: err.message || 'Failed to apply Cao Toc v3 pilot candidates.',
+      preview: err.preview || null
+    });
+  }
+});
+
+app.get('/api/knowledge/v3-pilot-apply/logs', async (req, res) => {
+  try {
+    if (!await requireAdmin(req, res)) return;
+    res.json(await listV3PilotApplyLogs({ limit: req.query.limit || 50 }));
+  } catch (err) {
+    console.error('Failed to list Cao Toc v3 pilot apply logs:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to list Cao Toc v3 pilot apply logs.' });
+  }
+});
+
+app.post('/api/knowledge/v3-pilot-apply/:id/rollback', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    res.json(await rollbackV3PilotApplyLog(String(req.params.id || ''), req.body || {}, admin.authUser));
+  } catch (err) {
+    console.error('Failed to rollback Cao Toc v3 pilot apply:', err);
+    res.status(err.status || 500).json({
+      error: err.message || 'Failed to rollback Cao Toc v3 pilot apply.',
+      currentTreeHash: err.currentTreeHash || '',
+      expectedTreeHash: err.expectedTreeHash || ''
+    });
   }
 });
 

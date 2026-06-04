@@ -216,6 +216,35 @@ type V3ReviewQueue = {
   items?: V3ReviewQueueItem[];
 };
 
+type V3PilotApplyResult = {
+  kind: string;
+  id: string;
+  ok?: boolean;
+  canPilotApply?: boolean;
+  blockers?: string[];
+  reason?: string;
+  queueItem?: V3ReviewQueueItem;
+  logId?: string;
+  auditId?: string;
+  error?: string;
+};
+
+type V3PilotApplyLog = {
+  id: string;
+  kind: string;
+  candidateId: string;
+  auditId?: string;
+  memberId?: string;
+  status: string;
+  rollbackStatus?: string;
+  rollbackAuditId?: string;
+  result?: any;
+  metadata?: Record<string, unknown>;
+  adminUser?: string;
+  createdAt?: string;
+  rolledBackAt?: string;
+};
+
 const V3_TRIAGE_BUCKET_ORDER = [
   "ready_to_review",
   "needs_identity_match",
@@ -867,6 +896,11 @@ export default function AIGovernor({
   const [v3ReviewQueueNote, setV3ReviewQueueNote] = useState("");
   const [v3ReviewQueueStatus, setV3ReviewQueueStatus] = useState("pending");
   const [v3ReviewQueueKind, setV3ReviewQueueKind] = useState("");
+  const [selectedV3PilotItems, setSelectedV3PilotItems] = useState<V3ReviewQueueItem[]>([]);
+  const [v3PilotPreview, setV3PilotPreview] = useState<V3PilotApplyResult[]>([]);
+  const [v3PilotLogs, setV3PilotLogs] = useState<V3PilotApplyLog[]>([]);
+  const [v3PilotNote, setV3PilotNote] = useState("");
+  const [isV3PilotRunning, setIsV3PilotRunning] = useState(false);
   const [aiLogs, setAiLogs] = useState<AIRequestLog[]>([]);
   const [aiLogSummary, setAiLogSummary] = useState<AIRequestLogSummary | null>(null);
   const [isAiLogsLoading, setIsAiLogsLoading] = useState(false);
@@ -1413,6 +1447,132 @@ export default function AIGovernor({
       return null;
     } finally {
       setIsV3ReviewQueueLoading(false);
+    }
+  };
+
+  const v3PilotKey = (item: Pick<V3ReviewQueueItem, "kind" | "id">) => `${item.kind}:${item.id}`;
+
+  const toggleV3PilotItem = (item: V3ReviewQueueItem) => {
+    setSelectedV3PilotItems((current) => {
+      const key = v3PilotKey(item);
+      if (current.some((selected) => v3PilotKey(selected) === key)) {
+        return current.filter((selected) => v3PilotKey(selected) !== key);
+      }
+      if (current.length >= 5) {
+        setV3PilotNote("Chế độ pilot chỉ cho chọn tối đa 5 candidate mỗi lượt.");
+        return current;
+      }
+      return [...current, item];
+    });
+  };
+
+  const loadV3PilotLogs = async () => {
+    try {
+      const response = await fetch("/api/knowledge/v3-pilot-apply/logs?limit=20");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không đọc được log pilot apply.");
+      setV3PilotLogs(Array.isArray(data.logs) ? data.logs : []);
+      return data.logs || [];
+    } catch (err: any) {
+      setV3PilotNote(`Lỗi tải log pilot: ${err?.message || "không xác định"}`);
+      return [];
+    }
+  };
+
+  const previewV3PilotApply = async () => {
+    if (!selectedV3PilotItems.length) {
+      setV3PilotNote("Chưa chọn candidate pilot nào.");
+      return;
+    }
+    setIsV3PilotRunning(true);
+    setV3PilotNote("Đang kiểm tra điều kiện apply thử...");
+    try {
+      const response = await fetch("/api/knowledge/v3-pilot-apply/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          datasetKey: "cao_toc_txt_knowledge_base_v3",
+          items: selectedV3PilotItems.map((item) => ({ kind: item.kind, id: item.id }))
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không preview được pilot apply.");
+      setV3PilotPreview(Array.isArray(data.results) ? data.results : []);
+      setV3PilotNote(data.ok ? "Các candidate đã chọn đủ điều kiện apply thử." : "Có candidate chưa đủ điều kiện apply thử; xem danh sách cảnh báo bên dưới.");
+    } catch (err: any) {
+      setV3PilotNote(`Lỗi preview pilot: ${err?.message || "không xác định"}`);
+    } finally {
+      setIsV3PilotRunning(false);
+    }
+  };
+
+  const applyV3PilotSelection = async () => {
+    if (!selectedV3PilotItems.length) {
+      setV3PilotNote("Chưa chọn candidate pilot nào.");
+      return;
+    }
+    if (!window.confirm("Apply thử sẽ ghi vào cây phả thật nhưng có log rollback. Chỉ tiếp tục nếu bạn đã kiểm tra nguồn và candidate đã duyệt.")) return;
+    setIsV3PilotRunning(true);
+    setV3PilotNote("Đang apply thử candidate V3...");
+    try {
+      const response = await fetch("/api/knowledge/v3-pilot-apply/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          datasetKey: "cao_toc_txt_knowledge_base_v3",
+          confirmPilotApply: true,
+          note: "Pilot apply từ AI Tổng Quản",
+          items: selectedV3PilotItems.map((item) => ({ kind: item.kind, id: item.id }))
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setV3PilotPreview(Array.isArray(data.preview?.results) ? data.preview.results : []);
+        throw new Error(data.error || "Không apply thử được candidate.");
+      }
+      setV3PilotPreview(Array.isArray(data.results) ? data.results : []);
+      setV3PilotNote(`Đã apply thử ${data.applied || 0}/${data.total || selectedV3PilotItems.length} candidate. Có thể rollback từng log bên dưới nếu cần.`);
+      setSelectedV3PilotItems([]);
+      await Promise.all([
+        loadV3PilotLogs(),
+        loadV3ReviewQueue(),
+        loadExtractedCandidates(),
+        loadProfileCandidates(),
+        loadRelationshipCandidates(),
+        loadAppliedExtractions()
+      ]);
+    } catch (err: any) {
+      setV3PilotNote(`Lỗi apply thử: ${err?.message || "không xác định"}`);
+    } finally {
+      setIsV3PilotRunning(false);
+    }
+  };
+
+  const rollbackV3PilotLog = async (log: V3PilotApplyLog) => {
+    if (!window.confirm("Rollback sẽ đưa cây phả về snapshot trước lượt apply thử này nếu cây chưa đổi sau đó. Tiếp tục?")) return;
+    setIsV3PilotRunning(true);
+    setV3PilotNote(`Đang rollback pilot ${log.id}...`);
+    try {
+      const response = await fetch(`/api/knowledge/v3-pilot-apply/${encodeURIComponent(log.id)}/rollback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmRollback: true })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Không rollback được pilot apply.");
+      setV3PilotNote(`Đã rollback ${log.id}.`);
+      await Promise.all([
+        loadV3PilotLogs(),
+        loadV3ReviewQueue(),
+        loadExtractedCandidates(),
+        loadProfileCandidates(),
+        loadRelationshipCandidates(),
+        loadAppliedExtractions()
+      ]);
+    } catch (err: any) {
+      setV3PilotNote(`Lỗi rollback pilot: ${err?.message || "không xác định"}`);
+    } finally {
+      setIsV3PilotRunning(false);
     }
   };
 
@@ -2516,6 +2676,7 @@ export default function AIGovernor({
     void loadCaoTocV2Report();
     void loadCaoTocV3Triage();
     void loadV3ReviewQueue();
+    void loadV3PilotLogs();
   }, []);
 
   useEffect(() => {
@@ -5410,8 +5571,9 @@ export default function AIGovernor({
                         <div className="mt-3 max-h-64 space-y-2 overflow-y-auto pr-1">
                           {(v3ReviewQueue.items || []).map((item) => {
                             const guide = getTriageGuide(item.bucket);
+                            const pilotSelected = selectedV3PilotItems.some((selected) => v3PilotKey(selected) === v3PilotKey(item));
                             return (
-                              <article key={`${item.kind}-${item.id}`} className={`rounded border p-2 ${triageToneClass(guide.tone)}`}>
+                              <article key={`${item.kind}-${item.id}`} className={`rounded border p-2 ${pilotSelected ? "ring-2 ring-emerald-500" : ""} ${triageToneClass(guide.tone)}`}>
                                 <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
                                   <div className="min-w-0">
                                     <div className="flex flex-wrap items-center gap-1.5">
@@ -5426,6 +5588,13 @@ export default function AIGovernor({
                                     {item.evidenceQuote && <p className="mt-1 text-[10px] text-stone-500">{truncateText(item.evidenceQuote, 180)}</p>}
                                   </div>
                                   <div className="flex shrink-0 flex-wrap gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleV3PilotItem(item)}
+                                      className={`rounded px-2 py-1 text-[11px] font-bold ${pilotSelected ? "bg-emerald-700 text-white hover:bg-emerald-800" : "bg-white text-emerald-800 hover:bg-emerald-50"}`}
+                                    >
+                                      {pilotSelected ? "Bỏ pilot" : "Chọn pilot"}
+                                    </button>
                                     <button
                                       type="button"
                                       onClick={() => void focusV3ReviewQueueItem(item)}
@@ -5465,6 +5634,98 @@ export default function AIGovernor({
                           )}
                         </div>
                       </>
+                    )}
+                  </div>
+                  <div className="mt-3 rounded border border-emerald-200 bg-emerald-50/70 p-3">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                      <div>
+                        <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-900">Duyệt thử an toàn 2W.2J</p>
+                        <p className="mt-1 text-[11px] leading-relaxed text-emerald-900/80">
+                          Chọn tối đa 5 candidate đã duyệt và không còn blocker để apply thử vào cây phả thật. Mỗi lượt có snapshot, log và rollback riêng.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void previewV3PilotApply()}
+                          disabled={isV3PilotRunning || !selectedV3PilotItems.length}
+                          className="rounded border border-emerald-300 bg-white px-3 py-1.5 text-[11px] font-bold text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
+                        >
+                          Dry-run
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void applyV3PilotSelection()}
+                          disabled={isV3PilotRunning || !selectedV3PilotItems.length}
+                          className="rounded bg-emerald-800 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-900 disabled:opacity-50"
+                        >
+                          Apply thử
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedV3PilotItems([]);
+                            setV3PilotPreview([]);
+                          }}
+                          className="rounded border border-stone-200 bg-white px-3 py-1.5 text-[11px] font-bold text-stone-600 hover:bg-stone-50"
+                        >
+                          Xóa chọn
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void loadV3PilotLogs()}
+                          disabled={isV3PilotRunning}
+                          className="rounded border border-stone-200 bg-white px-3 py-1.5 text-[11px] font-bold text-stone-600 hover:bg-stone-50 disabled:opacity-50"
+                        >
+                          Tải log
+                        </button>
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold text-stone-700">
+                      <span className="rounded bg-white px-2 py-1">Đã chọn: {selectedV3PilotItems.length}/5</span>
+                      {selectedV3PilotItems.map((item) => (
+                        <span key={v3PilotKey(item)} className="rounded bg-emerald-100 px-2 py-1 text-emerald-900">{item.kind}: {truncateText(item.title, 42)}</span>
+                      ))}
+                    </div>
+                    {v3PilotNote && <p className="mt-2 rounded bg-white p-2 text-[11px] leading-relaxed text-emerald-950">{v3PilotNote}</p>}
+                    {!!v3PilotPreview.length && (
+                      <div className="mt-2 grid gap-2 md:grid-cols-2">
+                        {v3PilotPreview.map((item) => (
+                          <div key={`${item.kind}-${item.id}-${item.logId || "preview"}`} className={`rounded border bg-white p-2 text-[11px] ${item.ok || item.canPilotApply ? "border-emerald-200" : "border-red-200"}`}>
+                            <div className="flex items-start justify-between gap-2">
+                              <b className="text-stone-800">{item.kind}: {item.id}</b>
+                              <span className={`rounded px-1.5 py-0.5 font-bold ${item.ok || item.canPilotApply ? "bg-emerald-100 text-emerald-800" : "bg-red-100 text-red-800"}`}>
+                                {item.ok || item.canPilotApply ? "OK" : "Chặn"}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-stone-600">{truncateText(item.queueItem?.title || item.error || item.reason || "", 120)}</p>
+                            {!!item.blockers?.length && <p className="mt-1 text-red-700">Cần xử lý: {item.blockers.join(", ")}</p>}
+                            {item.logId && <p className="mt-1 text-emerald-700">Log: {item.logId}</p>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {!!v3PilotLogs.length && (
+                      <div className="mt-3 max-h-44 space-y-2 overflow-y-auto pr-1">
+                        {v3PilotLogs.map((log) => (
+                          <div key={log.id} className="flex flex-col gap-2 rounded border border-emerald-100 bg-white p-2 text-[11px] md:flex-row md:items-center md:justify-between">
+                            <div>
+                              <p className="font-bold text-stone-800">{log.kind}: {log.candidateId}</p>
+                              <p className="text-stone-500">Log {log.id} · audit {log.auditId || "-"} · {log.createdAt || ""}</p>
+                              <p className="text-stone-500">Trạng thái: {log.status}{log.rollbackStatus ? ` / ${log.rollbackStatus}` : ""}</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void rollbackV3PilotLog(log)}
+                              disabled={isV3PilotRunning || log.rollbackStatus === "rolled_back" || log.status === "rolled_back"}
+                              className="inline-flex items-center justify-center gap-1 rounded border border-red-200 bg-white px-2.5 py-1.5 font-bold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                            >
+                              <RotateCcw className="h-3.5 w-3.5" />
+                              Rollback
+                            </button>
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </div>
                   <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[0.8fr_1.2fr]">
