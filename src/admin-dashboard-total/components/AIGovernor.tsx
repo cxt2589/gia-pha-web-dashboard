@@ -274,8 +274,8 @@ type V3PilotReconcileItem = V3PilotApplyLog & {
 type V3MemberAppliedField = {
   field: string;
   fieldType?: string;
-  oldValue?: string;
-  newValue?: string;
+  oldValue?: unknown;
+  newValue?: unknown;
   rawText?: string;
   sourceId?: string;
   chunkId?: string;
@@ -841,8 +841,8 @@ type AppliedExtraction = {
   memberName: string;
   field: string;
   fieldType?: string;
-  oldValue?: string;
-  newValue: string;
+  oldValue?: unknown;
+  newValue: unknown;
   sourceId?: string;
   sourceTitle?: string;
   chunkId?: string;
@@ -895,6 +895,38 @@ function formatNumber(value: number) {
 function truncateText(value: string, length = 180) {
   const clean = String(value || "").replace(/\s+/g, " ").trim();
   return clean.length > length ? `${clean.slice(0, length)}...` : clean;
+}
+
+function formatDisplayValue(value: unknown, fallback = "-"): string {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    const text = value.map((item) => formatDisplayValue(item, "")).filter(Boolean).join(", ");
+    return text || fallback;
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (record.rawText) return String(record.rawText);
+    if (record.text) return String(record.text);
+    if (record.value) return String(record.value);
+    if (record.name) return String(record.name);
+    if ("day" in record || "month" in record || "year" in record || "calendar" in record) {
+      const parts = [
+        record.day ? `ngày ${record.day}` : "",
+        record.month ? `tháng ${record.month}` : "",
+        record.year ? `năm ${record.year}` : "không rõ năm",
+        record.calendar === "lunar" ? "âm lịch" : record.calendar === "solar" ? "dương lịch" : "",
+        record.precision ? `(${record.precision})` : ""
+      ].filter(Boolean);
+      return parts.join(" ") || fallback;
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
 }
 
 function normalizeSlug(value: string) {
@@ -5285,11 +5317,11 @@ export default function AIGovernor({
                     <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
                       <div>
                         <p className="text-[10px] font-bold uppercase text-stone-400">Giá trị hiện tại</p>
-                        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-white p-2 text-[11px] text-stone-700">{item.currentValue || "-"}</pre>
+                        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-white p-2 text-[11px] text-stone-700">{formatDisplayValue(item.currentValue)}</pre>
                       </div>
                       <div>
                         <p className="text-[10px] font-bold uppercase text-stone-400">Giá trị đề xuất</p>
-                        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-white p-2 text-[11px] text-stone-700">{item.suggestedValue || "-"}</pre>
+                        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-white p-2 text-[11px] text-stone-700">{formatDisplayValue(item.suggestedValue)}</pre>
                       </div>
                     </div>
                     {item.evidence && <p className="mt-3 rounded bg-white p-2 text-[11px] text-stone-600">Bằng chứng: {item.evidence}</p>}
@@ -6373,7 +6405,7 @@ export default function AIGovernor({
                                 </span>
                               </div>
                               <p className="mt-1 text-stone-500">{truncateText(log.headingPath || log.sourceTitle || log.sourceId || "-", 110)}</p>
-                              <p className="mt-1 text-stone-600">{truncateText((log.fields || []).map((field) => `${field.field}: ${field.newValue}`).join(" · "), 150)}</p>
+                              <p className="mt-1 text-stone-600">{truncateText((log.fields || []).map((field) => `${field.field}: ${formatDisplayValue(field.newValue)}`).join(" · "), 150)}</p>
                               {log.evidenceQuote && <p className="mt-1 italic text-stone-500">{truncateText(log.evidenceQuote, 150)}</p>}
                             </div>
                           ))}
@@ -6404,8 +6436,8 @@ export default function AIGovernor({
                       <tr key={item.id} className="border-t border-stone-100 align-top">
                         <td className="px-2 py-2 font-bold text-stone-800">{item.memberName || item.memberId}</td>
                         <td className="px-2 py-2 text-emerald-700">{item.field}</td>
-                        <td className="px-2 py-2 text-stone-500">{item.oldValue || "Trống"}</td>
-                        <td className="px-2 py-2 text-stone-800">{item.newValue}</td>
+                        <td className="px-2 py-2 text-stone-500">{formatDisplayValue(item.oldValue, "Trống")}</td>
+                        <td className="px-2 py-2 text-stone-800">{formatDisplayValue(item.newValue)}</td>
                         <td className="px-2 py-2 text-stone-500">{truncateText(item.headingPath || item.sourceTitle || item.chunkId || item.sourceId || "-", 90)}</td>
                         <td className="px-2 py-2 text-stone-500">{item.appliedBy || "-"}<br />{item.appliedAt || "-"}</td>
                       </tr>
