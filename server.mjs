@@ -21,6 +21,8 @@ const DIST_DIR = resolve(__dirname, 'dist');
 const PHASE2_ALIAS_SEED_DIR = resolve(__dirname, 'docs/knowledge-seeds/cao-toc-ai-luu-y-alias-danh-xung-v2');
 const PHASE2_ALIAS_SEED_SLUG = 'cao-toc-ai-luu-y-alias-danh-xung-v2';
 const CAO_TOC_V2_DATASET_DIR = resolve(__dirname, process.env.CAO_TOC_V2_DATASET_DIR || '../gia-pha-ai-system-archive-20260530/Tai lieu/Cao_Toc_TXT_Knowledge_Base_v2');
+const KNOWLEDGE_FEATURES_LOCKED = !['0', 'false', 'off', 'no'].includes(String(process.env.KNOWLEDGE_FEATURES_LOCKED || 'true').trim().toLowerCase());
+const KNOWLEDGE_LOCK_REASON = process.env.KNOWLEDGE_LOCK_REASON || 'Kho tri thuc dang tam khoa de quy hoach lai. He thong chi uu tien cac tinh nang gia pha.';
 const TREE_STATE_KEY = 'lineage-tree';
 const AUTH_USERS_STATE_KEY = 'auth-users';
 const AUTH_SESSIONS_STATE_KEY = 'auth-sessions';
@@ -49,6 +51,17 @@ app.use(express.json({ limit: '25mb' }));
 let db;
 const authSessions = new Map();
 const oauthStates = new Map();
+
+function buildKnowledgeLockedPayload() {
+  return {
+    ok: false,
+    locked: true,
+    maintenanceMode: true,
+    code: 'knowledge_features_locked',
+    reason: KNOWLEDGE_LOCK_REASON,
+    message: 'Kho tri thuc dang tam khoa de quy hoach lai. Cac chuc nang gia pha van hoat dong binh thuong.'
+  };
+}
 
 function randomToken(bytes = 32) {
   return crypto.randomBytes(bytes).toString('base64url');
@@ -1679,6 +1692,9 @@ async function getKnowledgeStatus() {
   const canonicalSources = activeSourceRows.filter((row) => isCanonicalKnowledgeSource(row)).length;
   return {
     ok: true,
+    locked: KNOWLEDGE_FEATURES_LOCKED,
+    maintenanceMode: KNOWLEDGE_FEATURES_LOCKED,
+    lockReason: KNOWLEDGE_FEATURES_LOCKED ? KNOWLEDGE_LOCK_REASON : '',
     sources: activeSourceRows.length,
     totalSources: sourceRows.length,
     archivedSources: archivedSourceRows.length,
@@ -1763,6 +1779,16 @@ function scoreKnowledgeChunk(queryNorm, terms, row) {
 }
 
 async function searchKnowledgeWithAliases(query, { limit = 8, authScope = 'admin' } = {}) {
+  if (KNOWLEDGE_FEATURES_LOCKED) {
+    return {
+      query,
+      variants: buildKnowledgeSearchVariants(query),
+      aliases: [],
+      chunks: [],
+      locked: true,
+      lockReason: KNOWLEDGE_LOCK_REASON
+    };
+  }
   await ensurePhase2AliasKnowledgeSeeded();
   const database = await getDatabase();
   const variants = buildKnowledgeSearchVariants(query);
@@ -7940,12 +7966,20 @@ app.put('/api/state/:key', async (req, res) => {
 
 app.get('/api/knowledge/status', async (_req, res) => {
   try {
-    await ensurePhase2AliasKnowledgeSeeded();
+    if (!KNOWLEDGE_FEATURES_LOCKED) await ensurePhase2AliasKnowledgeSeeded();
     res.json(await getKnowledgeStatus());
   } catch (err) {
     console.error('Failed to read knowledge status:', err);
     res.status(500).json({ error: 'Failed to read knowledge status.' });
   }
+});
+
+app.use('/api/knowledge', (req, res, next) => {
+  if (!KNOWLEDGE_FEATURES_LOCKED) {
+    next();
+    return;
+  }
+  res.status(423).json(buildKnowledgeLockedPayload());
 });
 
 app.get('/api/anniversaries', async (req, res) => {

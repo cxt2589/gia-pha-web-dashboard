@@ -86,6 +86,9 @@ function loadInitialAIGovernorMode(): AIGovernorMode {
 
 type KnowledgeStatus = {
   ok?: boolean;
+  locked?: boolean;
+  maintenanceMode?: boolean;
+  lockReason?: string;
   sources: number;
   chunks: number;
   aliases: number;
@@ -1499,14 +1502,19 @@ export default function AIGovernor({
   const loadKnowledgeBackend = async () => {
     setIsKnowledgeLoading(true);
     try {
-      const [statusResponse, sourcesResponse] = await Promise.all([
-        fetch("/api/knowledge/status"),
-        fetch("/api/knowledge/sources?limit=80")
-      ]);
+      let statusData: KnowledgeStatus | null = null;
+      const statusResponse = await fetch("/api/knowledge/status");
       if (statusResponse.ok) {
         const data = await statusResponse.json();
+        statusData = data;
         setKnowledgeStatus(data);
+        if (data.locked || data.maintenanceMode) {
+          setBackendSources([]);
+          setKnowledgeApiNote(data.lockReason || "Kho tri thức đang tạm khóa để quy hoạch lại. Các chức năng gia phả vẫn hoạt động bình thường.");
+          return data as KnowledgeStatus;
+        }
       }
+      const sourcesResponse = await fetch("/api/knowledge/sources?limit=80");
       if (sourcesResponse.ok) {
         const data = await sourcesResponse.json();
         setBackendSources(Array.isArray(data.sources) ? data.sources : []);
@@ -1514,8 +1522,10 @@ export default function AIGovernor({
       if (!statusResponse.ok || !sourcesResponse.ok) {
         setKnowledgeApiNote("Chưa đọc được đầy đủ trạng thái kho tri thức backend.");
       }
+      return statusData;
     } catch (err: any) {
       setKnowledgeApiNote(`Không đọc được kho tri thức backend: ${err?.message || "lỗi không xác định"}`);
+      return null;
     } finally {
       setIsKnowledgeLoading(false);
     }
@@ -2998,10 +3008,18 @@ export default function AIGovernor({
   };
 
   useEffect(() => {
-    void loadKnowledgeBackend();
-    void loadExtractedCandidates();
-    void loadProfileCandidates();
-    void loadAppliedExtractions();
+    void (async () => {
+      const status = await loadKnowledgeBackend();
+      if (!status?.locked && !status?.maintenanceMode) {
+        void loadExtractedCandidates();
+        void loadProfileCandidates();
+        void loadAppliedExtractions();
+        void loadCaoTocV2Report();
+        void loadCaoTocV3Triage();
+        void loadV3ReviewQueue();
+        void loadV3PilotLogs();
+      }
+    })();
     void loadAIRequestLogs();
     void loadAIEvalCases();
     void loadZaloBotPanel();
@@ -3009,10 +3027,6 @@ export default function AIGovernor({
     void loadOperationGraphLayout();
     void loadSystemAuditPanel();
     void loadAIActionDrafts();
-    void loadCaoTocV2Report();
-    void loadCaoTocV3Triage();
-    void loadV3ReviewQueue();
-    void loadV3PilotLogs();
   }, []);
 
   useEffect(() => {
@@ -5500,7 +5514,41 @@ export default function AIGovernor({
         </div>
       )}
 
-      {activeMode === "knowledge" && (
+      {activeMode === "knowledge" && knowledgeStatus?.locked && (
+        <section className="rounded-xl border border-amber-200 bg-amber-50/70 p-6 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.18em] text-amber-700">Đang bảo trì</p>
+              <h3 className="mt-2 font-serif text-xl font-bold text-red-950">Kho tri thức đang tạm khóa</h3>
+              <p className="mt-2 max-w-3xl text-sm leading-relaxed text-stone-700">
+                {knowledgeStatus.lockReason || "Kho tri thức đang được quy hoạch lại. Tạm thời hệ thống chỉ tập trung hoàn thiện dữ liệu và quy trình gia phả."}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void loadKnowledgeBackend()}
+              disabled={isKnowledgeLoading}
+              className="inline-flex items-center justify-center gap-2 rounded border border-amber-300 bg-white px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-50 disabled:opacity-60"
+            >
+              <RefreshCw className={`h-4 w-4 ${isKnowledgeLoading ? "animate-spin" : ""}`} />
+              Kiểm tra trạng thái
+            </button>
+          </div>
+          <div className="mt-5 grid grid-cols-2 gap-2 text-[11px] font-bold text-stone-700 md:grid-cols-4">
+            <span className="rounded bg-white px-3 py-2">Sources đang giữ: {knowledgeStatus.sources ?? 0}</span>
+            <span className="rounded bg-white px-3 py-2">Chunks đang giữ: {knowledgeStatus.chunks ?? 0}</span>
+            <span className="rounded bg-white px-3 py-2">Aliases đang giữ: {knowledgeStatus.aliases ?? 0}</span>
+            <span className="rounded bg-white px-3 py-2">Indexed: {knowledgeStatus.indexedSources ?? 0}</span>
+          </div>
+          <div className="mt-5 rounded-lg border border-amber-200 bg-white p-4 text-sm leading-relaxed text-stone-700">
+            <p className="font-bold text-red-950">Trong thời gian khóa, các thao tác sau bị chặn:</p>
+            <p className="mt-2">Upload tài liệu, tìm kiếm kho tri thức, import/rescan dataset, tạo candidate từ tri thức, apply candidate, rollback/apply hàng loạt và các báo cáo V3.</p>
+            <p className="mt-2">Các phần gia phả như cây phả, hồ sơ thành viên, Excel mapping, mã định danh, ngày tháng, quan hệ cha/mẹ/vợ/chồng/con vẫn tiếp tục xử lý độc lập.</p>
+          </div>
+        </section>
+      )}
+
+      {activeMode === "knowledge" && !knowledgeStatus?.locked && (
         <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
           <section className="xl:col-span-4 rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
             <h3 className="font-serif text-lg font-bold text-red-950">Nạp dữ liệu dòng họ</h3>
