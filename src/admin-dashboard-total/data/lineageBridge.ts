@@ -146,7 +146,7 @@ function toLineageNode(member: FamilyMember): AncestorNode {
     birthYear: member.birthYear,
     deathYear: member.deathYear,
     rankRole: member.rankRole,
-    customSuffix: member.customSuffix || member.achievements?.[0],
+    customSuffix: member.customSuffix,
   });
 
   return {
@@ -155,7 +155,7 @@ function toLineageNode(member: FamilyMember): AncestorNode {
     generation: member.generation,
     title,
     rankRole: member.rankRole,
-    customSuffix: member.customSuffix || member.achievements?.[0],
+    customSuffix: member.customSuffix,
     branch: member.branch,
     gender: member.gender === "N\u1eef" ? "n\u1eef" : "nam",
     isLiving,
