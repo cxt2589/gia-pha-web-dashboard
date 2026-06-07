@@ -414,6 +414,44 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     .replace(/\s+/g, " ")
     .trim();
 
+  const uniqueDisplayTexts = (values: unknown[]) => {
+    const seen = new Set<string>();
+    return values
+      .map((value) => displayText(value).trim())
+      .filter((value) => {
+        if (!value) return false;
+        const key = normalizeGenealogyLookupText(value);
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+  };
+
+  const textContainsNormalized = (container: unknown, value: unknown) => {
+    const containerKey = normalizeGenealogyLookupText(container);
+    const valueKey = normalizeGenealogyLookupText(value);
+    return Boolean(containerKey && valueKey && containerKey.includes(valueKey));
+  };
+
+  const getMemberTitleLine = (member?: FamilyMember) => {
+    if (!member) return "";
+    const title = displayText(member.rankRole || member.title || "").trim();
+    const suffix = displayText(member.customSuffix || "").trim();
+    if (!title) return suffix;
+    if (!suffix || textContainsNormalized(title, suffix)) return title;
+    return `${title} - ${suffix}`;
+  };
+
+  const getMemberAchievementItems = (member?: FamilyMember) => {
+    if (!member?.achievements?.length) return [];
+    return uniqueDisplayTexts(member.achievements).filter((item) => {
+      if (member.customSuffix && normalizeGenealogyLookupText(item) === normalizeGenealogyLookupText(member.customSuffix)) return false;
+      if (member.title && textContainsNormalized(member.title, item)) return false;
+      if (member.rankRole && textContainsNormalized(member.rankRole, item)) return false;
+      return true;
+    });
+  };
+
   const compactEvidenceText = (value: unknown, maxLength = 96) => {
     const text = displayText(value).replace(/\s+/g, " ").trim();
     return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
@@ -1081,7 +1119,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     setNewPhoto(member.photo || "");
     setNewSpouse(member.spouse || "");
     setNewBio(member.bio || "");
-    setNewAchievement(member.achievements?.filter((item) => item !== member.customSuffix).join("; ") || "");
+    setNewAchievement(getMemberAchievementItems(member).join("; "));
     setIsAddOpen(true);
   };
 
@@ -1100,6 +1138,9 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     const parentId = isCaoToParentInfoOptional
       ? (newParentId || undefined)
       : (newParentId || originalMember?.parentId || undefined);
+    const achievementItems = uniqueDisplayTexts(newAchievement.split(/[;\n]+/))
+      .filter((item) => !newCustomSuffix || normalizeGenealogyLookupText(item) !== normalizeGenealogyLookupText(newCustomSuffix))
+      .filter((item) => !newRankRole || !textContainsNormalized(newRankRole, item));
 
     const newMember: FamilyMember = {
       id: editingMemberId || "custom-gen-" + Date.now(),
@@ -1131,7 +1172,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
       parentId,
       bio: newBio || undefined,
       photo: newPhoto || undefined,
-      achievements: [newCustomSuffix, newAchievement].filter(Boolean),
+      achievements: achievementItems,
       children: []
     };
 
@@ -1881,10 +1922,10 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
 
             {/* Quick Metadata */}
             <div className="grid grid-cols-2 gap-3 bg-stone-50 p-3 rounded-lg border border-stone-100 text-[11px]">
-              {(bioAncestor?.title || bioAncestor?.rankRole || bioAncestor?.customSuffix) && (
+              {getMemberTitleLine(bioAncestor) && (
                 <div className="col-span-2">
                   <span className="text-stone-400 block font-medium">Tước vị / Danh xưng</span>
-                  <p className="font-bold text-stone-800 leading-snug">{displayText(bioAncestor.rankRole || bioAncestor.title)}{bioAncestor.customSuffix ? ` - ${displayText(bioAncestor.customSuffix)}` : ""}</p>
+                  <p className="font-bold text-stone-800 leading-snug">{getMemberTitleLine(bioAncestor)}</p>
                 </div>
               )}
               <div>
@@ -2116,11 +2157,11 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
               )}
 
               {/* Achievements vinh danh */}
-              {bioAncestor?.achievements && bioAncestor.achievements.length > 0 && (
+              {getMemberAchievementItems(bioAncestor).length > 0 && (
                 <div className="space-y-1.5">
                   <span className="text-stone-400 font-medium block">Khen thưởng tích lục vinh danh:</span>
                   <div className="flex flex-wrap gap-1">
-                    {bioAncestor.achievements.map((ach, idx) => (
+                    {getMemberAchievementItems(bioAncestor).map((ach, idx) => (
                       <span key={idx} className="inline-flex items-center gap-1 rounded bg-amber-50 text-amber-800 border border-amber-200 px-2 py-0.5 text-[10px] font-medium scale-95 origin-left">
                         <Award className="h-3 w-3 shrink-0" /> {ach}
                       </span>

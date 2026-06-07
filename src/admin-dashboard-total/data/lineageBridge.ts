@@ -21,6 +21,34 @@ function isCaoDinhThuat(name: string | undefined) {
   return normalizeVietnameseText(name).includes("cao dinh thuat");
 }
 
+function normalizeListText(value: unknown) {
+  return normalizeVietnameseText(value)
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function uniqueNonEmptyTexts(values: unknown[]) {
+  const seen = new Set<string>();
+  return values
+    .map((value) => String(value || "").trim())
+    .filter((value) => {
+      if (!value) return false;
+      const key = normalizeListText(value);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function getDashboardAchievements(node: any) {
+  const title = stripGeneratedLineageTitlePrefix(node.title) || node.title || "";
+  const customSuffix = node.customSuffix || "";
+  const duplicateKeys = new Set([title, customSuffix].map(normalizeListText).filter(Boolean));
+  return uniqueNonEmptyTexts(Array.isArray(node.achievements) ? node.achievements : [])
+    .filter((item) => !duplicateKeys.has(normalizeListText(item)));
+}
+
 function getDashboardBranch(node: any) {
   const generation = isCaoDinhThuat(node.name) ? 0 : Number(node.generation) || 1;
   const branch = String(node.branch || "").trim();
@@ -70,11 +98,7 @@ function toDashboardMember(node: any, parentId?: string): FamilyMember {
       node.motherName ? `M\u1eabu th\u00e2n: ${node.motherName}` : "",
       node.phone1 ? `Li\u00ean h\u1ec7: ${node.phone1}${node.phone2 ? ` - ${node.phone2}` : ""}` : "",
     ].filter(Boolean).join(" | ") || undefined,
-    achievements: [
-      ...(Array.isArray(node.achievements) ? node.achievements : []),
-      node.customSuffix,
-      node.title ? (stripGeneratedLineageTitlePrefix(node.title) || node.title) : "",
-    ].filter(Boolean),
+    achievements: getDashboardAchievements(node),
   };
 }
 
