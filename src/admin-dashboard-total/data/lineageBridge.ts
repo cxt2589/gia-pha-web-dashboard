@@ -49,6 +49,29 @@ function getDashboardAchievements(node: any) {
     .filter((item) => !duplicateKeys.has(normalizeListText(item)));
 }
 
+function isAutoBioSegment(value: unknown) {
+  const key = normalizeListText(value);
+  return [
+    "noi o",
+    "tru quan",
+    "mau than",
+    "phu than",
+    "lien he",
+    "dien thoai",
+    "thu dien tu",
+    "ban doi",
+    "chau con gom"
+  ].some((prefix) => key.startsWith(prefix));
+}
+
+function cleanDashboardBio(node: any) {
+  const rawSegments = [node.bio, node.description]
+    .flatMap((value) => String(value || "").split(/\s+\|\s+/g));
+  const segments = uniqueNonEmptyTexts(rawSegments)
+    .filter((segment) => !isAutoBioSegment(segment));
+  return segments.join(" | ") || undefined;
+}
+
 function getDashboardBranch(node: any) {
   const generation = isCaoDinhThuat(node.name) ? 0 : Number(node.generation) || 1;
   const branch = String(node.branch || "").trim();
@@ -91,13 +114,7 @@ function toDashboardMember(node: any, parentId?: string): FamilyMember {
     children: children.map((child: any) => child.id),
     parentId: node.parentId || parentId,
     photo: node.photo,
-    bio: [
-      node.bio,
-      node.description,
-      node.residence ? `N\u01a1i \u1edf: ${node.residence}` : "",
-      node.motherName ? `M\u1eabu th\u00e2n: ${node.motherName}` : "",
-      node.phone1 ? `Li\u00ean h\u1ec7: ${node.phone1}${node.phone2 ? ` - ${node.phone2}` : ""}` : "",
-    ].filter(Boolean).join(" | ") || undefined,
+    bio: cleanDashboardBio(node),
     achievements: getDashboardAchievements(node),
   };
 }

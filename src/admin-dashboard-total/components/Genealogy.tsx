@@ -2874,10 +2874,10 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
 
                 {/* Achievements */}
                 <div className="space-y-1">
-                  <label className="font-semibold text-stone-700 block">Vinh danh sự nghiệp, học vị (Khuyến học):</label>
+                  <label className="font-semibold text-stone-700 block">Vinh danh sự nghiệp, học vị (cách nhau bằng dấu ;):</label>
                   <input 
                     type="text" 
-                    placeholder="Bắc Cực phong tặng Giáo sư Đại học Quốc gia, Thượng Tá..." 
+                    placeholder="Ví dụ: Giáo sư Đại học Quốc gia; Thượng tá; Bằng khen khuyến học" 
                     value={newAchievement}
                     onChange={(e) => setNewAchievement(e.target.value)}
                     className="w-full bg-stone-50 border border-stone-200 rounded px-2.5 py-1.5 focus:outline-none focus:border-red-800 text-stone-800 text-xs"
