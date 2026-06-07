@@ -312,7 +312,7 @@ export const hydratePersistedTreeDataFromBackend = async (fallbackTree: any): Pr
   }
 };
 
-const persistTreeDataToBackend = async (treeData: any): Promise<void> => {
+const persistTreeDataToBackend = async (treeData: any, rethrow = false): Promise<void> => {
   try {
     const response = await fetch(TREE_API_URL, {
       method: "PUT",
@@ -324,7 +324,15 @@ const persistTreeDataToBackend = async (treeData: any): Promise<void> => {
     }
   } catch (err) {
     console.warn("Backend tree save failed; localStorage fallback retained:", err);
+    if (rethrow) throw err;
   }
+};
+
+export const savePersistedTreeDataAsync = async (treeData: any): Promise<void> => {
+  const cleanedTree = removeGeneratedPlaceholders(treeData);
+  await persistTreeDataToBackend(cleanedTree, true);
+  localStorage.setItem(TREE_DATA_STORAGE_KEY, JSON.stringify(cleanedTree));
+  window.dispatchEvent(new Event("caogia_tree_data_updated"));
 };
 
 /**

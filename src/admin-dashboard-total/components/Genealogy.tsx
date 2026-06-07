@@ -15,8 +15,8 @@ const parseStructuredGenealogyDate = (...args: Parameters<typeof parseGenealogyD
 
 interface GenealogyProps {
   members: FamilyMember[];
-  onAddMember: (member: FamilyMember) => void;
-  onUpdateMember?: (member: FamilyMember) => void;
+  onAddMember: (member: FamilyMember) => void | Promise<void>;
+  onUpdateMember?: (member: FamilyMember) => void | Promise<void>;
   onBulkImport?: (newMembers: FamilyMember[], mode: "replace" | "append") => void;
 }
 
@@ -1119,7 +1119,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   };
 
   // Handle addition of member
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName.trim()) return;
     const originalMember = originalEditingMember;
@@ -1169,10 +1169,14 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
       children: []
     };
 
-    if (editingMemberId && onUpdateMember) {
-      onUpdateMember(newMember);
-    } else {
-      onAddMember(newMember);
+    try {
+      if (editingMemberId && onUpdateMember) {
+        await onUpdateMember(newMember);
+      } else {
+        await onAddMember(newMember);
+      }
+    } catch {
+      return;
     }
     
     // Auto inspect the newly added member

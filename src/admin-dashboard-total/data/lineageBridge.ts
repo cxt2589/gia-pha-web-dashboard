@@ -1,6 +1,6 @@
 import { ANCESTRAL_TREE } from "../../data/lineageData";
 import type { AncestorNode } from "../../types";
-import { getPersistedTreeData, hydratePersistedTreeDataFromBackend, savePersistedTreeData } from "../../utils/configManager";
+import { getPersistedTreeData, hydratePersistedTreeDataFromBackend, savePersistedTreeData, savePersistedTreeDataAsync } from "../../utils/configManager";
 import { formatNodeTitle, stripGeneratedLineageTitlePrefix } from "../../utils/lineageDisplay";
 import type { FamilyMember, OutstandingMember } from "../types";
 
@@ -206,8 +206,7 @@ function findNodeById(node: AncestorNode, id: string): AncestorNode | null {
   return null;
 }
 
-export function addDashboardMemberToSharedTree(member: FamilyMember): FamilyMember[] {
-  const tree = structuredClone(getPersistedTreeData(ANCESTRAL_TREE)) as AncestorNode;
+function addMemberToTree(tree: AncestorNode, member: FamilyMember, persist = true): FamilyMember[] {
   const parent = member.parentId ? findNodeById(tree, member.parentId) : null;
   if (!parent) {
     throw new Error("C\u1ea7n ch\u1ecdn b\u1ed1 \u0111\u1ebb \u0111\u1ec3 ghi ph\u1ea3 th\u00e0nh vi\u00ean m\u1edbi theo \u0111\u00fang c\u01a1 ch\u1ebf web view.");
@@ -230,12 +229,11 @@ export function addDashboardMemberToSharedTree(member: FamilyMember): FamilyMemb
     generation: nextGeneration,
   });
 
-  savePersistedTreeData(tree);
+  if (persist) savePersistedTreeData(tree);
   return collectMembers(tree);
 }
 
-export function updateDashboardMemberInSharedTree(member: FamilyMember): FamilyMember[] {
-  const tree = structuredClone(getPersistedTreeData(ANCESTRAL_TREE)) as AncestorNode;
+function updateMemberInTree(tree: AncestorNode, member: FamilyMember, persist = true): FamilyMember[] {
   const node = findNodeById(tree, member.id);
   if (!node) {
     throw new Error("Không tìm thấy thành viên để sửa.");
@@ -247,8 +245,32 @@ export function updateDashboardMemberInSharedTree(member: FamilyMember): FamilyM
     parentId: node.parentId || member.parentId,
   });
 
-  savePersistedTreeData(tree);
+  if (persist) savePersistedTreeData(tree);
   return collectMembers(tree);
+}
+
+export function addDashboardMemberToSharedTree(member: FamilyMember): FamilyMember[] {
+  const tree = structuredClone(getPersistedTreeData(ANCESTRAL_TREE)) as AncestorNode;
+  return addMemberToTree(tree, member);
+}
+
+export function updateDashboardMemberInSharedTree(member: FamilyMember): FamilyMember[] {
+  const tree = structuredClone(getPersistedTreeData(ANCESTRAL_TREE)) as AncestorNode;
+  return updateMemberInTree(tree, member);
+}
+
+export async function addDashboardMemberToSharedTreeAsync(member: FamilyMember): Promise<FamilyMember[]> {
+  const tree = structuredClone(await hydratePersistedTreeDataFromBackend(ANCESTRAL_TREE)) as AncestorNode;
+  const nextMembers = addMemberToTree(tree, member, false);
+  await savePersistedTreeDataAsync(tree);
+  return nextMembers;
+}
+
+export async function updateDashboardMemberInSharedTreeAsync(member: FamilyMember): Promise<FamilyMember[]> {
+  const tree = structuredClone(await hydratePersistedTreeDataFromBackend(ANCESTRAL_TREE)) as AncestorNode;
+  const nextMembers = updateMemberInTree(tree, member, false);
+  await savePersistedTreeDataAsync(tree);
+  return nextMembers;
 }
 
 export function getOutstandingMembersFromFamilyMembers(members: FamilyMember[]): OutstandingMember[] {

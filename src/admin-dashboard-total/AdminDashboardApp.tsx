@@ -10,7 +10,7 @@ import ZaloManager from "./components/ZaloManager";
 import ArticlesManager from "./components/ArticlesManager";
 import SettingsManager from "./components/SettingsManager";
 import MemberAccountsManager from "./components/MemberAccountsManager";
-import { addDashboardMemberToSharedTree, getOutstandingMembersFromFamilyMembers, getWebViewFamilyMembers, hydrateWebViewFamilyMembers, updateDashboardMemberInSharedTree } from "./data/lineageBridge";
+import { addDashboardMemberToSharedTreeAsync, getOutstandingMembersFromFamilyMembers, getWebViewFamilyMembers, hydrateWebViewFamilyMembers, updateDashboardMemberInSharedTreeAsync } from "./data/lineageBridge";
 import { getWebViewArticles, getWebViewClanEvents, getWebViewKnowledgeDocs, getWebViewTreasuryTransactions } from "./data/webViewBridge";
 import { FamilyMember, ClanEvent, TreasuryTx, OutstandingMember, WebThemeConfig, AIModelConfig, UserSession, KnowledgeBaseDocument, WebArticle, ZaloAutoReply } from "./types";
 import { KeyRound, MapPin, HelpCircle, Activity, Sun, Moon, CalendarDays } from "lucide-react";
@@ -667,23 +667,25 @@ export default function App() {
   }, []);
 
   // CRUD callback triggers
-  const handleAddMember = (newMem: FamilyMember) => {
+  const handleAddMember = async (newMem: FamilyMember) => {
     try {
-      const nextMembers = addDashboardMemberToSharedTree(newMem);
+      const nextMembers = await addDashboardMemberToSharedTreeAsync(newMem);
       setMembers(nextMembers);
       setOutstandingMembers(getOutstandingMembersFromFamilyMembers(nextMembers));
     } catch (err: any) {
       alert(err?.message || "Không thể ghi phả thành viên mới.");
+      throw err;
     }
   };
 
-  const handleUpdateMember = (member: FamilyMember) => {
+  const handleUpdateMember = async (member: FamilyMember) => {
     try {
-      const nextMembers = updateDashboardMemberInSharedTree(member);
+      const nextMembers = await updateDashboardMemberInSharedTreeAsync(member);
       setMembers(nextMembers);
       setOutstandingMembers(getOutstandingMembersFromFamilyMembers(nextMembers));
     } catch (err: any) {
       alert(err?.message || "Không thể sửa thông tin thành viên.");
+      throw err;
     }
   };
 
