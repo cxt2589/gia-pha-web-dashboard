@@ -404,6 +404,16 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     }
   };
 
+  const normalizeGenealogyLookupText = (value: unknown) => displayText(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\u0111/g, "d")
+    .replace(/\u0110/g, "D")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
   const compactEvidenceText = (value: unknown, maxLength = 96) => {
     const text = displayText(value).replace(/\s+/g, " ").trim();
     return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
@@ -972,6 +982,21 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   );
 
   const effectiveNewGeneration = selectedParentForNewMember ? selectedParentForNewMember.generation + 1 : Number(newGen);
+  const originalEditingMember = useMemo(
+    () => editingMemberId ? members.find((member) => member.id === editingMemberId) : undefined,
+    [editingMemberId, members]
+  );
+  const isCaoToParentInfoOptional = useMemo(() => {
+    const draftGeneration = editingMemberId
+      ? (originalEditingMember?.generation ?? effectiveNewGeneration)
+      : effectiveNewGeneration;
+    const draftName = normalizeGenealogyLookupText(newName || originalEditingMember?.name || "");
+    return Number(draftGeneration) === 0 && (
+      originalEditingMember?.id === "3" ||
+      draftName.includes("cao dinh thuat")
+    );
+  }, [editingMemberId, effectiveNewGeneration, newName, originalEditingMember]);
+
   const getParentOptionLabel = (member: FamilyMember) => {
     return `${displayText(member.name)} - ${getGenerationLabel(member.generation)} - ${member.gender === "Nữ" ? "Mẹ" : "Bố"}`;
   };
@@ -1064,14 +1089,17 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName.trim()) return;
-    if (!newParentId && !editingMemberId) {
+    const originalMember = originalEditingMember;
+    if (!newParentId && !editingMemberId && !isCaoToParentInfoOptional) {
       alert("Cần chọn bố đẻ để ghi phả thành viên mới theo đúng cơ chế web view.");
       return;
     }
-    const originalMember = editingMemberId ? members.find((member) => member.id === editingMemberId) : undefined;
     const birthDateStructured = parseStructuredGenealogyDate(newSolarBirthDate || newBirthYear, "solar");
     const deathDateStructured = parseStructuredGenealogyDate(newSolarDeathDate || newDeathYear, "solar");
     const deathAnniversaryLunarStructured = parseStructuredGenealogyDate(newDeathLunar, "lunar");
+    const parentId = isCaoToParentInfoOptional
+      ? (newParentId || undefined)
+      : (newParentId || originalMember?.parentId || undefined);
 
     const newMember: FamilyMember = {
       id: editingMemberId || "custom-gen-" + Date.now(),
@@ -1100,7 +1128,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
       phone2: newPhone2 || undefined,
       email: newEmail || undefined,
       spouse: newSpouse || undefined,
-      parentId: newParentId || originalMember?.parentId || undefined,
+      parentId,
       bio: newBio || undefined,
       photo: newPhoto || undefined,
       achievements: [newCustomSuffix, newAchievement].filter(Boolean),
@@ -2545,10 +2573,12 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                 {/* Parent & Wife */}
                 <div className="grid grid-cols-2 gap-3.5">
                   <div className="space-y-1 relative">
-                    <label className="font-semibold text-stone-700 block">Bố/Mẹ trong phả hệ: *</label>
+                    <label className="font-semibold text-stone-700 block">
+                      Bố/Mẹ trong phả hệ{isCaoToParentInfoOptional ? "" : ": *"}
+                    </label>
                     <input
                       type="text"
-                      required
+                      required={!isCaoToParentInfoOptional}
                       value={newParentSearch}
                       onChange={(e) => {
                         const value = e.target.value;
@@ -2578,6 +2608,11 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                     {selectedParentForNewMember && (
                       <span className="text-[9px] text-stone-400 block">
                         Đã chọn: {getParentOptionLabel(selectedParentForNewMember)}
+                      </span>
+                    )}
+                    {isCaoToParentInfoOptional && !selectedParentForNewMember && (
+                      <span className="text-[9px] text-amber-700 block">
+                        Cao Tổ Cao Đình Thuật không rõ thân thế, có thể để trống trường này.
                       </span>
                     )}
                   </div>
