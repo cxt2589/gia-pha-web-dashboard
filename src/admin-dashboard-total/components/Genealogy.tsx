@@ -444,12 +444,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
 
   const getMemberAchievementItems = (member?: FamilyMember) => {
     if (!member?.achievements?.length) return [];
-    return uniqueDisplayTexts(member.achievements).filter((item) => {
-      if (member.customSuffix && normalizeGenealogyLookupText(item) === normalizeGenealogyLookupText(member.customSuffix)) return false;
-      if (member.title && textContainsNormalized(member.title, item)) return false;
-      if (member.rankRole && textContainsNormalized(member.rankRole, item)) return false;
-      return true;
-    });
+    return uniqueDisplayTexts(member.achievements);
   };
 
   const compactEvidenceText = (value: unknown, maxLength = 96) => {
@@ -1138,9 +1133,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     const parentId = isCaoToParentInfoOptional
       ? (newParentId || undefined)
       : (newParentId || originalMember?.parentId || undefined);
-    const achievementItems = uniqueDisplayTexts(newAchievement.split(/[;\n]+/))
-      .filter((item) => !newCustomSuffix || normalizeGenealogyLookupText(item) !== normalizeGenealogyLookupText(newCustomSuffix))
-      .filter((item) => !newRankRole || !textContainsNormalized(newRankRole, item));
+    const achievementItems = uniqueDisplayTexts(newAchievement.split(/[;\n]+/));
 
     const newMember: FamilyMember = {
       id: editingMemberId || "custom-gen-" + Date.now(),
@@ -2874,7 +2867,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
 
                 {/* Achievements */}
                 <div className="space-y-1">
-                  <label className="font-semibold text-stone-700 block">Vinh danh sự nghiệp, học vị (cách nhau bằng dấu ;):</label>
+                  <label className="font-semibold text-stone-700 block">Khen thưởng tích lục vinh danh (cách nhau bằng dấu ;):</label>
                   <input 
                     type="text" 
                     placeholder="Ví dụ: Giáo sư Đại học Quốc gia; Thượng tá; Bằng khen khuyến học" 
@@ -2889,7 +2882,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                   <label className="font-semibold text-stone-700 block">Tích trạng & Lược lịch cổ nhân tự truyện:</label>
                   <textarea 
                     rows={3}
-                    placeholder="Lược sử cuộc đời, tấm lòng vì dòng họ, gia tông rèn luyện đạo đức..." 
+                    placeholder="Lược sử, hành trạng, tước hiệu lưu truyền, công lao hoặc câu chuyện về nhân vật..." 
                     value={newBio}
                     onChange={(e) => setNewBio(e.target.value)}
                     className="w-full bg-stone-50 border border-stone-200 rounded px-2.5 py-1.5 focus:outline-none focus:border-red-800 text-stone-800 text-xs resize-none"
