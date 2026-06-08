@@ -4,14 +4,25 @@ import { motion, AnimatePresence } from "motion/react";
 import { Search, Filter, ShieldAlert, User, UserCheck, Award, Heart, Edit3, Plus, ArrowRight, X, Calendar, MapPin, Eye, Database, Copy, Check, Upload, Download, AlertCircle, RefreshCw } from "lucide-react";
 import { FamilyMember } from "../types";
 import { analyzeImportRows } from "../../utils/importValidation";
-import { flattenTreeToList, parseCSVToObjects, savePersistedTreeData } from "../../utils/configManager";
+import { flattenTreeToList, getPersistedTreeData, parseCSVToObjects, savePersistedTreeData } from "../../utils/configManager";
 import { parseWorksheetToRows } from "../../utils/spreadsheetImport";
 import { mapLineageNodesToDashboardMembers } from "../data/lineageBridge";
+import { ANCESTRAL_TREE } from "../../data/lineageData";
 import { convertSolarToLunarText, convertSolarToLunarTextFromLich247, deriveLunarAnniversaryFromSolarDeathDate, deriveLunarAnniversaryFromSolarDeathDateViaLich247 } from "../../utils/lunarConverter";
 import { parseGenealogyDateText } from "../../utils/genealogyDate.mjs";
 
 const SKIP_DASHBOARD_FIELD = "__skip";
 const SKIP_DASHBOARD_LABEL = "Không ghi nhận / bỏ qua cột";
+const APPEND_STRUCTURE_FIELDS = new Set([
+  "person.id",
+  "person.name",
+  "person.generation",
+  "person.gender",
+  "person.status",
+  "father.id",
+  "father.name",
+  "mother.name"
+]);
 
 const parseStructuredGenealogyDate = (...args: Parameters<typeof parseGenealogyDateText>): FamilyMember["birthDateStructured"] =>
   parseGenealogyDateText(...args) as FamilyMember["birthDateStructured"];
@@ -96,6 +107,67 @@ const DASHBOARD_FIELD_LABELS: Record<string, string> = {
   ...Object.fromEntries(FAMILY_COLUMN_REFERENCE_ITEMS.map((column) => [column.dashboardField, column.excelColumn])),
   [SKIP_DASHBOARD_FIELD]: SKIP_DASHBOARD_LABEL
 };
+
+type ExcelActiveTab = "paste" | "script" | "script_auto";
+type AppendUpdateScopeMode = "auto" | "all" | "custom";
+
+type AppendUpdateFieldGroup = {
+  id: string;
+  label: string;
+  description: string;
+  fieldPrefixes: string[];
+};
+
+const APPEND_UPDATE_FIELD_GROUPS: AppendUpdateFieldGroup[] = [
+  {
+    id: "identity",
+    label: "Danh tính",
+    description: "Họ tên, giới tính, danh xưng, đời.",
+    fieldPrefixes: ["person."]
+  },
+  {
+    id: "dates",
+    label: "Ngày tháng",
+    description: "Ngày sinh, ngày mất, ngày giỗ.",
+    fieldPrefixes: ["birth.", "death."]
+  },
+  {
+    id: "parents",
+    label: "Cha mẹ",
+    description: "Thông tin cha, mẹ và mã liên kết.",
+    fieldPrefixes: ["father.", "mother."]
+  },
+  {
+    id: "spouses",
+    label: "Phối ngẫu",
+    description: "Vợ/chồng theo thứ tự 1, 2, 3.",
+    fieldPrefixes: ["spouse."]
+  },
+  {
+    id: "children",
+    label: "Con cháu",
+    description: "Danh sách con theo nhóm archive.child.N.",
+    fieldPrefixes: ["archive.child."]
+  },
+  {
+    id: "contact",
+    label: "Liên hệ",
+    description: "Nơi ở, điện thoại, email, ghi chú liên hệ.",
+    fieldPrefixes: ["contact."]
+  },
+  {
+    id: "grave",
+    label: "Mộ phần",
+    description: "Nơi an táng và thông tin mộ chí.",
+    fieldPrefixes: ["grave."]
+  },
+  {
+    id: "bio",
+    label: "Tiểu sử",
+    description: "Tóm tắt, hành trạng, tích trạng, công lao.",
+    fieldPrefixes: ["bio."]
+  }
+];
 
 interface GenealogyProps {
   members: FamilyMember[];
@@ -254,10 +326,12 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   const [bulkText, setBulkText] = useState("");
   const [parsedPreview, setParsedPreview] = useState<any[]>([]);
   const [importError, setImportError] = useState<string | null>(null);
-  const [excelActiveTab, setExcelActiveTab] = useState<"paste" | "script">("paste");
+  const [excelActiveTab, setExcelActiveTab] = useState<ExcelActiveTab>("paste");
   
   // Custom states for premium Excel upload & extended column matching
   const [importMode, setImportMode] = useState<"append" | "replace">("append");
+  const [appendUpdateScopeMode, setAppendUpdateScopeMode] = useState<AppendUpdateScopeMode>("auto");
+  const [appendSelectedFieldGroupIds, setAppendSelectedFieldGroupIds] = useState<string[]>(["identity", "dates", "parents"]);
   const [uploadFileName, setUploadFileName] = useState("");
   const [validationScore, setValidationScore] = useState<number | null>(null);
   const [columnMatches, setColumnMatches] = useState<{
@@ -363,6 +437,38 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     ],
     [FAMILY_COLUMN_REFERENCE]
   );
+
+  const selectedAppendFieldGroups = useMemo(
+    () => APPEND_UPDATE_FIELD_GROUPS.filter((group) => appendSelectedFieldGroupIds.includes(group.id)),
+    [appendSelectedFieldGroupIds]
+  );
+
+  const appendAllowedFields = useMemo(() => {
+    if (appendUpdateScopeMode !== "custom") return new Set<string>();
+    const allowed = new Set<string>(APPEND_STRUCTURE_FIELDS);
+    FAMILY_COLUMN_REFERENCE.forEach((column) => {
+      if (selectedAppendFieldGroups.some((group) => group.fieldPrefixes.some((prefix) => column.dashboardField.startsWith(prefix)))) {
+        allowed.add(column.dashboardField);
+      }
+    });
+    return allowed;
+  }, [FAMILY_COLUMN_REFERENCE, appendUpdateScopeMode, selectedAppendFieldGroups]);
+
+  const appendFieldScopePayload = useMemo(() => ({
+    mode: appendUpdateScopeMode,
+    groups: appendUpdateScopeMode === "custom" ? appendSelectedFieldGroupIds : [],
+    fields: appendUpdateScopeMode === "custom" ? Array.from(appendAllowedFields) : []
+  }), [appendAllowedFields, appendSelectedFieldGroupIds, appendUpdateScopeMode]);
+
+  const toggleAppendFieldGroup = (groupId: string) => {
+    setAppendSelectedFieldGroupIds((prev) => {
+      if (prev.includes(groupId)) {
+        const next = prev.filter((item) => item !== groupId);
+        return next.length > 0 ? next : prev;
+      }
+      return [...prev, groupId];
+    });
+  };
 
   const getResolvedDashboardField = (columnIndex: number, fallbackField: string) => {
     return columnFieldOverrides[columnIndex] || fallbackField || SKIP_DASHBOARD_FIELD;
@@ -628,6 +734,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     previewRows: any[][];
     rowCount: number;
     columnCount: number;
+    appendFieldScope?: Record<string, any>;
   }) => {
     setExcelImportBusy(true);
     setExcelImportGateNote("Đang tạo phiên duyệt cấu trúc Excel/CSV...");
@@ -1274,6 +1381,51 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     setColumnFieldOverrides({});
   };
 
+  const resolveDashboardFieldFromImportColumn = (header: string, technicalHeader?: string) => {
+    const technical = String(technicalHeader || "").trim();
+    if (technical && dashboardFieldLabels[technical]) return technical;
+
+    if (header.includes("|")) {
+      const headerTechnical = header.split("|").slice(1).join("|").trim();
+      if (headerTechnical && dashboardFieldLabels[headerTechnical]) return headerTechnical;
+    }
+
+    const best = findBestDashboardFieldForHeader(header);
+    return best.score > 0 ? best.field : SKIP_DASHBOARD_FIELD;
+  };
+
+  const filterRowsByAppendScope = (rows: any[]) => {
+    if (importMode !== "append" || appendUpdateScopeMode !== "custom") return rows;
+
+    return rows.map((row) => {
+      const headers = Array.isArray(row?._headers) ? row._headers : Object.keys(row || {}).filter((key) => !key.startsWith("_"));
+      const technicalHeaders = Array.isArray(row?._technicalHeaders) ? row._technicalHeaders : [];
+      const rawValues = Array.isArray(row?._rawValues)
+        ? row._rawValues
+        : headers.map((header: string) => row?.[header] || "");
+      const nextRow = { ...row };
+      const nextValues = rawValues.map((value: unknown, index: number) => {
+        const field = resolveDashboardFieldFromImportColumn(headers[index] || "", technicalHeaders[index]);
+        return field !== SKIP_DASHBOARD_FIELD && appendAllowedFields.has(field) ? value : "";
+      });
+
+      headers.forEach((header: string, index: number) => {
+        nextRow[header] = nextValues[index] || "";
+      });
+      nextRow._headers = headers;
+      if (technicalHeaders.length > 0) nextRow._technicalHeaders = technicalHeaders;
+      nextRow._rawValues = nextValues;
+      return nextRow;
+    });
+  };
+
+  const getAppendScopeLabel = () => {
+    if (importMode !== "append") return "Xóa hết làm mới";
+    if (appendUpdateScopeMode === "auto") return "Tự động quét dữ liệu mới";
+    if (appendUpdateScopeMode === "all") return "Bổ sung tất cả trường có dữ liệu";
+    return `Tự chọn: ${selectedAppendFieldGroups.map((group) => group.label).join(", ")}`;
+  };
+
   // Convert raw row array matrix into standardized objects
   const parseSheetRows = (sheetRows: any[][]) => {
     if (!sheetRows || sheetRows.length === 0) {
@@ -1394,8 +1546,11 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   };
 
   const prepareStandardImportRows = (rows: any[], sourceLabel: string) => {
-    const { treeData, summary } = analyzeImportRows(rows, sourceLabel, {
-      syncMode: importMode === "replace" ? "overwrite" : "merge"
+    const scopedRows = filterRowsByAppendScope(rows);
+    const existingTreeToMerge = importMode === "append" ? getPersistedTreeData(ANCESTRAL_TREE) : undefined;
+    const { treeData, summary } = analyzeImportRows(scopedRows, sourceLabel, {
+      syncMode: importMode === "replace" ? "overwrite" : "merge",
+      existingTreeToMerge
     });
 
     if (summary.errors.length > 0) {
@@ -1413,8 +1568,10 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     const dashboardMembers = mapLineageNodesToDashboardMembers(flattenTreeToList(treeData));
     setValidatedImportTree(treeData);
     setParsedPreview(dashboardMembers);
+    const scopeNote = importMode === "append" ? `Phạm vi bổ sung: ${getAppendScopeLabel()}.` : "";
+    setExcelImportGateNote(scopeNote);
     setImportError(summary.warnings.length > 0
-      ? `${sourceLabel}: có ${summary.warnings.length} cảnh báo. Có thể tiếp tục nhập sau khi đã kiểm tra.`
+      ? `${sourceLabel}: có ${summary.warnings.length} cảnh báo. ${scopeNote} Có thể tiếp tục nhập sau khi đã kiểm tra.`
       : null
     );
   };
@@ -1454,7 +1611,8 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
             headers: previewHeaders.map(String),
             previewRows: csvRows.slice(0, 30).map((row: any) => row._rawValues || previewHeaders.map((header: string) => row[header] || "")),
             rowCount: csvRows.length,
-            columnCount: previewHeaders.length
+            columnCount: previewHeaders.length,
+            appendFieldScope: appendFieldScopePayload
           });
           runFormatVerification(previewHeaders, previewValues);
           prepareStandardImportRows(csvRows, file.name);
@@ -1471,7 +1629,8 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
             headers: headerInfo.headers,
             previewRows: rawRows.slice(headerInfo.dataStartIndex, headerInfo.dataStartIndex + 30),
             rowCount: Math.max(0, rawRows.length - headerInfo.dataStartIndex),
-            columnCount: headerInfo.headers.length
+            columnCount: headerInfo.headers.length,
+            appendFieldScope: appendFieldScopePayload
           });
           runFormatVerification(headerInfo.headers, rawRows[headerInfo.dataStartIndex] || []);
           prepareStandardImportRows(parseWorksheetToRows(worksheet), `${file.name} / ${firstSheetName}`);
@@ -1505,7 +1664,8 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
         headers: headerInfo.headers,
         previewRows: sheetRows.slice(headerInfo.dataStartIndex, headerInfo.dataStartIndex + 30),
         rowCount: Math.max(0, sheetRows.length - headerInfo.dataStartIndex),
-        columnCount: headerInfo.headers.length
+        columnCount: headerInfo.headers.length,
+        appendFieldScope: appendFieldScopePayload
       });
       runFormatVerification(headerInfo.headers, sheetRows[headerInfo.dataStartIndex] || []);
       prepareStandardImportRows(parseWorksheetToRows(worksheet), "Vùng dán Excel");
@@ -1547,7 +1707,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
       onBulkImport(newMembersToCommit, importMode);
       alert(
         `✓ Đồng bộ cát tường! Đã ${
-          importMode === "replace" ? "Xoá sạch phả đồ cũ và Ghi mới" : "Bổ sung kế nối"
+          importMode === "replace" ? "Xoá sạch phả đồ cũ và Ghi mới" : getAppendScopeLabel()
         } ${newMembersToCommit.length} tộc nhân vào Gia phả trung ương họ Cao Ninh Bính.`
       );
     } else {
@@ -3213,10 +3373,10 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
               exit={{ opacity: 0, scale: 0.95 }}
               className="bg-white rounded-xl overflow-hidden shadow-2xl max-w-2xl w-full border border-stone-200 flex flex-col max-h-[90vh]"
             >
-              <div className="bg-emerald-900 px-5 py-4 text-white flex items-center justify-between border-b border-stone-150 shrink-0">
-                <h3 className="font-serif font-bold text-base text-amber-100 flex items-center gap-1.5">
+              <div className="bg-emerald-900 px-5 py-4 text-white flex items-center justify-between gap-3 border-b border-stone-150 shrink-0">
+                <h3 className="font-serif font-bold text-base text-amber-100 flex items-center gap-1.5 min-w-0 leading-snug">
                   <Database className="h-5 w-5" />
-                  Đồng Bộ & Nhập Gia Phả Tiên Linh Từ Bảng Tính
+                  <span className="min-w-0 break-words">Đồng Bộ & Nhập Gia Phả Tiên Linh Từ Bảng Tính</span>
                 </h3>
                 <button 
                   onClick={() => {
@@ -3239,13 +3399,13 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
               </div>
 
               {/* Subtabs for xls */}
-              <div className="flex bg-stone-100 border-b border-stone-200 text-xs shrink-0 font-bold select-none text-stone-700">
+              <div className="grid grid-cols-1 sm:grid-cols-3 bg-stone-100 border-b border-stone-200 text-xs shrink-0 font-bold select-none text-stone-700">
                 <button 
                   onClick={() => {
                     setExcelActiveTab("paste");
                     setImportError(null);
                   }}
-                  className={`flex-1 py-3 text-center cursor-pointer transition-all ${
+                  className={`min-w-0 px-2.5 py-3 text-center cursor-pointer transition-all leading-tight whitespace-normal break-words ${
                     excelActiveTab === "paste" ? "bg-white border-b-2 border-emerald-700 text-emerald-800 font-extrabold" : "text-stone-550 hover:bg-stone-50"
                   }`}
                 >
@@ -3256,7 +3416,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                     setExcelActiveTab("script");
                     setImportError(null);
                   }}
-                  className={`flex-2 py-3 text-center cursor-pointer transition-all ${
+                  className={`min-w-0 px-2.5 py-3 text-center cursor-pointer transition-all leading-tight whitespace-normal break-words ${
                     excelActiveTab === "script" ? "bg-white border-b-2 border-emerald-700 text-emerald-800 font-extrabold" : "text-stone-550 hover:bg-stone-50"
                   }`}
                 >
@@ -3267,7 +3427,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                     setExcelActiveTab("script_auto");
                     setImportError(null);
                   }}
-                  className={`flex-1.5 py-3 text-center cursor-pointer transition-all ${
+                  className={`min-w-0 px-2.5 py-3 text-center cursor-pointer transition-all leading-tight whitespace-normal break-words ${
                     excelActiveTab === "script_auto" ? "bg-white border-b-2 border-emerald-700 text-emerald-800 font-extrabold" : "text-stone-550 hover:bg-stone-50"
                   }`}
                 >
@@ -3327,6 +3487,67 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                         </div>
                       </label>
                     </div>
+                    {importMode === "append" && (
+                      <div className="mt-3 rounded-xl border border-emerald-100 bg-white p-3 space-y-3">
+                        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
+                          <div>
+                            <span className="block text-[10.5px] font-black text-emerald-900 uppercase tracking-wide">Phạm vi nội dung cần bổ sung</span>
+                            <p className="mt-0.5 text-[9.5px] text-stone-500 leading-relaxed">
+                              Chọn nhóm trường được phép nhận dữ liệu từ file. Các cột ngoài phạm vi sẽ được bỏ qua khi dựng cây ở chế độ bổ sung.
+                            </p>
+                          </div>
+                          <span className="inline-flex w-fit items-center rounded-full bg-emerald-50 px-2 py-1 text-[9px] font-black text-emerald-800 border border-emerald-100">
+                            {getAppendScopeLabel()}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                          {([
+                            { mode: "auto" as const, label: "Tự động", hint: "Quét dữ liệu mới" },
+                            { mode: "all" as const, label: "Bổ sung tất cả", hint: "Nhận mọi trường" },
+                            { mode: "custom" as const, label: "Tự chọn tag", hint: "Chỉ nhận tag chọn" }
+                          ]).map((option) => (
+                            <button
+                              key={option.mode}
+                              type="button"
+                              onClick={() => setAppendUpdateScopeMode(option.mode)}
+                              className={`rounded-lg border px-3 py-2 text-left transition-all ${
+                                appendUpdateScopeMode === option.mode
+                                  ? "border-emerald-600 bg-emerald-50 text-emerald-950 shadow-sm"
+                                  : "border-stone-200 bg-stone-50 text-stone-600 hover:border-emerald-300"
+                              }`}
+                            >
+                              <span className="block text-[11px] font-black">{option.label}</span>
+                              <span className="block text-[9px] opacity-75">{option.hint}</span>
+                            </button>
+                          ))}
+                        </div>
+
+                        {appendUpdateScopeMode === "custom" && (
+                          <div className="flex flex-wrap gap-2">
+                            {APPEND_UPDATE_FIELD_GROUPS.map((group) => {
+                              const active = appendSelectedFieldGroupIds.includes(group.id);
+                              return (
+                                <button
+                                  key={group.id}
+                                  type="button"
+                                  title={group.description}
+                                  onClick={() => toggleAppendFieldGroup(group.id)}
+                                  className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[10px] font-black transition-all ${
+                                    active
+                                      ? "border-emerald-600 bg-emerald-700 text-white shadow-sm"
+                                      : "border-stone-200 bg-white text-stone-600 hover:border-emerald-300 hover:text-emerald-800"
+                                  }`}
+                                >
+                                  <span className={`h-2 w-2 rounded-full ${active ? "bg-amber-200" : "bg-stone-300"}`} />
+                                  {group.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
 

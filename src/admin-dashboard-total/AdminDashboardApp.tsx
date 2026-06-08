@@ -692,8 +692,12 @@ export default function App() {
   const handleBulkImport = (newMems: FamilyMember[], mode: "replace" | "append") => {
     if (mode === "replace") {
       setMembers(newMems);
+      setOutstandingMembers(getOutstandingMembersFromFamilyMembers(newMems));
     } else {
-      setMembers((prev) => [...prev, ...newMems]);
+      const nextMembers = getWebViewFamilyMembers();
+      const resolvedMembers = nextMembers.length > 0 ? nextMembers : newMems;
+      setMembers(resolvedMembers);
+      setOutstandingMembers(getOutstandingMembersFromFamilyMembers(resolvedMembers));
     }
   };
 

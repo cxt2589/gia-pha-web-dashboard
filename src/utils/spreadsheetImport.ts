@@ -52,7 +52,8 @@ export function parseWorksheetToRows(worksheet: XLSX.WorkSheet): any[] {
     const cell = worksheet[XLSX.utils.encode_cell({ r: range.s.r + 1, c: column })];
     secondRowValues.push(String(cell?.w ?? cell?.v ?? "").trim());
   }
-  const dataStartRow = isTechnicalHeaderRow(secondRowValues) ? range.s.r + 2 : range.s.r + 1;
+  const hasTechnicalHeaderRow = isTechnicalHeaderRow(secondRowValues);
+  const dataStartRow = hasTechnicalHeaderRow ? range.s.r + 2 : range.s.r + 1;
 
   const rows: any[] = [];
   for (let rowIndex = dataStartRow; rowIndex <= range.e.r; rowIndex++) {
@@ -68,6 +69,9 @@ export function parseWorksheetToRows(worksheet: XLSX.WorkSheet): any[] {
     });
 
     rowObj._headers = headers;
+    if (hasTechnicalHeaderRow) {
+      rowObj._technicalHeaders = secondRowValues;
+    }
     rowObj._rawValues = rawValues;
     rows.push(rowObj);
   }
