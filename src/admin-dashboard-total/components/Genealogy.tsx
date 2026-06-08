@@ -218,6 +218,51 @@ const getAppendFieldSearchAliases = (field: string) => {
   return aliases.join(" ");
 };
 
+const getAppendFieldSearchTokens = (value: string) =>
+  normalizeAppendFieldSearch(value)
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+const getAppendParentSearchRole = (query: string): "father" | "mother" | "parents" | null => {
+  const normalized = normalizeAppendFieldSearch(query);
+  if (!normalized) return null;
+  const tokens = new Set(getAppendFieldSearchTokens(query));
+  const parentPhrases = new Set(["bo me", "cha me", "phu mau", "song than", "than sinh"]);
+  if (parentPhrases.has(normalized) || (tokens.has("bo") && tokens.has("me")) || (tokens.has("cha") && tokens.has("me"))) {
+    return "parents";
+  }
+  if (tokens.has("father") || tokens.has("cha") || tokens.has("bo") || tokens.has("ba") || normalized.includes("than phu") || normalized.includes("phu than")) {
+    return "father";
+  }
+  if (tokens.has("mother") || tokens.has("me") || tokens.has("ma") || normalized.includes("than mau") || normalized.includes("mau than")) {
+    return "mother";
+  }
+  return null;
+};
+
+const appendFieldMatchesQuery = (field: { value: string; searchText: string; searchTokens: string[] }, query: string) => {
+  const normalized = normalizeAppendFieldSearch(query);
+  if (!normalized) return true;
+
+  const role = getAppendParentSearchRole(query);
+  if (role === "father") return field.value.startsWith("father.");
+  if (role === "mother") return field.value.startsWith("mother.");
+  if (role === "parents") return field.value.startsWith("father.") || field.value.startsWith("mother.");
+
+  if (normalized.includes(".") && field.value.toLowerCase().includes(normalized)) return true;
+
+  const queryTokens = getAppendFieldSearchTokens(query);
+  return queryTokens.every((queryToken) =>
+    field.searchTokens.some((fieldToken) => fieldToken === queryToken || fieldToken.startsWith(queryToken))
+  );
+};
+
+const getAppendFieldSearchLimit = (query: string) => {
+  const role = getAppendParentSearchRole(query);
+  return role ? 40 : 16;
+};
+
 type ExcelActiveTab = "paste" | "script" | "script_auto";
 type AppendUpdateScopeMode = "auto" | "all" | "custom";
 
@@ -567,11 +612,15 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
         seen.add(column.dashboardField);
         return true;
       })
-      .map((column) => ({
-        value: column.dashboardField,
-        label: dashboardFieldLabels[column.dashboardField] || column.excelColumn,
-        searchText: normalizeAppendFieldSearch(`${column.dashboardField} ${dashboardFieldLabels[column.dashboardField] || column.excelColumn} ${column.excelColumn} ${getAppendFieldSearchAliases(column.dashboardField)}`)
-      }));
+      .map((column) => {
+        const searchSource = `${column.dashboardField} ${dashboardFieldLabels[column.dashboardField] || column.excelColumn} ${column.excelColumn} ${getAppendFieldSearchAliases(column.dashboardField)}`;
+        return {
+          value: column.dashboardField,
+          label: dashboardFieldLabels[column.dashboardField] || column.excelColumn,
+          searchText: normalizeAppendFieldSearch(searchSource),
+          searchTokens: getAppendFieldSearchTokens(searchSource)
+        };
+      });
   }, [FAMILY_COLUMN_REFERENCE]);
 
   const selectedAppendDashboardFieldSet = useMemo(
@@ -590,8 +639,8 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
       ? appendFieldOptions
       : appendFieldOptions.filter((field) => !selectedAppendDashboardFieldSet.has(field.value));
     return fields
-      .filter((field) => !query || field.searchText.includes(query))
-      .slice(0, 16);
+      .filter((field) => appendFieldMatchesQuery(field, appendFieldSearch))
+      .slice(0, getAppendFieldSearchLimit(appendFieldSearch));
   }, [appendFieldOptions, appendFieldSearch, selectedAppendDashboardFieldSet]);
 
   const appendAllowedFields = useMemo(() => {
