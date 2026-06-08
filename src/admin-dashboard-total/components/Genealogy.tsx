@@ -197,6 +197,27 @@ const normalizeAppendFieldSearch = (value: string) =>
     .replace(/[^a-z0-9.]+/g, " ")
     .trim();
 
+const getAppendFieldSearchAliases = (field: string) => {
+  const aliases: string[] = [];
+  if (field.startsWith("father.")) {
+    aliases.push("bo", "bố", "ba", "cha", "cha ruot", "bố ruột", "than phu", "thân phụ", "phu than", "phụ thân", "bo me", "bố mẹ", "cha me", "cha mẹ", "phu mau", "phụ mẫu");
+  }
+  if (field.startsWith("mother.")) {
+    aliases.push("me", "mẹ", "ma", "má", "me ruot", "mẹ ruột", "than mau", "thân mẫu", "mau than", "mẫu thân", "bo me", "bố mẹ", "cha me", "cha mẹ", "phu mau", "phụ mẫu");
+  }
+  if (field.startsWith("spouse.")) {
+    aliases.push("vo", "vợ", "chong", "chồng", "vo chong", "vợ chồng", "phoi ngau", "phối ngẫu", "hon phoi", "hôn phối");
+  }
+  if (field.startsWith("archive.child.")) {
+    aliases.push("con", "con cai", "con cái", "con chau", "con cháu", "hau due", "hậu duệ");
+  }
+  if (field.startsWith("birth.")) aliases.push("ngay sinh", "ngày sinh", "sinh");
+  if (field.startsWith("death.")) aliases.push("ngay mat", "ngày mất", "mat", "mất", "ky nhat", "kỵ nhật");
+  if (field.startsWith("grave.")) aliases.push("mo", "mộ", "mo phan", "mộ phần", "an tang", "an táng");
+  if (field.startsWith("bio.")) aliases.push("tieu su", "tiểu sử", "hanh trang", "hành trạng", "cong lao", "công lao", "tich trang", "tích trạng");
+  return aliases.join(" ");
+};
+
 type ExcelActiveTab = "paste" | "script" | "script_auto";
 type AppendUpdateScopeMode = "auto" | "all" | "custom";
 
@@ -222,8 +243,8 @@ const APPEND_UPDATE_FIELD_GROUPS: AppendUpdateFieldGroup[] = [
   },
   {
     id: "parents",
-    label: "Cha mẹ",
-    description: "Thông tin cha, mẹ và mã liên kết.",
+    label: "Bố/Mẹ",
+    description: "Thông tin cha, mẹ, bố mẹ và mã liên kết.",
     fieldPrefixes: ["father.", "mother."]
   },
   {
@@ -549,7 +570,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
       .map((column) => ({
         value: column.dashboardField,
         label: dashboardFieldLabels[column.dashboardField] || column.excelColumn,
-        searchText: normalizeAppendFieldSearch(`${column.dashboardField} ${dashboardFieldLabels[column.dashboardField] || column.excelColumn}`)
+        searchText: normalizeAppendFieldSearch(`${column.dashboardField} ${dashboardFieldLabels[column.dashboardField] || column.excelColumn} ${column.excelColumn} ${getAppendFieldSearchAliases(column.dashboardField)}`)
       }));
   }, [FAMILY_COLUMN_REFERENCE]);
 
@@ -565,10 +586,11 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
 
   const filteredAppendFieldOptions = useMemo(() => {
     const query = normalizeAppendFieldSearch(appendFieldSearch);
-    const available = appendFieldOptions.filter((field) => !selectedAppendDashboardFieldSet.has(field.value));
-    if (!query) return available.slice(0, 12);
-    return available
-      .filter((field) => field.searchText.includes(query))
+    const fields = query
+      ? appendFieldOptions
+      : appendFieldOptions.filter((field) => !selectedAppendDashboardFieldSet.has(field.value));
+    return fields
+      .filter((field) => !query || field.searchText.includes(query))
       .slice(0, 16);
   }, [appendFieldOptions, appendFieldSearch, selectedAppendDashboardFieldSet]);
 
@@ -3717,23 +3739,34 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
 
                               <div className="mt-2 max-h-36 overflow-y-auto rounded-md border border-stone-100 bg-white">
                                 {filteredAppendFieldOptions.length > 0 ? (
-                                  filteredAppendFieldOptions.map((field) => (
-                                    <button
-                                      key={field.value}
-                                      type="button"
-                                      onClick={() => addAppendDashboardField(field.value)}
-                                      className="flex w-full items-start justify-between gap-2 border-b border-stone-50 px-2.5 py-2 text-left last:border-b-0 hover:bg-emerald-50"
-                                    >
-                                      <span className="min-w-0">
-                                        <span className="block truncate text-[11px] font-black text-stone-800">{field.label}</span>
-                                        <span className="block truncate font-mono text-[9px] font-bold text-emerald-700">{field.value}</span>
-                                      </span>
-                                      <Plus className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-700" />
-                                    </button>
-                                  ))
+                                  filteredAppendFieldOptions.map((field) => {
+                                    const selected = selectedAppendDashboardFieldSet.has(field.value);
+                                    return (
+                                      <button
+                                        key={field.value}
+                                        type="button"
+                                        onClick={() => selected ? undefined : addAppendDashboardField(field.value)}
+                                        className={`flex w-full items-start justify-between gap-2 border-b border-stone-50 px-2.5 py-2 text-left last:border-b-0 ${
+                                          selected ? "bg-emerald-50/70 cursor-default" : "hover:bg-emerald-50"
+                                        }`}
+                                      >
+                                        <span className="min-w-0">
+                                          <span className="block truncate text-[11px] font-black text-stone-800">{field.label}</span>
+                                          <span className="block truncate font-mono text-[9px] font-bold text-emerald-700">{field.value}</span>
+                                        </span>
+                                        {selected ? (
+                                          <span className="mt-0.5 shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[8.5px] font-black text-emerald-800">
+                                            Đã chọn
+                                          </span>
+                                        ) : (
+                                          <Plus className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-700" />
+                                        )}
+                                      </button>
+                                    );
+                                  })
                                 ) : (
                                   <div className="px-2.5 py-3 text-[10px] font-bold text-stone-400">
-                                    Không còn trường phù hợp hoặc trường đã được chọn.
+                                    Không có trường phù hợp với từ khóa này.
                                   </div>
                                 )}
                               </div>
