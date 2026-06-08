@@ -1920,63 +1920,80 @@ function safeJsonParse(value, fallback) {
   }
 }
 
+function createExcelImportSpouseFields(index) {
+  return [
+    [`spouse.${index}.name`, `Họ và tên Vợ/Chồng ${index}`],
+    [`spouse.${index}.residence`, `Nơi ở của Vợ/Chồng ${index}`],
+    [`spouse.${index}.phone`, `Số điện thoại của Vợ/Chồng ${index}`],
+    [`spouse.${index}.birthDate`, `Ngày sinh (Trên giấy tờ) Vợ/Chồng ${index}`],
+    [`spouse.${index}.status`, `Tình trạng (còn sống/đã mất) Vợ/Chồng ${index}`],
+    [`spouse.${index}.deathDate`, `(Nếu đã mất) Ngày tháng năm mất (dương lịch) Vợ/Chồng ${index}`],
+    [`spouse.${index}.lunarAnniversary`, `Ngày giỗ/kỵ nhật vợ/chồng ${index}`],
+    [`spouse.${index}.graveLocation`, `(Nếu đã mất) Nơi an táng Vợ/Chồng ${index}`],
+    [`spouse.${index}.note`, `Ghi chú vợ/chồng ${index}`]
+  ];
+}
+
+function createExcelImportChildFields(index) {
+  return [
+    [`archive.child.${index}.name`, `Con ruột ${index}`],
+    [`archive.child.${index}.gender`, `Giới tính con ruột ${index}`],
+    [`archive.child.${index}.id`, `Mã định danh con ruột ${index}`]
+  ];
+}
+
 const EXCEL_IMPORT_FIELD_REFERENCE = [
-  ['id', 'Ma dinh danh ca nhan', true],
-  ['name', 'Ho va ten day du', true],
-  ['gender', 'Gioi tinh', false],
-  ['bio.alias', 'Ten thuong goi / Bi danh / Ten tu', false],
-  ['phone1', 'So dien thoai', false],
-  ['phone2', 'So dien thoai phu', false],
-  ['residence', 'Noi o', false],
-  ['email', 'Email', false],
-  ['solarBirthDate / birthYear', 'Ngay sinh tren giay to', false],
-  ['isLiving / isDeceased', 'Tinh trang con song/da mat', false],
-  ['solarDeathDate / deathYear', 'Ngay thang nam mat duong lich', false],
-  ['lunarAnniversary / deathAnniversaryLunar', 'Ngay mat theo am lich / Ky nhat', false],
-  ['burialPlace / graveLocation', 'Noi an tang', false],
-  ['generation', 'Doi thu may', true],
-  ['father.name', 'Ho va ten Cha ruot', false],
-  ['father.residence', 'Noi o cua cha ruot', false],
-  ['father.phone', 'So dien thoai cua cha', false],
-  ['father.birthDate', 'Ngay sinh cua cha', false],
-  ['father.isLiving', 'Tinh trang cua cha', false],
-  ['father.deathDate', 'Ngay mat cua cha', false],
-  ['father.lunarAnniversary', 'Ngay mat am lich cua cha', false],
-  ['father.burialPlace', 'Noi an tang cua cha', false],
-  ['parentId', 'Ma dinh danh cua cha', false],
-  ['motherName', 'Ho va ten Me ruot', false],
-  ['mother.residence', 'Noi o cua me', false],
-  ['mother.phone', 'So dien thoai cua me', false],
-  ['mother.birthDate', 'Ngay sinh cua me', false],
-  ['mother.isLiving', 'Tinh trang cua me', false],
-  ['mother.deathDate', 'Ngay mat cua me', false],
-  ['mother.lunarAnniversary', 'Ngay mat am lich cua me', false],
-  ['mother.burialPlace', 'Noi an tang cua me', false],
-  ['spouse / spouseDetails[0].name', 'Ho va ten vo/chong', false],
-  ['spouseDetails[0].residence', 'Noi o cua vo/chong', false],
-  ['spouseDetails[0].phone1', 'So dien thoai cua vo/chong', false],
-  ['spouseDetails[0].solarBirthDate', 'Ngay sinh cua vo/chong', false],
-  ['spouseDetails[0].isLiving', 'Tinh trang cua vo/chong', false],
-  ['spouseDetails[0].solarDeathDate', 'Ngay mat cua vo/chong', false],
-  ['spouseDetails[0].lunarAnniversary', 'Ngay ky am lich cua vo/chong', false],
-  ['spouseDetails[0].burialPlace', 'Noi an tang cua vo/chong', false],
-  ['children[0].name', 'Ho ten con thu 1', false],
-  ['children[0].gender', 'Gioi tinh con thu 1', false],
-  ['children[1].name', 'Ho ten con thu 2', false],
-  ['children[1].gender', 'Gioi tinh con thu 2', false],
-  ['children[2].name', 'Ho ten con thu 3', false],
-  ['children[2].gender', 'Gioi tinh con thu 3', false],
-  ['children[3].name', 'Ho ten con thu 4', false],
-  ['children[3].gender', 'Gioi tinh con thu 4', false],
-  ['children[4].name', 'Ho ten con thu 5', false],
-  ['children[4].gender', 'Gioi tinh con thu 5', false],
-  ['children[5].name', 'Ho ten con thu 6', false],
-  ['children[5].gender', 'Gioi tinh con thu 6', false],
-  ['children[6].name', 'Ho ten con thu 7', false],
-  ['children[6].gender', 'Gioi tinh con thu 7', false],
-  ['children[7].name', 'Ho ten con thu 8', false],
-  ['children[7].gender', 'Gioi tinh con thu 8', false]
-].map(([field, label, required], index) => ({ index, field, label, required: Boolean(required) }));
+  ['person.id', 'Mã định danh cá nhân'],
+  ['person.name', 'Họ và tên đầy đủ'],
+  ['person.gender', 'Giới tính'],
+  ['person.rankRole', 'Vai trò/thứ bậc'],
+  ['person.title', 'Tước vị/danh xưng'],
+  ['person.alias', 'Tên thường gọi / Bí danh / Tên tự (nếu có)'],
+  ['contact.phone1', 'Số điện thoại'],
+  ['contact.phone2', 'Số điện thoại phụ'],
+  ['contact.phone3', 'Số điện thoại khác'],
+  ['contact.residence', 'Nơi ở'],
+  ['contact.note', 'Ghi chú liên hệ'],
+  ['contact.email', 'Email'],
+  ['birth.solarDate', 'Ngày sinh (Trên giấy tờ)'],
+  ['birth.lunarDate', 'Ngày sinh Âm lịch'],
+  ['birth.note', 'Ghi chú ngày sinh'],
+  ['birth.place', 'Nơi sinh'],
+  ['person.status', 'Tình trạng (còn sống/đã mất)'],
+  ['death.solarDate', '(Nếu đã mất) Ngày tháng năm mất (dương lịch)'],
+  ['death.lunarDate', '(Nếu đã mất) Ngày tháng năm mất (âm lịch)'],
+  ['grave.location', '(Nếu đã mất) Nơi an táng'],
+  ['person.generation', 'Đời thứ mấy'],
+  ['person.photo', 'Ảnh chân dung'],
+  ['father.name', 'Họ và tên Cha ruột'],
+  ['father.residence', 'Nơi ở của cha ruột'],
+  ['father.phone', 'Số điện thoại của cha'],
+  ['father.birthDate', 'Ngày sinh (Trên giấy tờ)'],
+  ['father.status', 'Tình trạng (còn sống/đã mất)'],
+  ['father.deathDate', '(Nếu đã mất) Ngày tháng năm mất (dương lịch)'],
+  ['father.lunarAnniversary', '(Nếu đã mất) Ngày tháng năm mất (âm lịch) của cha'],
+  ['father.graveLocation', '(Nếu đã mất) Nơi an táng'],
+  ['father.id', 'Mã số cha'],
+  ['father.note', 'Ghi chú về cha'],
+  ['mother.name', 'Họ và tên Mẹ ruột'],
+  ['mother.residence', 'Nơi ở của mẹ'],
+  ['mother.phone', 'Số điện thoại của mẹ'],
+  ['mother.birthDate', 'Ngày sinh (Trên giấy tờ) của mẹ'],
+  ['mother.status', 'Tình trạng của mẹ (còn sống/đã mất)'],
+  ['mother.deathDate', '(Nếu đã mất) Ngày tháng năm mất (dương lịch)'],
+  ['mother.lunarAnniversary', '(Nếu đã mất) Ngày tháng năm mất (âm lịch)'],
+  ['mother.graveLocation', '(Nếu đã mất) Nơi an táng'],
+  ['mother.note', 'Ghi chú về mẹ'],
+  ...createExcelImportSpouseFields(1),
+  ...createExcelImportSpouseFields(2),
+  ...createExcelImportSpouseFields(3),
+  ...Array.from({ length: 12 }, (_, index) => createExcelImportChildFields(index + 1)).flat(),
+  ['bio.summary', 'Tóm tắt tiểu sử'],
+  ['bio.description', 'Hành trạng'],
+  ['bio.career', 'Sự nghiệp/tích trạng'],
+  ['bio.achievements', 'Công lao/vinh danh'],
+  ['bio.note', 'Ghi chú tiểu sử']
+].map(([field, label, required = false], index) => ({ index, field, label, required: Boolean(required) }));
 
 const EXCEL_IMPORT_ALLOWED_EXTENSIONS = new Set(['csv', 'xlsx', 'xls']);
 const EXCEL_IMPORT_MAX_FILE_MB = Number(process.env.EXCEL_IMPORT_MAX_FILE_MB || 10);
@@ -2059,7 +2076,7 @@ function scoreExcelHeaderToField(header, fieldRef) {
 function suggestExcelColumnMapping(header, index) {
   const refs = getExcelImportFieldReference();
   const expected = refs[index];
-  const expectedScore = expected ? scoreExcelHeaderToField(header, expected) : { score: 0, warning: 'Ngoai bo 55 cot dac ta.' };
+  const expectedScore = expected ? scoreExcelHeaderToField(header, expected) : { score: 0, warning: 'Ngoai bo truong dac ta da khai bao.' };
   const best = refs
     .map((ref) => ({ ref, ...scoreExcelHeaderToField(header, ref) }))
     .sort((a, b) => b.score - a.score)[0];
@@ -2309,13 +2326,20 @@ async function validateExcelImportSession(id, { mode = 'full' } = {}) {
     if (!fields.has(ref.field)) addExcelImportIssue(database, id, { issueType: 'missing_required', severity: 'error', message: `Thieu field bat buoc: ${ref.label}.`, suggestedFix: 'Map mot cot vao field nay hoac bo sung cot trong file.' });
   }
   const mappedByField = new Map(mappings.map((mapping) => [mapping.mapped_field, mapping.column_index]));
+  const mappedIndex = (...fields) => {
+    for (const field of fields) {
+      if (mappedByField.has(field)) return mappedByField.get(field);
+    }
+    return undefined;
+  };
   previewRows.forEach((row, rowIndex) => {
     const values = Array.isArray(row) ? row : headers.map((header) => row?.[header] || '');
-    const nameIndex = mappedByField.get('name');
-    const generationIndex = mappedByField.get('generation');
+    const nameIndex = mappedIndex('person.name', 'name');
+    const generationIndex = mappedIndex('person.generation', 'generation');
     const name = nameIndex !== undefined ? String(values[nameIndex] || '').trim() : '';
     const generation = generationIndex !== undefined ? String(values[generationIndex] || '').trim() : '';
-    if (!name) addExcelImportIssue(database, id, { rowIndex: rowIndex + 2, columnIndex: nameIndex ?? -1, issueType: 'missing_required', severity: 'error', message: `Dong ${rowIndex + 2} thieu ho ten.`, suggestedFix: 'Bo sung ho ten hoac loai bo dong trong.' });
+    const hasAnyValue = values.some((value) => String(value || '').trim());
+    if (hasAnyValue && nameIndex !== undefined && !name) addExcelImportIssue(database, id, { rowIndex: rowIndex + 2, columnIndex: nameIndex ?? -1, issueType: 'missing_value', severity: 'warning', message: `Dong ${rowIndex + 2} chua co ho ten.`, suggestedFix: 'Co the bo qua neu day la du lieu khuyet, hoac bo sung ten neu da xac minh.' });
     if (generation && !/\d+/.test(generation)) addExcelImportIssue(database, id, { rowIndex: rowIndex + 2, columnIndex: generationIndex ?? -1, issueType: 'invalid_generation', severity: 'error', message: `Dong ${rowIndex + 2} doi/generation khong hop le.`, suggestedFix: 'Nhap so doi hoac de trong neu chua xac minh.' });
     values.forEach((value, columnIndex) => {
       const text = String(value || '');
@@ -9376,7 +9400,7 @@ app.get('/api/ai/operation-graph', async (req, res) => {
         { id: 'gemini', label: 'Gemini', type: 'model', status: 'active', column: 5, row: 4, description: 'Chỉ dùng khi local/knowledge chưa đủ hoặc cần sinh nội dung dài.' },
         { id: 'profile_extraction', label: 'Hành trạng/Công lao', type: 'audit', status: profileMetric('pending') ? 'warning' : 'active', column: 5, row: 5, description: 'Bóc tách hành trạng, sự nghiệp, công lao từ kho tri thức; chỉ ghi vào cây phả sau khi admin duyệt và apply.', metrics: { pending: profileMetric('pending'), approved: profileMetric('approved'), applied: profileMetric('applied') } },
         { id: 'response_guard', label: 'Response Guard', type: 'guard', status: 'active', column: 6, row: 3, description: 'Chặn bịa dữ liệu, phân biệt pending/applied và giới hạn output.' },
-        { id: 'excel_import_gate', label: 'Duyệt cấu trúc Excel', type: 'guard', status: excelErrorCount ? 'error' : 'active', column: 5, row: 6, description: 'Cổng duyệt file Excel/CSV: kiểm tra an toàn, mapping 55 cột, preview và validation trước khi import.', metrics: { pending: excelMetric('structure_review') + excelMetric('mapping_approved'), ready: excelMetric('ready_to_import'), errors: excelErrorCount } },
+        { id: 'excel_import_gate', label: 'Duyệt cấu trúc Excel', type: 'guard', status: excelErrorCount ? 'error' : 'active', column: 5, row: 6, description: 'Cổng duyệt file Excel/CSV: kiểm tra an toàn, mapping bộ trường mở rộng, preview và validation trước khi import.', metrics: { pending: excelMetric('structure_review') + excelMetric('mapping_approved'), ready: excelMetric('ready_to_import'), errors: excelErrorCount } },
         { id: 'ai_logs', label: 'Logs / Token', type: 'logs', status: 'active', column: 6, row: 5, description: 'Theo dõi request, cache, lỗi, token và nguồn theo từng bot.', metrics: { tokens: summary.estimatedTokens, avg: `${summary.avgDurationMs}ms` } }
       ],
       edges: [

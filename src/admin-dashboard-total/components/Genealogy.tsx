@@ -16,6 +16,87 @@ const SKIP_DASHBOARD_LABEL = "Không ghi nhận / bỏ qua cột";
 const parseStructuredGenealogyDate = (...args: Parameters<typeof parseGenealogyDateText>): FamilyMember["birthDateStructured"] =>
   parseGenealogyDateText(...args) as FamilyMember["birthDateStructured"];
 
+type FamilyColumnReferenceItem = {
+  excelColumn: string;
+  dashboardField: string;
+};
+
+const createSpouseColumnReference = (index: number): FamilyColumnReferenceItem[] => [
+  { excelColumn: `Họ và tên Vợ/Chồng ${index}`, dashboardField: `spouse.${index}.name` },
+  { excelColumn: `Nơi ở của Vợ/Chồng ${index}`, dashboardField: `spouse.${index}.residence` },
+  { excelColumn: `Số điện thoại của Vợ/Chồng ${index}`, dashboardField: `spouse.${index}.phone` },
+  { excelColumn: `Ngày sinh (Trên giấy tờ) Vợ/Chồng ${index}`, dashboardField: `spouse.${index}.birthDate` },
+  { excelColumn: `Tình trạng (còn sống/đã mất) Vợ/Chồng ${index}`, dashboardField: `spouse.${index}.status` },
+  { excelColumn: `(Nếu đã mất) Ngày tháng năm mất (dương lịch) Vợ/Chồng ${index}`, dashboardField: `spouse.${index}.deathDate` },
+  { excelColumn: `Ngày giỗ/kỵ nhật vợ/chồng ${index}`, dashboardField: `spouse.${index}.lunarAnniversary` },
+  { excelColumn: `(Nếu đã mất) Nơi an táng Vợ/Chồng ${index}`, dashboardField: `spouse.${index}.graveLocation` },
+  { excelColumn: `Ghi chú vợ/chồng ${index}`, dashboardField: `spouse.${index}.note` }
+];
+
+const createChildColumnReference = (index: number): FamilyColumnReferenceItem[] => [
+  { excelColumn: `Con ruột ${index}`, dashboardField: `archive.child.${index}.name` },
+  { excelColumn: `Giới tính con ruột ${index}`, dashboardField: `archive.child.${index}.gender` },
+  { excelColumn: `Mã định danh con ruột ${index}`, dashboardField: `archive.child.${index}.id` }
+];
+
+const FAMILY_COLUMN_REFERENCE_ITEMS: FamilyColumnReferenceItem[] = [
+  { excelColumn: "Mã định danh cá nhân", dashboardField: "person.id" },
+  { excelColumn: "Họ và tên đầy đủ", dashboardField: "person.name" },
+  { excelColumn: "Giới tính", dashboardField: "person.gender" },
+  { excelColumn: "Vai trò/thứ bậc", dashboardField: "person.rankRole" },
+  { excelColumn: "Tước vị/danh xưng", dashboardField: "person.title" },
+  { excelColumn: "Tên thường gọi / Bí danh / Tên tự (nếu có)", dashboardField: "person.alias" },
+  { excelColumn: "Số điện thoại", dashboardField: "contact.phone1" },
+  { excelColumn: "Số điện thoại phụ", dashboardField: "contact.phone2" },
+  { excelColumn: "Số điện thoại khác", dashboardField: "contact.phone3" },
+  { excelColumn: "Nơi ở", dashboardField: "contact.residence" },
+  { excelColumn: "Ghi chú liên hệ", dashboardField: "contact.note" },
+  { excelColumn: "Email", dashboardField: "contact.email" },
+  { excelColumn: "Ngày sinh (Trên giấy tờ)", dashboardField: "birth.solarDate" },
+  { excelColumn: "Ngày sinh Âm lịch", dashboardField: "birth.lunarDate" },
+  { excelColumn: "Ghi chú ngày sinh", dashboardField: "birth.note" },
+  { excelColumn: "Nơi sinh", dashboardField: "birth.place" },
+  { excelColumn: "Tình trạng (còn sống/đã mất)", dashboardField: "person.status" },
+  { excelColumn: "(Nếu đã mất) Ngày tháng năm mất (dương lịch)", dashboardField: "death.solarDate" },
+  { excelColumn: "(Nếu đã mất) Ngày tháng năm mất (âm lịch)", dashboardField: "death.lunarDate" },
+  { excelColumn: "(Nếu đã mất) Nơi an táng", dashboardField: "grave.location" },
+  { excelColumn: "Đời thứ mấy", dashboardField: "person.generation" },
+  { excelColumn: "Ảnh chân dung", dashboardField: "person.photo" },
+  { excelColumn: "Họ và tên Cha ruột", dashboardField: "father.name" },
+  { excelColumn: "Nơi ở của cha ruột", dashboardField: "father.residence" },
+  { excelColumn: "Số điện thoại của cha", dashboardField: "father.phone" },
+  { excelColumn: "Ngày sinh (Trên giấy tờ)", dashboardField: "father.birthDate" },
+  { excelColumn: "Tình trạng (còn sống/đã mất)", dashboardField: "father.status" },
+  { excelColumn: "(Nếu đã mất) Ngày tháng năm mất (dương lịch)", dashboardField: "father.deathDate" },
+  { excelColumn: "(Nếu đã mất) Ngày tháng năm mất (âm lịch) của cha", dashboardField: "father.lunarAnniversary" },
+  { excelColumn: "(Nếu đã mất) Nơi an táng", dashboardField: "father.graveLocation" },
+  { excelColumn: "Mã số cha", dashboardField: "father.id" },
+  { excelColumn: "Ghi chú về cha", dashboardField: "father.note" },
+  { excelColumn: "Họ và tên Mẹ ruột", dashboardField: "mother.name" },
+  { excelColumn: "Nơi ở của mẹ", dashboardField: "mother.residence" },
+  { excelColumn: "Số điện thoại của mẹ", dashboardField: "mother.phone" },
+  { excelColumn: "Ngày sinh (Trên giấy tờ) của mẹ", dashboardField: "mother.birthDate" },
+  { excelColumn: "Tình trạng của mẹ (còn sống/đã mất)", dashboardField: "mother.status" },
+  { excelColumn: "(Nếu đã mất) Ngày tháng năm mất (dương lịch)", dashboardField: "mother.deathDate" },
+  { excelColumn: "(Nếu đã mất) Ngày tháng năm mất (âm lịch)", dashboardField: "mother.lunarAnniversary" },
+  { excelColumn: "(Nếu đã mất) Nơi an táng", dashboardField: "mother.graveLocation" },
+  { excelColumn: "Ghi chú về mẹ", dashboardField: "mother.note" },
+  ...createSpouseColumnReference(1),
+  ...createSpouseColumnReference(2),
+  ...createSpouseColumnReference(3),
+  ...Array.from({ length: 12 }, (_, index) => createChildColumnReference(index + 1)).flat(),
+  { excelColumn: "Tóm tắt tiểu sử", dashboardField: "bio.summary" },
+  { excelColumn: "Hành trạng", dashboardField: "bio.description" },
+  { excelColumn: "Sự nghiệp/tích trạng", dashboardField: "bio.career" },
+  { excelColumn: "Công lao/vinh danh", dashboardField: "bio.achievements" },
+  { excelColumn: "Ghi chú tiểu sử", dashboardField: "bio.note" }
+];
+
+const DASHBOARD_FIELD_LABELS: Record<string, string> = {
+  ...Object.fromEntries(FAMILY_COLUMN_REFERENCE_ITEMS.map((column) => [column.dashboardField, column.excelColumn])),
+  [SKIP_DASHBOARD_FIELD]: SKIP_DASHBOARD_LABEL
+};
+
 interface GenealogyProps {
   members: FamilyMember[];
   onAddMember: (member: FamilyMember) => void | Promise<void>;
@@ -175,7 +256,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   const [importError, setImportError] = useState<string | null>(null);
   const [excelActiveTab, setExcelActiveTab] = useState<"paste" | "script">("paste");
   
-  // Custom states for premium Excel upload & 55 column matching
+  // Custom states for premium Excel upload & extended column matching
   const [importMode, setImportMode] = useState<"append" | "replace">("append");
   const [uploadFileName, setUploadFileName] = useState("");
   const [validationScore, setValidationScore] = useState<number | null>(null);
@@ -208,7 +289,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   const fileInputRef = useRef<HTMLInputElement>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
 
-  // Standard 55-column layout template sent yesterday 
+  // Standard extended two-row layout: row 1 is the Vietnamese label, row 2 is the technical field code.
   const FAMILY_COLUMNS_SPEC = useMemo(() => [
     "Mã định danh cá nhân",
     "Họ và tên đầy đủ",
@@ -267,123 +348,10 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     "Giới tính con ruột 8"
   ], []);
 
-  const FAMILY_COLUMN_REFERENCE = useMemo(() => [
-    { excelColumn: "Mã định danh cá nhân", dashboardField: "id" },
-    { excelColumn: "Họ và tên đầy đủ", dashboardField: "name" },
-    { excelColumn: "Giới tính", dashboardField: "gender" },
-    { excelColumn: "Tên thường gọi / Bí danh / Tên tự", dashboardField: "bio.alias" },
-    { excelColumn: "Số điện thoại", dashboardField: "phone1" },
-    { excelColumn: "Số điện thoại phụ", dashboardField: "phone2" },
-    { excelColumn: "Nơi ở", dashboardField: "residence" },
-    { excelColumn: "Email", dashboardField: "email" },
-    { excelColumn: "Ngày sinh trên giấy tờ", dashboardField: "solarBirthDate / birthYear" },
-    { excelColumn: "Tình trạng còn sống/đã mất", dashboardField: "isLiving / isDeceased" },
-    { excelColumn: "Ngày mất dương lịch", dashboardField: "solarDeathDate / deathYear" },
-    { excelColumn: "Ngày mất âm lịch / Kỵ nhật", dashboardField: "lunarAnniversary / deathAnniversaryLunar" },
-    { excelColumn: "Nơi an táng", dashboardField: "burialPlace / graveLocation" },
-    { excelColumn: "Đời thứ mấy", dashboardField: "generation" },
-    { excelColumn: "Họ và tên Cha ruột", dashboardField: "father.name" },
-    { excelColumn: "Nơi ở của cha ruột", dashboardField: "father.residence" },
-    { excelColumn: "Số điện thoại của cha", dashboardField: "father.phone" },
-    { excelColumn: "Ngày sinh của cha", dashboardField: "father.birthDate" },
-    { excelColumn: "Tình trạng của cha", dashboardField: "father.isLiving" },
-    { excelColumn: "Ngày mất dương lịch của cha", dashboardField: "father.deathDate" },
-    { excelColumn: "Ngày kỵ âm lịch của cha", dashboardField: "father.lunarAnniversary" },
-    { excelColumn: "Nơi an táng của cha", dashboardField: "father.burialPlace" },
-    { excelColumn: "Mã số cha", dashboardField: "parentId" },
-    { excelColumn: "Họ và tên Mẹ ruột", dashboardField: "motherName" },
-    { excelColumn: "Nơi ở của mẹ", dashboardField: "mother.residence" },
-    { excelColumn: "Số điện thoại của mẹ", dashboardField: "mother.phone" },
-    { excelColumn: "Ngày sinh của mẹ", dashboardField: "mother.birthDate" },
-    { excelColumn: "Tình trạng của mẹ", dashboardField: "mother.isLiving" },
-    { excelColumn: "Ngày mất dương lịch của mẹ", dashboardField: "mother.deathDate" },
-    { excelColumn: "Ngày kỵ âm lịch của mẹ", dashboardField: "mother.lunarAnniversary" },
-    { excelColumn: "Nơi an táng của mẹ", dashboardField: "mother.burialPlace" },
-    { excelColumn: "Họ và tên Vợ/Chồng", dashboardField: "spouse / spouseDetails[0].name" },
-    { excelColumn: "Nơi ở của Vợ/Chồng", dashboardField: "spouseDetails[0].residence" },
-    { excelColumn: "Số điện thoại của Vợ/Chồng", dashboardField: "spouseDetails[0].phone1" },
-    { excelColumn: "Ngày sinh Vợ/Chồng", dashboardField: "spouseDetails[0].solarBirthDate" },
-    { excelColumn: "Tình trạng Vợ/Chồng", dashboardField: "spouseDetails[0].isLiving" },
-    { excelColumn: "Ngày mất dương lịch Vợ/Chồng", dashboardField: "spouseDetails[0].solarDeathDate" },
-    { excelColumn: "Ngày kỵ âm lịch Vợ/Chồng", dashboardField: "spouseDetails[0].lunarAnniversary" },
-    { excelColumn: "Nơi an táng Vợ/Chồng", dashboardField: "spouseDetails[0].burialPlace" },
-    { excelColumn: "Con ruột 1", dashboardField: "children[0].name" },
-    { excelColumn: "Giới tính con ruột 1", dashboardField: "children[0].gender" },
-    { excelColumn: "Con ruột 2", dashboardField: "children[1].name" },
-    { excelColumn: "Giới tính con ruột 2", dashboardField: "children[1].gender" },
-    { excelColumn: "Con ruột 3", dashboardField: "children[2].name" },
-    { excelColumn: "Giới tính con ruột 3", dashboardField: "children[2].gender" },
-    { excelColumn: "Con ruột 4", dashboardField: "children[3].name" },
-    { excelColumn: "Giới tính con ruột 4", dashboardField: "children[3].gender" },
-    { excelColumn: "Con ruột 5", dashboardField: "children[4].name" },
-    { excelColumn: "Giới tính con ruột 5", dashboardField: "children[4].gender" },
-    { excelColumn: "Con ruột 6", dashboardField: "children[5].name" },
-    { excelColumn: "Giới tính con ruột 6", dashboardField: "children[5].gender" },
-    { excelColumn: "Con ruột 7", dashboardField: "children[6].name" },
-    { excelColumn: "Giới tính con ruột 7", dashboardField: "children[6].gender" },
-    { excelColumn: "Con ruột 8", dashboardField: "children[7].name" },
-    { excelColumn: "Giới tính con ruột 8", dashboardField: "children[7].gender" }
-  ], []);
+  const FAMILY_COLUMN_REFERENCE = useMemo(() => FAMILY_COLUMN_REFERENCE_ITEMS, []);
 
   const dashboardColumnHeaders = useMemo(() => FAMILY_COLUMN_REFERENCE.map((column) => column.excelColumn), [FAMILY_COLUMN_REFERENCE]);
-  const dashboardFieldLabels: Record<string, string> = {
-    "id": "Mã định danh cá nhân",
-    "name": "Họ và tên đầy đủ",
-    "gender": "Giới tính",
-    "bio.alias": "Tên thường gọi / Bí danh / Tên tự",
-    "phone1": "Số điện thoại chính",
-    "phone2": "Số điện thoại phụ",
-    "residence": "Nơi ở / địa chỉ cư trú",
-    "email": "Email liên hệ",
-    "solarBirthDate / birthYear": "Ngày sinh hoặc năm sinh của cá nhân",
-    "isLiving / isDeceased": "Tình trạng còn sống / đã mất của cá nhân",
-    "solarDeathDate / deathYear": "Ngày mất dương lịch của cá nhân",
-    "lunarAnniversary / deathAnniversaryLunar": "Ngày giỗ / Kỵ nhật âm lịch của cá nhân",
-    "burialPlace / graveLocation": "Nơi an táng / Mộ phần của cá nhân",
-    "generation": "Đời / Thế hệ của cá nhân",
-    "father.name": "Họ tên cha ruột",
-    "father.residence": "Nơi ở của cha",
-    "father.phone": "Số điện thoại của cha",
-    "father.birthDate": "Ngày sinh dương lịch của cha",
-    "father.isLiving": "Tình trạng của cha",
-    "father.deathDate": "Ngày mất dương lịch của cha",
-    "father.lunarAnniversary": "Ngày kỵ âm lịch của cha",
-    "father.burialPlace": "Nơi an táng của cha",
-    "parentId": "Mã định danh của cha",
-    "motherName": "Họ tên mẹ ruột",
-    "mother.residence": "Nơi ở của mẹ",
-    "mother.phone": "Số điện thoại của mẹ",
-    "mother.birthDate": "Ngày sinh dương lịch của mẹ",
-    "mother.isLiving": "Tình trạng của mẹ",
-    "mother.deathDate": "Ngày mất dương lịch của mẹ",
-    "mother.lunarAnniversary": "Ngày kỵ âm lịch của mẹ",
-    "mother.burialPlace": "Nơi an táng của mẹ",
-    "spouse / spouseDetails[0].name": "Họ tên vợ/chồng",
-    "spouseDetails[0].residence": "Nơi ở của vợ/chồng",
-    "spouseDetails[0].phone1": "Số điện thoại của vợ/chồng",
-    "spouseDetails[0].solarBirthDate": "Ngày sinh dương lịch của vợ/chồng",
-    "spouseDetails[0].isLiving": "Tình trạng của vợ/chồng",
-    "spouseDetails[0].solarDeathDate": "Ngày mất dương lịch của vợ/chồng",
-    "spouseDetails[0].lunarAnniversary": "Ngày kỵ âm lịch của vợ/chồng",
-    "spouseDetails[0].burialPlace": "Nơi an táng của vợ/chồng",
-    "children[0].name": "Họ tên con thứ 1",
-    "children[0].gender": "Giới tính con thứ 1",
-    "children[1].name": "Họ tên con thứ 2",
-    "children[1].gender": "Giới tính con thứ 2",
-    "children[2].name": "Họ tên con thứ 3",
-    "children[2].gender": "Giới tính con thứ 3",
-    "children[3].name": "Họ tên con thứ 4",
-    "children[3].gender": "Giới tính con thứ 4",
-    "children[4].name": "Họ tên con thứ 5",
-    "children[4].gender": "Giới tính con thứ 5",
-    "children[5].name": "Họ tên con thứ 6",
-    "children[5].gender": "Giới tính con thứ 6",
-    "children[6].name": "Họ tên con thứ 7",
-    "children[6].gender": "Giới tính con thứ 7",
-    "children[7].name": "Họ tên con thứ 8",
-    "children[7].gender": "Giới tính con thứ 8",
-    [SKIP_DASHBOARD_FIELD]: SKIP_DASHBOARD_LABEL
-  };
+  const dashboardFieldLabels: Record<string, string> = DASHBOARD_FIELD_LABELS;
 
   const dashboardFieldOptions = useMemo(
     () => [
@@ -1606,70 +1574,60 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   const downloadExcelTemplate = () => {
     try {
       const headers = [...dashboardColumnHeaders];
-      
-      // Sample record containing dummy details for user orientation
-      const sampleRow = [
-        "CAONB_M_1",
-        "Cao Văn Sinh",
-        "Nam",
-        "Tự Thúc Bảo",
-        "0912111222",
-        "0983111333",
-        "Trung Yên, Hoa Lư, Ninh Bình",
-        "sinhcao@ninhbinh.vn",
-        "1948",
-        "Đã mất",
-        "2019",
-        "12 tháng Giêng",
-        "Nghĩa trang Trường Yên, Hoa Lư",
-        "7",
-        "Cao Văn Trọng",
-        "Trường Yên",
-        "",
-        "1918",
-        "Đã mất",
-        "1992",
-        "mùng 9 tháng năm",
-        "Bia phần chi họ Trường Yên",
-        "CAONB_M_0",
-        "Nguyễn Thị Mận",
-        "Hoa Lư",
-        "",
-        "1922",
-        "Còn sống",
-        "",
-        "",
-        "",
-        "Lê Thị Thảo",
-        "Yên Khánh",
-        "",
-        "1952",
-        "Còn sống",
-        "",
-        "",
-        "",
-        "Cao Tiến Thành",
-        "Nam",
-        "Cao Bích Vân",
-        "Nữ",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        ""
-      ];
-      
-      const ws = XLSX.utils.aoa_to_sheet([headers, sampleRow]);
+      const technicalCodes = FAMILY_COLUMN_REFERENCE.map((column) => column.dashboardField);
+      const sampleValues: Record<string, string> = {
+        "person.id": "CAONB_M_1",
+        "person.name": "Cao Văn Sinh",
+        "person.gender": "Nam",
+        "person.rankRole": "Trưởng chi",
+        "person.title": "Cụ",
+        "person.alias": "Tự Thúc Bảo",
+        "contact.phone1": "0912111222",
+        "contact.phone2": "0983111333",
+        "contact.residence": "Trung Yên, Hoa Lư, Ninh Bình",
+        "contact.email": "sinhcao@ninhbinh.vn",
+        "birth.solarDate": "1948",
+        "birth.lunarDate": "12 tháng Giêng",
+        "birth.place": "Hoa Lư, Ninh Bình",
+        "person.status": "Đã mất",
+        "death.solarDate": "2019",
+        "death.lunarDate": "12 tháng Giêng",
+        "grave.location": "Nghĩa trang Trường Yên, Hoa Lư",
+        "person.generation": "7",
+        "father.name": "Cao Văn Trọng",
+        "father.residence": "Trường Yên",
+        "father.birthDate": "1918",
+        "father.status": "Đã mất",
+        "father.deathDate": "1992",
+        "father.lunarAnniversary": "mùng 9 tháng năm",
+        "father.graveLocation": "Bia phần chi họ Trường Yên",
+        "father.id": "CAONB_M_0",
+        "mother.name": "Nguyễn Thị Mận",
+        "mother.residence": "Hoa Lư",
+        "mother.birthDate": "1922",
+        "mother.status": "Còn sống",
+        "spouse.1.name": "Lê Thị Thảo",
+        "spouse.1.residence": "Yên Khánh",
+        "spouse.1.birthDate": "1952",
+        "spouse.1.status": "Còn sống",
+        "archive.child.1.name": "Cao Tiến Thành",
+        "archive.child.1.gender": "Nam",
+        "archive.child.1.id": "CAONB_M_2",
+        "archive.child.2.name": "Cao Bích Vân",
+        "archive.child.2.gender": "Nữ",
+        "archive.child.2.id": "CAONB_F_3",
+        "bio.summary": "Tóm tắt ngắn về thân thế, gia đình và chi/ngành.",
+        "bio.description": "Hành trạng tiên nhân chép tạc theo từng sự kiện chính.",
+        "bio.career": "Năm 1945: tham gia công việc làng xã; Năm 1954: chuyển cư lập nghiệp.",
+        "bio.achievements": "Khen thưởng, sắc phong hoặc công lao vinh danh; phân tách bằng dấu ;",
+        "bio.note": "Ghi chú cần kiểm chứng thêm."
+      };
+      const sampleRow = FAMILY_COLUMN_REFERENCE.map((column) => sampleValues[column.dashboardField] || "");
+
+      const ws = XLSX.utils.aoa_to_sheet([headers, technicalCodes, sampleRow]);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Mau_Khao_Ta");
-      XLSX.writeFile(wb, "Mau_Gia_Pha_Cao_Ninh_Binh_55_Cot.xlsx");
+      XLSX.writeFile(wb, "Mau_Gia_Pha_Cao_Ninh_Binh_Truong_Mo_Rong.xlsx");
     } catch (err: any) {
       alert("⚠️ Lỗi thiết lập tải thư viện: " + err.message);
     }
@@ -3325,7 +3283,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                     <div>
                       <h4 className="font-bold text-stone-850">Yêu cầu khuôn mẫu chuẩn:</h4>
                       <p className="text-[10.5px] text-stone-500 leading-normal mt-0.5">
-                        Tải bảng mẫu 55 cột đặc tả dòng họ làm khung biên soạn chính thức để tránh sai lệch.
+                        Tải bảng mẫu trường mở rộng làm khung biên soạn chính thức để tránh sai lệch.
                       </p>
                     </div>
                     <button 
@@ -3410,7 +3368,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                         rows={5}
                         value={bulkText}
                         onChange={(e) => setBulkText(e.target.value)}
-                        placeholder="Quét chọn vùng dữ liệu từ Google Sheets/Excel (55 cột) rồi bấm Ctrl+V dán vào đây..."
+                        placeholder="Quét chọn vùng dữ liệu từ Google Sheets/Excel rồi bấm Ctrl+V dán vào đây..."
                         className="w-full bg-stone-50 border border-stone-200 rounded-lg p-3 font-mono text-[10px] focus:outline-none focus:border-emerald-600 resize-none leading-relaxed text-stone-800"
                       />
                     </div>
@@ -3498,7 +3456,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                           <Check className="h-4 w-4" />
                         </div>
                         <div>
-                          <h4 className="font-bold text-stone-800 text-[11px] uppercase">Hệ Thống Kiểm Chứng 55 Cột Đặc Tả</h4>
+                          <h4 className="font-bold text-stone-800 text-[11px] uppercase">Hệ Thống Kiểm Chứng Trường Đặc Tả</h4>
                           <span className="text-[9.5px] text-stone-500 block">Độ tương thích định dạng file nạp và quy chiếu trường dashboard</span>
                         </div>
                       </div>

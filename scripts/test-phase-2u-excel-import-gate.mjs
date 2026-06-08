@@ -120,7 +120,25 @@ async function main() {
     results.push(result('public-api-403', publicList.response.status === 403, `HTTP ${publicList.response.status}`));
 
     const fieldRef = await fetchJson('/api/excel-import/field-reference', { headers });
-    results.push(result('field-reference-55', fieldRef.response.ok && fieldRef.data.fields?.length === 55, `${fieldRef.data.fields?.length || 0} fields`));
+    const fields = Array.isArray(fieldRef.data.fields) ? fieldRef.data.fields : [];
+    const fieldNames = new Set(fields.map((field) => field.field));
+    const requiredExpandedFields = [
+      'person.id',
+      'person.name',
+      'person.rankRole',
+      'person.title',
+      'contact.phone3',
+      'birth.lunarDate',
+      'person.photo',
+      'spouse.3.name',
+      'archive.child.12.id',
+      'bio.achievements'
+    ];
+    results.push(result(
+      'field-reference-expanded',
+      fieldRef.response.ok && fields.length >= 109 && requiredExpandedFields.every((field) => fieldNames.has(field)),
+      `${fields.length || 0} fields`
+    ));
 
     const unsafe = await fetchJson('/api/excel-import/sessions', {
       method: 'POST',

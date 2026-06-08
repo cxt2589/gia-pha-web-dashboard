@@ -198,7 +198,7 @@ export const LINEAGE_NEWS_DATA: LineageNews[] = [
     id: 'news3',
     title: 'Quy chiếu cột Excel với trường thông tin dashboard',
     category: 'dong_gop',
-    summary: 'Bảng nhập liệu 55 cột được dùng để xác định mỗi cột trong Excel tương ứng với trường nào trên dashboard và webview.',
+    summary: 'Bảng nhập liệu trường mở rộng được dùng để xác định mỗi cột trong Excel tương ứng với trường nào trên dashboard và webview.',
     content: 'Khi dữ liệu bị lệch hoặc còn khuyết, admin có thể dùng bảng quy chiếu để biết ô trong Excel đang là thông tin gì: mã định danh, họ tên, đời, cha/mẹ, vợ/chồng, ngày sinh/mất, ngày giỗ âm lịch, chi/ngành, số điện thoại, ảnh và ghi chú hành trạng. Đây là cơ sở để nhập liệu thống nhất giữa webview và dashboard.',
     imageUrl: COMPONENT_IMAGES.inkLandscape,
     date: '02/10/2025',
