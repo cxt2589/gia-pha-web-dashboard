@@ -1230,7 +1230,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   // Excel formatting assessment generator
   const runFormatVerification = (detectedHeaders: string[], firstDataRow: any[]) => {
     let matchedCount = 0;
-    const columnCount = Math.max(FAMILY_COLUMN_REFERENCE.length, detectedHeaders.length, firstDataRow?.length || 0);
+    const columnCount = Math.max(detectedHeaders.length, firstDataRow?.length || 0);
 
     const matches = Array.from({ length: columnCount }, (_, specIdx) => {
       const expectedColumn = FAMILY_COLUMN_REFERENCE[specIdx];
@@ -1268,7 +1268,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
       };
     });
 
-    const score = Math.round((matchedCount / FAMILY_COLUMN_REFERENCE.length) * 100);
+    const score = Math.round((matchedCount / Math.max(columnCount, 1)) * 100);
     setValidationScore(score);
     setColumnMatches(matches);
     setColumnFieldOverrides({});
