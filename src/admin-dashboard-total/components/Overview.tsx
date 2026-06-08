@@ -360,10 +360,10 @@ export default function Overview({
           {/* Female living members */}
           <div className="bg-stone-50 p-4.5 rounded-xl border border-stone-150 relative overflow-hidden group">
             <div className="space-y-1 relative z-10 select-none">
-              <span className="text-[10px] text-stone-550 uppercase font-black tracking-wider block font-bold">Nữ Kiệt Còn Sống (Nội ngoại)</span>
+              <span className="text-[10px] text-stone-550 uppercase font-black tracking-wider block font-bold">Nữ nhân còn sống (nội ngoại)</span>
               <div className="flex items-baseline gap-2">
                 <span className="text-3xl font-black font-serif text-stone-800">{totalLivingFemales}</span>
-                <span className="text-xs text-stone-500 font-bold">chị em o phái</span>
+                <span className="text-xs text-stone-500 font-bold">con cháu</span>
               </div>
               <p className="text-[10px] text-stone-400 block font-medium">Bồi nạp giáo tông tôn nhân</p>
             </div>
