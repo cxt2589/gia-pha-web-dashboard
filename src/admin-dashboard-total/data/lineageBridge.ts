@@ -42,11 +42,7 @@ function uniqueNonEmptyTexts(values: unknown[]) {
 }
 
 function getDashboardAchievements(node: any) {
-  const title = stripGeneratedLineageTitlePrefix(node.title) || node.title || "";
-  const customSuffix = node.customSuffix || "";
-  const duplicateKeys = new Set([title, customSuffix].map(normalizeListText).filter(Boolean));
-  return uniqueNonEmptyTexts(Array.isArray(node.achievements) ? node.achievements : [])
-    .filter((item) => !duplicateKeys.has(normalizeListText(item)));
+  return uniqueNonEmptyTexts(Array.isArray(node.achievements) ? node.achievements : []);
 }
 
 function isAutoBioSegment(value: unknown) {
