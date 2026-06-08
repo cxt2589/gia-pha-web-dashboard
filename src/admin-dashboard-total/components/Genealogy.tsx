@@ -108,6 +108,15 @@ const DASHBOARD_FIELD_LABELS: Record<string, string> = {
   [SKIP_DASHBOARD_FIELD]: SKIP_DASHBOARD_LABEL
 };
 
+const normalizeAppendFieldSearch = (value: string) =>
+  String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/[^a-z0-9.]+/g, " ")
+    .trim();
+
 type ExcelActiveTab = "paste" | "script" | "script_auto";
 type AppendUpdateScopeMode = "auto" | "all" | "custom";
 
@@ -168,6 +177,16 @@ const APPEND_UPDATE_FIELD_GROUPS: AppendUpdateFieldGroup[] = [
     fieldPrefixes: ["bio."]
   }
 ];
+
+const getAppendFieldIdsByPrefixes = (prefixes: string[]) =>
+  FAMILY_COLUMN_REFERENCE_ITEMS
+    .filter((column) => prefixes.some((prefix) => column.dashboardField.startsWith(prefix)))
+    .map((column) => column.dashboardField);
+
+const DEFAULT_APPEND_DASHBOARD_FIELDS = Array.from(new Set([
+  ...APPEND_STRUCTURE_FIELDS,
+  ...getAppendFieldIdsByPrefixes(["person.", "birth.", "death.", "father.", "mother."])
+]));
 
 interface GenealogyProps {
   members: FamilyMember[];
@@ -331,7 +350,8 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   // Custom states for premium Excel upload & extended column matching
   const [importMode, setImportMode] = useState<"append" | "replace">("append");
   const [appendUpdateScopeMode, setAppendUpdateScopeMode] = useState<AppendUpdateScopeMode>("auto");
-  const [appendSelectedFieldGroupIds, setAppendSelectedFieldGroupIds] = useState<string[]>(["identity", "dates", "parents"]);
+  const [appendSelectedDashboardFields, setAppendSelectedDashboardFields] = useState<string[]>(DEFAULT_APPEND_DASHBOARD_FIELDS);
+  const [appendFieldSearch, setAppendFieldSearch] = useState("");
   const [uploadFileName, setUploadFileName] = useState("");
   const [validationScore, setValidationScore] = useState<number | null>(null);
   const [columnMatches, setColumnMatches] = useState<{
@@ -438,36 +458,84 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     [FAMILY_COLUMN_REFERENCE]
   );
 
-  const selectedAppendFieldGroups = useMemo(
-    () => APPEND_UPDATE_FIELD_GROUPS.filter((group) => appendSelectedFieldGroupIds.includes(group.id)),
-    [appendSelectedFieldGroupIds]
+  const appendFieldOptions = useMemo(() => {
+    const seen = new Set<string>();
+    return FAMILY_COLUMN_REFERENCE
+      .filter((column) => {
+        if (seen.has(column.dashboardField)) return false;
+        seen.add(column.dashboardField);
+        return true;
+      })
+      .map((column) => ({
+        value: column.dashboardField,
+        label: dashboardFieldLabels[column.dashboardField] || column.excelColumn,
+        searchText: normalizeAppendFieldSearch(`${column.dashboardField} ${dashboardFieldLabels[column.dashboardField] || column.excelColumn}`)
+      }));
+  }, [FAMILY_COLUMN_REFERENCE]);
+
+  const selectedAppendDashboardFieldSet = useMemo(
+    () => new Set<string>([...APPEND_STRUCTURE_FIELDS, ...appendSelectedDashboardFields]),
+    [appendSelectedDashboardFields]
   );
+
+  const selectedAppendFieldOptions = useMemo(
+    () => appendFieldOptions.filter((field) => selectedAppendDashboardFieldSet.has(field.value)),
+    [appendFieldOptions, selectedAppendDashboardFieldSet]
+  );
+
+  const filteredAppendFieldOptions = useMemo(() => {
+    const query = normalizeAppendFieldSearch(appendFieldSearch);
+    const available = appendFieldOptions.filter((field) => !selectedAppendDashboardFieldSet.has(field.value));
+    if (!query) return available.slice(0, 12);
+    return available
+      .filter((field) => field.searchText.includes(query))
+      .slice(0, 16);
+  }, [appendFieldOptions, appendFieldSearch, selectedAppendDashboardFieldSet]);
 
   const appendAllowedFields = useMemo(() => {
     if (appendUpdateScopeMode !== "custom") return new Set<string>();
-    const allowed = new Set<string>(APPEND_STRUCTURE_FIELDS);
-    FAMILY_COLUMN_REFERENCE.forEach((column) => {
-      if (selectedAppendFieldGroups.some((group) => group.fieldPrefixes.some((prefix) => column.dashboardField.startsWith(prefix)))) {
-        allowed.add(column.dashboardField);
-      }
-    });
-    return allowed;
-  }, [FAMILY_COLUMN_REFERENCE, appendUpdateScopeMode, selectedAppendFieldGroups]);
+    return new Set<string>(selectedAppendDashboardFieldSet);
+  }, [appendUpdateScopeMode, selectedAppendDashboardFieldSet]);
 
   const appendFieldScopePayload = useMemo(() => ({
     mode: appendUpdateScopeMode,
-    groups: appendUpdateScopeMode === "custom" ? appendSelectedFieldGroupIds : [],
+    groups: appendUpdateScopeMode === "custom" ? APPEND_UPDATE_FIELD_GROUPS
+      .filter((group) => getAppendFieldIdsByPrefixes(group.fieldPrefixes).every((field) => selectedAppendDashboardFieldSet.has(field)))
+      .map((group) => group.id) : [],
     fields: appendUpdateScopeMode === "custom" ? Array.from(appendAllowedFields) : []
-  }), [appendAllowedFields, appendSelectedFieldGroupIds, appendUpdateScopeMode]);
+  }), [appendAllowedFields, appendUpdateScopeMode, selectedAppendDashboardFieldSet]);
 
   const toggleAppendFieldGroup = (groupId: string) => {
-    setAppendSelectedFieldGroupIds((prev) => {
-      if (prev.includes(groupId)) {
-        const next = prev.filter((item) => item !== groupId);
-        return next.length > 0 ? next : prev;
+    const group = APPEND_UPDATE_FIELD_GROUPS.find((item) => item.id === groupId);
+    if (!group) return;
+    const groupFields = getAppendFieldIdsByPrefixes(group.fieldPrefixes);
+    setAppendSelectedDashboardFields((prev) => {
+      const current = new Set(prev);
+      const removableFields = groupFields.filter((field) => !APPEND_STRUCTURE_FIELDS.has(field));
+      const allGroupFieldsSelected = removableFields.every((field) => current.has(field));
+      if (allGroupFieldsSelected) {
+        removableFields.forEach((field) => current.delete(field));
+      } else {
+        groupFields.forEach((field) => current.add(field));
       }
-      return [...prev, groupId];
+      return Array.from(current);
     });
+  };
+
+  const isAppendFieldGroupActive = (group: AppendUpdateFieldGroup) => {
+    const groupFields = getAppendFieldIdsByPrefixes(group.fieldPrefixes).filter((field) => !APPEND_STRUCTURE_FIELDS.has(field));
+    return groupFields.length > 0 && groupFields.every((field) => selectedAppendDashboardFieldSet.has(field));
+  };
+
+  const addAppendDashboardField = (field: string) => {
+    if (!field || field === SKIP_DASHBOARD_FIELD) return;
+    setAppendSelectedDashboardFields((prev) => Array.from(new Set([...prev, field])));
+    setAppendFieldSearch("");
+  };
+
+  const removeAppendDashboardField = (field: string) => {
+    if (APPEND_STRUCTURE_FIELDS.has(field)) return;
+    setAppendSelectedDashboardFields((prev) => prev.filter((item) => item !== field));
   };
 
   const getResolvedDashboardField = (columnIndex: number, fallbackField: string) => {
@@ -1423,7 +1491,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     if (importMode !== "append") return "Xóa hết làm mới";
     if (appendUpdateScopeMode === "auto") return "Tự động quét dữ liệu mới";
     if (appendUpdateScopeMode === "all") return "Bổ sung tất cả trường có dữ liệu";
-    return `Tự chọn: ${selectedAppendFieldGroups.map((group) => group.label).join(", ")}`;
+    return `Tự chọn ${selectedAppendFieldOptions.length} trường`;
   };
 
   // Convert raw row array matrix into standardized objects
@@ -3524,26 +3592,119 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                         </div>
 
                         {appendUpdateScopeMode === "custom" && (
-                          <div className="flex flex-wrap gap-2">
-                            {APPEND_UPDATE_FIELD_GROUPS.map((group) => {
-                              const active = appendSelectedFieldGroupIds.includes(group.id);
-                              return (
+                          <div className="space-y-3">
+                            <div>
+                              <div className="mb-1 flex items-center justify-between gap-2">
+                                <span className="text-[10px] font-black uppercase tracking-wide text-stone-500">Chọn nhanh theo nhóm</span>
+                                <span className="text-[9px] font-bold text-stone-400">{selectedAppendFieldOptions.length} / {appendFieldOptions.length} trường</span>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                {APPEND_UPDATE_FIELD_GROUPS.map((group) => {
+                                  const active = isAppendFieldGroupActive(group);
+                                  return (
+                                    <button
+                                      key={group.id}
+                                      type="button"
+                                      title={group.description}
+                                      onClick={() => toggleAppendFieldGroup(group.id)}
+                                      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[10px] font-black transition-all ${
+                                        active
+                                          ? "border-emerald-600 bg-emerald-700 text-white shadow-sm"
+                                          : "border-stone-200 bg-white text-stone-600 hover:border-emerald-300 hover:text-emerald-800"
+                                      }`}
+                                    >
+                                      <span className={`h-2 w-2 rounded-full ${active ? "bg-amber-200" : "bg-stone-300"}`} />
+                                      {group.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+
+                            <div className="rounded-lg border border-stone-200 bg-stone-50 p-2">
+                              <label className="mb-1 block text-[10px] font-black uppercase tracking-wide text-stone-500">
+                                Tìm và thêm trường cụ thể
+                              </label>
+                              <div className="relative">
+                                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-stone-400" />
+                                <input
+                                  value={appendFieldSearch}
+                                  onChange={(event) => setAppendFieldSearch(event.target.value)}
+                                  placeholder="Nhập tên trường hoặc mã kỹ thuật, ví dụ: tình trạng mẹ, spouse.2.status, bio.career..."
+                                  className="w-full rounded-md border border-stone-200 bg-white py-2 pl-8 pr-3 text-[11px] font-semibold text-stone-700 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                                />
+                              </div>
+
+                              <div className="mt-2 max-h-36 overflow-y-auto rounded-md border border-stone-100 bg-white">
+                                {filteredAppendFieldOptions.length > 0 ? (
+                                  filteredAppendFieldOptions.map((field) => (
+                                    <button
+                                      key={field.value}
+                                      type="button"
+                                      onClick={() => addAppendDashboardField(field.value)}
+                                      className="flex w-full items-start justify-between gap-2 border-b border-stone-50 px-2.5 py-2 text-left last:border-b-0 hover:bg-emerald-50"
+                                    >
+                                      <span className="min-w-0">
+                                        <span className="block truncate text-[11px] font-black text-stone-800">{field.label}</span>
+                                        <span className="block truncate font-mono text-[9px] font-bold text-emerald-700">{field.value}</span>
+                                      </span>
+                                      <Plus className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-700" />
+                                    </button>
+                                  ))
+                                ) : (
+                                  <div className="px-2.5 py-3 text-[10px] font-bold text-stone-400">
+                                    Không còn trường phù hợp hoặc trường đã được chọn.
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            <div>
+                              <div className="mb-1 flex items-center justify-between gap-2">
+                                <span className="text-[10px] font-black uppercase tracking-wide text-stone-500">Trường sẽ được phép bổ sung</span>
                                 <button
-                                  key={group.id}
                                   type="button"
-                                  title={group.description}
-                                  onClick={() => toggleAppendFieldGroup(group.id)}
-                                  className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[10px] font-black transition-all ${
-                                    active
-                                      ? "border-emerald-600 bg-emerald-700 text-white shadow-sm"
-                                      : "border-stone-200 bg-white text-stone-600 hover:border-emerald-300 hover:text-emerald-800"
-                                  }`}
+                                  onClick={() => setAppendSelectedDashboardFields(DEFAULT_APPEND_DASHBOARD_FIELDS)}
+                                  className="text-[9px] font-black text-emerald-700 hover:text-emerald-900"
                                 >
-                                  <span className={`h-2 w-2 rounded-full ${active ? "bg-amber-200" : "bg-stone-300"}`} />
-                                  {group.label}
+                                  Về mặc định
                                 </button>
-                              );
-                            })}
+                              </div>
+                              <div className="max-h-32 overflow-y-auto rounded-lg border border-stone-100 bg-white p-2">
+                                <div className="flex flex-wrap gap-1.5">
+                                  {selectedAppendFieldOptions.map((field) => {
+                                    const locked = APPEND_STRUCTURE_FIELDS.has(field.value);
+                                    return (
+                                      <span
+                                        key={field.value}
+                                        className={`inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-1 text-[9.5px] font-black ${
+                                          locked
+                                            ? "border-amber-200 bg-amber-50 text-amber-900"
+                                            : "border-emerald-100 bg-emerald-50 text-emerald-900"
+                                        }`}
+                                        title={`${field.label} - ${field.value}`}
+                                      >
+                                        <span className="max-w-[180px] truncate">{field.label}</span>
+                                        <span className="hidden font-mono text-[8.5px] opacity-70 sm:inline">{field.value}</span>
+                                        {!locked && (
+                                          <button
+                                            type="button"
+                                            onClick={() => removeAppendDashboardField(field.value)}
+                                            className="rounded-full text-stone-400 hover:text-red-700"
+                                            aria-label={`Bỏ trường ${field.label}`}
+                                          >
+                                            <X className="h-3 w-3" />
+                                          </button>
+                                        )}
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                                <p className="mt-2 text-[9px] font-semibold text-stone-400">
+                                  Các tag màu vàng là trường cấu trúc tối thiểu luôn giữ để hệ thống nhận đúng người và quan hệ.
+                                </p>
+                              </div>
+                            </div>
                           </div>
                         )}
                       </div>
