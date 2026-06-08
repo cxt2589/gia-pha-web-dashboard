@@ -10,6 +10,9 @@ import { mapLineageNodesToDashboardMembers } from "../data/lineageBridge";
 import { convertSolarToLunarText, convertSolarToLunarTextFromLich247, deriveLunarAnniversaryFromSolarDeathDate, deriveLunarAnniversaryFromSolarDeathDateViaLich247 } from "../../utils/lunarConverter";
 import { parseGenealogyDateText } from "../../utils/genealogyDate.mjs";
 
+const SKIP_DASHBOARD_FIELD = "__skip";
+const SKIP_DASHBOARD_LABEL = "Không ghi nhận / bỏ qua cột";
+
 const parseStructuredGenealogyDate = (...args: Parameters<typeof parseGenealogyDateText>): FamilyMember["birthDateStructured"] =>
   parseGenealogyDateText(...args) as FamilyMember["birthDateStructured"];
 
@@ -181,6 +184,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     dashboardField: string;
     status: "matched" | "mismatched" | "empty";
     incomingHeader?: string;
+    incomingTechnicalCode?: string;
     excelAddress: string;
     sampleValue?: string;
   }[]>([]);
@@ -377,19 +381,23 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     "children[6].name": "Họ tên con thứ 7",
     "children[6].gender": "Giới tính con thứ 7",
     "children[7].name": "Họ tên con thứ 8",
-    "children[7].gender": "Giới tính con thứ 8"
+    "children[7].gender": "Giới tính con thứ 8",
+    [SKIP_DASHBOARD_FIELD]: SKIP_DASHBOARD_LABEL
   };
 
   const dashboardFieldOptions = useMemo(
-    () => Array.from(new Set<string>(FAMILY_COLUMN_REFERENCE.map((column) => column.dashboardField))).map((field) => ({
-      value: field,
-      label: dashboardFieldLabels[field] || field
-    })),
+    () => [
+      { value: SKIP_DASHBOARD_FIELD, label: SKIP_DASHBOARD_LABEL },
+      ...Array.from(new Set<string>(FAMILY_COLUMN_REFERENCE.map((column) => column.dashboardField))).map((field) => ({
+        value: field,
+        label: dashboardFieldLabels[field] || field
+      }))
+    ],
     [FAMILY_COLUMN_REFERENCE]
   );
 
   const getResolvedDashboardField = (columnIndex: number, fallbackField: string) => {
-    return columnFieldOverrides[columnIndex] || fallbackField;
+    return columnFieldOverrides[columnIndex] || fallbackField || SKIP_DASHBOARD_FIELD;
   };
 
   const getDashboardFieldLabel = (field: string) => dashboardFieldLabels[field] || field;
@@ -683,13 +691,16 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     setExcelImportBusy(true);
     setExcelImportGateNote("Đang duyệt mapping và validate dữ liệu xem trước...");
     try {
-      const mapped = excelImportMappings.map((mapping) => ({
-        columnIndex: mapping.columnIndex,
-        mappedField: mapping.mappedField || "__skip",
-        confidence: mapping.confidence || 1,
-        warning: mapping.warning || "",
-        approved: Boolean(mapping.mappedField)
-      }));
+      const mapped = excelImportMappings.map((mapping) => {
+        const mappedField = mapping.mappedField || SKIP_DASHBOARD_FIELD;
+        return {
+          columnIndex: mapping.columnIndex,
+          mappedField,
+          confidence: mappedField === SKIP_DASHBOARD_FIELD ? 1 : (mapping.confidence || 1),
+          warning: mappedField === SKIP_DASHBOARD_FIELD ? "Admin chọn không ghi nhận cột này." : (mapping.warning || ""),
+          approved: true
+        };
+      });
       const patchRes = await fetch(`/api/excel-import/sessions/${excelImportSession.id}/mappings`, {
         method: "PATCH",
         credentials: "include",
@@ -1187,10 +1198,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     setIsAddOpen(false);
   };
 
-  // Excel formatting assessment generator
-  const runFormatVerification = (detectedHeaders: string[], firstDataRow: any[]) => {
-    let matchedCount = 0;
-    const getExcelColumnName = (index: number) => {
+  const getExcelColumnName = (index: number) => {
       let columnName = "";
       let current = index + 1;
       while (current > 0) {
@@ -1200,7 +1208,8 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
       }
       return columnName;
     };
-    const normalizeColumnText = (value: string) => String(value || "")
+
+  const normalizeColumnText = (value: string) => String(value || "")
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "")
       .replace(/\u0111/g, "d")
@@ -1208,27 +1217,84 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
       .replace(/[^a-zA-Z0-9]+/g, "")
       .toLowerCase();
 
-    const matches = FAMILY_COLUMN_REFERENCE.map((column, specIdx) => {
+  const isTechnicalHeaderValue = (value: unknown) =>
+    /^[a-z][a-z0-9]*(?:\.\d+|\.[a-z][a-z0-9]*)+$/i.test(String(value || "").trim());
+
+  const isTechnicalHeaderRow = (row: unknown[] = []) => {
+    const filled = row.map((value) => String(value || "").trim()).filter(Boolean);
+    if (filled.length < 3) return false;
+    const technicalCount = filled.filter(isTechnicalHeaderValue).length;
+    return technicalCount >= Math.max(3, Math.ceil(filled.length * 0.45));
+  };
+
+  const buildTwoLineExcelHeaderInfo = (rows: any[][]) => {
+    const titleHeaders = rows[0] || [];
+    const technicalHeaders = rows[1] || [];
+    const hasTechnicalHeaderRow = isTechnicalHeaderRow(technicalHeaders);
+    const maxColumns = Math.max(titleHeaders.length, hasTechnicalHeaderRow ? technicalHeaders.length : 0);
+    const headers = Array.from({ length: maxColumns }, (_, index) => {
+      const title = String(titleHeaders[index] ?? "").trim();
+      const code = hasTechnicalHeaderRow ? String(technicalHeaders[index] ?? "").trim() : "";
+      return [title, code].filter(Boolean).join(" | ");
+    });
+    return {
+      headers,
+      technicalHeaders: hasTechnicalHeaderRow ? technicalHeaders.map((value) => String(value ?? "").trim()) : [],
+      dataStartIndex: hasTechnicalHeaderRow ? 2 : 1
+    };
+  };
+
+  const findBestDashboardFieldForHeader = (incomingHeader: string) => {
+    const incoming = normalizeColumnText(incomingHeader);
+    if (!incoming) return { field: SKIP_DASHBOARD_FIELD, score: 0 };
+    let best = { field: SKIP_DASHBOARD_FIELD, score: 0 };
+    FAMILY_COLUMN_REFERENCE.forEach((column) => {
+      const label = normalizeColumnText(column.excelColumn);
+      const field = normalizeColumnText(column.dashboardField);
+      const score = incoming.includes(label) || label.includes(incoming) || incoming.includes(field) || field.includes(incoming)
+        ? Math.max(label.length, field.length)
+        : 0;
+      if (score > best.score) best = { field: column.dashboardField, score };
+    });
+    return best;
+  };
+
+  // Excel formatting assessment generator
+  const runFormatVerification = (detectedHeaders: string[], firstDataRow: any[]) => {
+    let matchedCount = 0;
+    const columnCount = Math.max(FAMILY_COLUMN_REFERENCE.length, detectedHeaders.length, firstDataRow?.length || 0);
+
+    const matches = Array.from({ length: columnCount }, (_, specIdx) => {
+      const expectedColumn = FAMILY_COLUMN_REFERENCE[specIdx];
       const incomingHeader = detectedHeaders[specIdx] ? String(detectedHeaders[specIdx]).trim() : "";
       const sampleCell = firstDataRow && firstDataRow[specIdx] !== undefined ? String(firstDataRow[specIdx]).trim() : "";
       let status: "matched" | "mismatched" | "empty" = "empty";
+      let dashboardField = expectedColumn?.dashboardField || SKIP_DASHBOARD_FIELD;
+      let name = expectedColumn?.excelColumn || "Chưa có trường dashboard tương ứng";
+      const technicalCode = incomingHeader.includes("|") ? incomingHeader.split("|").slice(1).join("|").trim() : "";
 
       if (incomingHeader) {
-        const simplifiedSpec = normalizeColumnText(column.excelColumn);
+        const simplifiedSpec = normalizeColumnText(expectedColumn?.excelColumn || "");
         const simplifiedIncoming = normalizeColumnText(incomingHeader);
         if (simplifiedIncoming.includes(simplifiedSpec) || simplifiedSpec.includes(simplifiedIncoming)) {
           status = "matched";
           matchedCount++;
         } else {
           status = "mismatched";
+          const best = findBestDashboardFieldForHeader(incomingHeader);
+          if (!expectedColumn || best.score > 0) {
+            dashboardField = best.field;
+            name = best.field === SKIP_DASHBOARD_FIELD ? "Chưa có trường dashboard tương ứng" : getDashboardFieldLabel(best.field);
+          }
         }
       }
 
       return {
-        name: column.excelColumn,
-        dashboardField: column.dashboardField,
+        name,
+        dashboardField,
         status,
         incomingHeader: incomingHeader || undefined,
+        incomingTechnicalCode: technicalCode || undefined,
         excelAddress: `${getExcelColumnName(specIdx)}1`,
         sampleValue: sampleCell || undefined
       };
@@ -1429,16 +1495,17 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
           const firstSheetName = workbook.SheetNames[0];
           const worksheet = workbook.Sheets[firstSheetName];
           const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
+          const headerInfo = buildTwoLineExcelHeaderInfo(rawRows);
           await createExcelImportGateSession({
             fileName: file.name,
             fileSize: file.size,
             fileType: file.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers: (rawRows[0] || []).map(String),
-            previewRows: rawRows.slice(1, 31),
-            rowCount: Math.max(0, rawRows.length - 1),
-            columnCount: (rawRows[0] || []).length
+            headers: headerInfo.headers,
+            previewRows: rawRows.slice(headerInfo.dataStartIndex, headerInfo.dataStartIndex + 30),
+            rowCount: Math.max(0, rawRows.length - headerInfo.dataStartIndex),
+            columnCount: headerInfo.headers.length
           });
-          runFormatVerification(rawRows[0] || [], rawRows[1] || []);
+          runFormatVerification(headerInfo.headers, rawRows[headerInfo.dataStartIndex] || []);
           prepareStandardImportRows(parseWorksheetToRows(worksheet), `${file.name} / ${firstSheetName}`);
         }
       } catch (err: any) {
@@ -1462,16 +1529,17 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
       
       setUploadFileName("Vùng văn bản dán Excel (Clipboard Temp)");
       const worksheet = XLSX.utils.aoa_to_sheet(sheetRows);
+      const headerInfo = buildTwoLineExcelHeaderInfo(sheetRows);
       await createExcelImportGateSession({
         fileName: "clipboard-excel.csv",
         fileSize: new Blob([bulkText]).size,
         fileType: "text/csv",
-        headers: (sheetRows[0] || []).map(String),
-        previewRows: sheetRows.slice(1, 31),
-        rowCount: Math.max(0, sheetRows.length - 1),
-        columnCount: (sheetRows[0] || []).length
+        headers: headerInfo.headers,
+        previewRows: sheetRows.slice(headerInfo.dataStartIndex, headerInfo.dataStartIndex + 30),
+        rowCount: Math.max(0, sheetRows.length - headerInfo.dataStartIndex),
+        columnCount: headerInfo.headers.length
       });
-      runFormatVerification(sheetRows[0] || [], sheetRows[1] || []);
+      runFormatVerification(headerInfo.headers, sheetRows[headerInfo.dataStartIndex] || []);
       prepareStandardImportRows(parseWorksheetToRows(worksheet), "Vùng dán Excel");
     } catch (err: any) {
       setImportError(err.message || "Phân mảnh dòng dán lỗi cấu trúc.");
@@ -3474,6 +3542,14 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                               >
                                 File Excel: Cột {idx + 1} - {col.excelAddress} - {col.incomingHeader || "Không có tiêu đề"}
                               </span>
+                              {col.incomingTechnicalCode && (
+                                <span
+                                  className="text-[8px] font-mono text-sky-700 block leading-snug break-words"
+                                  title={`Mã kỹ thuật dòng 2: ${col.incomingTechnicalCode}`}
+                                >
+                                  Mã kỹ thuật: {col.incomingTechnicalCode}
+                                </span>
+                              )}
                               <span
                                 className="text-[8px] font-mono text-stone-500 block leading-snug break-words"
                                 title={`Trường dashboard: ${getDashboardFieldLabel(getResolvedDashboardField(idx, col.dashboardField))}`}
@@ -3563,7 +3639,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                             <tr>
                               <th className="p-1.5 text-left">Cột</th>
                               <th className="p-1.5 text-left">Header</th>
-                              <th className="p-1.5 text-left">Field</th>
+                              <th className="p-1.5 text-left">Field / xử lý</th>
                               <th className="p-1.5 text-left">Tin cậy</th>
                               <th className="p-1.5 text-left">Duyệt</th>
                             </tr>
@@ -3573,7 +3649,28 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                               <tr key={mapping.id}>
                                 <td className="p-1.5 font-mono">{mapping.columnLetter}</td>
                                 <td className="p-1.5 font-semibold text-stone-800">{mapping.originalHeader || "Không tiêu đề"}</td>
-                                <td className="p-1.5 text-stone-650">{mapping.mappedField || "Chưa map"}</td>
+                                <td className="p-1.5 text-stone-650">
+                                  <select
+                                    value={mapping.mappedField || SKIP_DASHBOARD_FIELD}
+                                    onChange={(event) => {
+                                      const nextField = event.target.value;
+                                      setExcelImportMappings((prev) => prev.map((item) => item.id === mapping.id
+                                        ? {
+                                            ...item,
+                                            mappedField: nextField,
+                                            approved: false,
+                                            warning: nextField === SKIP_DASHBOARD_FIELD ? "Admin chọn không ghi nhận cột này." : item.warning
+                                          }
+                                        : item
+                                      ));
+                                    }}
+                                    className="w-full min-w-[150px] rounded border border-sky-100 bg-white px-1.5 py-1 text-[9px] text-stone-700 outline-none focus:border-sky-500"
+                                  >
+                                    {dashboardFieldOptions.map((field) => (
+                                      <option key={field.value} value={field.value}>{field.label}</option>
+                                    ))}
+                                  </select>
+                                </td>
                                 <td className="p-1.5 font-mono">{Math.round((mapping.confidence || 0) * 100)}%</td>
                                 <td className="p-1.5">{mapping.approved ? "Đã duyệt" : "Chờ duyệt"}</td>
                               </tr>

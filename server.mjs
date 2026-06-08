@@ -2077,8 +2077,8 @@ function suggestExcelColumnMapping(header, index) {
 function normalizePreviewRows(rows, limit = 30) {
   if (!Array.isArray(rows)) return [];
   return rows.slice(0, limit).map((row) => Array.isArray(row)
-    ? row.slice(0, 80).map((value) => String(value ?? '').slice(0, 300))
-    : Object.fromEntries(Object.entries(row || {}).slice(0, 80).map(([key, value]) => [key, String(value ?? '').slice(0, 300)]))
+    ? row.slice(0, 160).map((value) => String(value ?? '').slice(0, 300))
+    : Object.fromEntries(Object.entries(row || {}).slice(0, 160).map(([key, value]) => [key, String(value ?? '').slice(0, 300)]))
   );
 }
 

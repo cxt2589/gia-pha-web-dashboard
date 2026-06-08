@@ -23,6 +23,17 @@ function formatCellForImport(cell: XLSX.CellObject | undefined, header: string) 
     : String(cell.w ?? cell.v ?? "").trim();
 }
 
+function isTechnicalHeaderValue(value: unknown) {
+  return /^[a-z][a-z0-9]*(?:\.\d+|\.[a-z][a-z0-9]*)+$/i.test(String(value || "").trim());
+}
+
+function isTechnicalHeaderRow(values: unknown[]) {
+  const filled = values.map((value) => String(value || "").trim()).filter(Boolean);
+  if (filled.length < 3) return false;
+  const technicalCount = filled.filter(isTechnicalHeaderValue).length;
+  return technicalCount >= Math.max(3, Math.ceil(filled.length * 0.45));
+}
+
 export function parseWorksheetToRows(worksheet: XLSX.WorkSheet): any[] {
   const rangeRef = worksheet['!ref'];
   if (!rangeRef) return [];
@@ -36,8 +47,15 @@ export function parseWorksheetToRows(worksheet: XLSX.WorkSheet): any[] {
 
   if (headers.every((header) => !header)) return [];
 
+  const secondRowValues: string[] = [];
+  for (let column = range.s.c; column <= range.e.c; column++) {
+    const cell = worksheet[XLSX.utils.encode_cell({ r: range.s.r + 1, c: column })];
+    secondRowValues.push(String(cell?.w ?? cell?.v ?? "").trim());
+  }
+  const dataStartRow = isTechnicalHeaderRow(secondRowValues) ? range.s.r + 2 : range.s.r + 1;
+
   const rows: any[] = [];
-  for (let rowIndex = range.s.r + 1; rowIndex <= range.e.r; rowIndex++) {
+  for (let rowIndex = dataStartRow; rowIndex <= range.e.r; rowIndex++) {
     const rawValues = headers.map((header, index) => {
       const cell = worksheet[XLSX.utils.encode_cell({ r: rowIndex, c: range.s.c + index })];
       return formatCellForImport(cell, header);
