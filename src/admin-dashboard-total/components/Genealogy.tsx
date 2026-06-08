@@ -103,8 +103,88 @@ const FAMILY_COLUMN_REFERENCE_ITEMS: FamilyColumnReferenceItem[] = [
   { excelColumn: "Ghi chú tiểu sử", dashboardField: "bio.note" }
 ];
 
+const DASHBOARD_FIELD_LABEL_OVERRIDES: Record<string, string> = {
+  "person.id": "Bản thân - Mã định danh cá nhân",
+  "person.name": "Bản thân - Họ và tên đầy đủ",
+  "person.gender": "Bản thân - Giới tính",
+  "person.rankRole": "Bản thân - Vai trò/thứ bậc",
+  "person.title": "Bản thân - Tước vị/danh xưng",
+  "person.alias": "Bản thân - Tên thường gọi / bí danh / tên tự",
+  "person.status": "Bản thân - Tình trạng còn sống/đã mất",
+  "person.generation": "Bản thân - Đời thứ mấy",
+  "person.photo": "Bản thân - Ảnh chân dung",
+  "contact.phone1": "Bản thân - Số điện thoại",
+  "contact.phone2": "Bản thân - Số điện thoại phụ",
+  "contact.phone3": "Bản thân - Số điện thoại khác",
+  "contact.residence": "Bản thân - Nơi ở",
+  "contact.note": "Bản thân - Ghi chú liên hệ",
+  "contact.email": "Bản thân - Email",
+  "birth.solarDate": "Bản thân - Ngày sinh dương lịch/trên giấy tờ",
+  "birth.lunarDate": "Bản thân - Ngày sinh âm lịch",
+  "birth.note": "Bản thân - Ghi chú ngày sinh",
+  "birth.place": "Bản thân - Nơi sinh",
+  "death.solarDate": "Bản thân - Ngày mất dương lịch",
+  "death.lunarDate": "Bản thân - Ngày mất âm lịch",
+  "grave.location": "Bản thân - Nơi an táng",
+  "father.name": "Cha - Họ và tên",
+  "father.residence": "Cha - Nơi ở",
+  "father.phone": "Cha - Số điện thoại",
+  "father.birthDate": "Cha - Ngày sinh dương lịch/trên giấy tờ",
+  "father.status": "Cha - Tình trạng còn sống/đã mất",
+  "father.deathDate": "Cha - Ngày mất dương lịch",
+  "father.lunarAnniversary": "Cha - Ngày mất âm lịch / kỵ nhật",
+  "father.graveLocation": "Cha - Nơi an táng",
+  "father.id": "Cha - Mã định danh",
+  "father.note": "Cha - Ghi chú",
+  "mother.name": "Mẹ - Họ và tên",
+  "mother.residence": "Mẹ - Nơi ở",
+  "mother.phone": "Mẹ - Số điện thoại",
+  "mother.birthDate": "Mẹ - Ngày sinh dương lịch/trên giấy tờ",
+  "mother.status": "Mẹ - Tình trạng còn sống/đã mất",
+  "mother.deathDate": "Mẹ - Ngày mất dương lịch",
+  "mother.lunarAnniversary": "Mẹ - Ngày mất âm lịch / kỵ nhật",
+  "mother.graveLocation": "Mẹ - Nơi an táng",
+  "mother.note": "Mẹ - Ghi chú",
+  "bio.summary": "Bản thân - Tóm tắt tiểu sử",
+  "bio.description": "Bản thân - Hành trạng tiên nhân",
+  "bio.career": "Bản thân - Sự nghiệp/tích trạng",
+  "bio.achievements": "Bản thân - Công lao/vinh danh",
+  "bio.note": "Bản thân - Ghi chú tiểu sử"
+};
+
+const createDashboardFieldLabel = (column: FamilyColumnReferenceItem) => {
+  if (DASHBOARD_FIELD_LABEL_OVERRIDES[column.dashboardField]) {
+    return DASHBOARD_FIELD_LABEL_OVERRIDES[column.dashboardField];
+  }
+  const spouseMatch = column.dashboardField.match(/^spouse\.(\d+)\.(.+)$/);
+  if (spouseMatch) {
+    const spouseFieldLabels: Record<string, string> = {
+      name: "Họ và tên",
+      residence: "Nơi ở",
+      phone: "Số điện thoại",
+      birthDate: "Ngày sinh dương lịch/trên giấy tờ",
+      status: "Tình trạng còn sống/đã mất",
+      deathDate: "Ngày mất dương lịch",
+      lunarAnniversary: "Ngày giỗ/kỵ nhật",
+      graveLocation: "Nơi an táng",
+      note: "Ghi chú"
+    };
+    return `Vợ/Chồng ${spouseMatch[1]} - ${spouseFieldLabels[spouseMatch[2]] || column.excelColumn.replace(/\s*Vợ\/Chồng\s*\d+\s*$/i, "").trim()}`;
+  }
+  const childMatch = column.dashboardField.match(/^archive\.child\.(\d+)\.(.+)$/);
+  if (childMatch) {
+    const childFieldLabels: Record<string, string> = {
+      name: "Họ và tên",
+      gender: "Giới tính",
+      id: "Mã định danh"
+    };
+    return `Con ruột ${childMatch[1]} - ${childFieldLabels[childMatch[2]] || column.excelColumn.replace(/\s*con ruột\s*\d+\s*/i, "").trim() || "Thông tin con"}`;
+  }
+  return column.excelColumn;
+};
+
 const DASHBOARD_FIELD_LABELS: Record<string, string> = {
-  ...Object.fromEntries(FAMILY_COLUMN_REFERENCE_ITEMS.map((column) => [column.dashboardField, column.excelColumn])),
+  ...Object.fromEntries(FAMILY_COLUMN_REFERENCE_ITEMS.map((column) => [column.dashboardField, createDashboardFieldLabel(column)])),
   [SKIP_DASHBOARD_FIELD]: SKIP_DASHBOARD_LABEL
 };
 
@@ -3702,6 +3782,9 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                                 </div>
                                 <p className="mt-2 text-[9px] font-semibold text-stone-400">
                                   Các tag màu vàng là trường cấu trúc tối thiểu luôn giữ để hệ thống nhận đúng người và quan hệ.
+                                </p>
+                                <p className="mt-1 text-[9px] font-semibold text-amber-700">
+                                  Nếu sửa họ tên, file cần giữ đúng mã <span className="font-mono">person.id</span>; nếu chỉ đổi tên mà thiếu mã định danh, hệ thống có thể coi là người mới.
                                 </p>
                               </div>
                             </div>
