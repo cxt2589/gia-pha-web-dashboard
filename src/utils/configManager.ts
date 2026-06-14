@@ -434,6 +434,13 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
   let virtualChildrenCount = 0;
   const duplicateNameSet = new Set<string>();
   const seenNames = new Map<string, number>();
+  const existingNodeById = new Map<string, any>();
+  if (existingTreeToMerge) {
+    flattenTreeToList(existingTreeToMerge).forEach((node: any) => {
+      const id = String(node?.id || "").trim();
+      if (id) existingNodeById.set(id, node);
+    });
+  }
 
   // Extract columns based on sequence regions (to handle duplicate "Nơi ở" / "Số điện thoại" correctly)
   const mapVietnameseKeys = (rowObj: Record<string, any>, index: number) => {
@@ -443,21 +450,45 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
     }
 
     const getVal = (keys: string[]) => {
+      const normalizeForLookup = (value: unknown) => String(value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/đ/g, "d")
+        .replace(/Đ/g, "D")
+        .replace(/[:：?()]/g, "")
+        .replace(/[._-]+/g, " ")
+        .replace(/[^a-z0-9/ ]+/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+      const exactKeys = keys.map((key) => String(key || "").trim().toLowerCase());
+      const normalizedKeys = keys.map(normalizeForLookup);
+
+      if (Array.isArray(rowObj._technicalHeaders) && Array.isArray(rowObj._rawValues)) {
+        for (let i = 0; i < rowObj._technicalHeaders.length; i++) {
+          const technicalHeader = String(rowObj._technicalHeaders[i] || "").trim().toLowerCase();
+          if (exactKeys.includes(technicalHeader) || normalizedKeys.includes(normalizeForLookup(technicalHeader))) {
+            return String(rowObj._rawValues[i] || "").trim();
+          }
+        }
+      }
+
       // 1st pass: exact match (after cleaning colons/whitespace and lowercasing)
       for (const k of Object.keys(rowObj)) {
         const cleanK = k.replace(/[:：?()]/g, '').trim().toLowerCase();
-        if (keys.includes(cleanK)) {
+        if (keys.includes(cleanK) || normalizedKeys.includes(normalizeForLookup(cleanK))) {
           return rowObj[k];
         }
       }
       // 2nd pass: substring/containment match with smart guard against matching relative columns
       for (const k of Object.keys(rowObj)) {
         const cleanK = k.replace(/[:：?()]/g, '').trim().toLowerCase();
-        if (keys.some(key => cleanK.includes(key))) {
+        const normalizedCleanK = normalizeForLookup(cleanK);
+        if (keys.some(key => cleanK.includes(key)) || normalizedKeys.some(key => normalizedCleanK.includes(key))) {
           // Guard: if checking main member attributes, avoid matching relative columns (like "cha", "mẹ", "vợ", "chồng", "con")
-          const checkingMain = !keys.some(key => key.includes("cha") || key.includes("mẹ") || key.includes("me") || key.includes("vợ") || key.includes("chồng") || key.includes("con") || key.includes("phối ngẫu"));
+          const checkingMain = !normalizedKeys.some(key => key.includes("cha") || key.includes("me") || key.includes("vo") || key.includes("chong") || key.includes("con") || key.includes("phoi ngau"));
           if (checkingMain) {
-            const hasRelativeWord = cleanK.includes("cha") || cleanK.includes("mẹ") || cleanK.includes("me") || cleanK.includes("vợ") || cleanK.includes("chồng") || cleanK.includes("con") || cleanK.includes("phối ngẫu");
+            const hasRelativeWord = normalizedCleanK.includes("cha") || normalizedCleanK.includes("me") || normalizedCleanK.includes("vo") || normalizedCleanK.includes("chong") || normalizedCleanK.includes("con") || normalizedCleanK.includes("phoi ngau");
             if (hasRelativeWord) continue; // Skip to avoid mis-attributing parents' data as child's
           }
           return rowObj[k];
@@ -507,8 +538,24 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
       return "";
     };
 
-    const nameVal = getVal(["họ và tên đầy đủ", "họ tên", "tên đầy đủ", "name", "họ và tên"]);
-    if (!nameVal || !nameVal.trim()) return null; // Skip empty rows
+    const getTechnicalRawValue = (field: string) => {
+      if (!Array.isArray(rowObj._technicalHeaders) || !Array.isArray(rowObj._rawValues)) return "";
+      const index = rowObj._technicalHeaders.findIndex((header: unknown) => String(header || "").trim().toLowerCase() === field.toLowerCase());
+      if (index < 0) return "";
+      return String(rowObj._rawValues[index] || "").trim();
+    };
+
+    const explicitIdVal = getVal(["mã số", "id", "person.id", "mã thành viên", "mã", "ma ma", "ma so", "mã định danh cá nhân", "mã định danh người chồng/người có phối ngẫu", "mã số định danh", "ma dinh danh", "mã số định danh cá nhân", "ma so dinh dan ca nhan"]);
+    const explicitId = (explicitIdVal && explicitIdVal !== "undefined" && explicitIdVal.trim().length > 0)
+      ? String(explicitIdVal).trim()
+      : (rowObj.id ? String(rowObj.id).trim() : "");
+    const existingNodeForRow = explicitId ? existingNodeById.get(explicitId) : undefined;
+    const technicalPersonName = getTechnicalRawValue("person.name");
+    const hasTechnicalHeaders = Array.isArray(rowObj._technicalHeaders);
+    const nameVal = hasTechnicalHeaders
+      ? (technicalPersonName || existingNodeForRow?.name || "")
+      : (getVal(["họ và tên đầy đủ", "họ tên", "tên đầy đủ", "name", "person.name", "họ và tên"]) || existingNodeForRow?.name || "");
+    if (!nameVal || !String(nameVal).trim()) return null; // Skip empty rows that cannot be linked to existing tree
 
     totalParsed++;
 
@@ -633,6 +680,7 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
     const birthYearRaw = getValInBounds(["ngày sinh", "ngày sinh (trên giấy tờ)", "năm sinh", "birthyear", "birth", "ngay sinh", "nam sinh"], 0, fLimit);
     const deathYearRaw = getValInBounds(["ngày tháng năm mất", "năm mất", "ngày mất", "deathyear", "death", "ngày tháng năm mất (dương lịch)", "qua đời ngày"], 0, fLimit);
     const lunarDeathRaw = getValInBounds(["ngày mất theo âm lịch", "ngày mất âm lịch", "ngày giỗ", "kỵ nhật", "lunar anniversary", "lunaranniversary", "ngay mat theo am lich", "ngay mat am lich", "ngay gio", "ky nhat"], 0, fLimit);
+    const deathLunarYearTextRaw = getValInBounds(["năm mất âm lịch", "năm mất âm lịch / can chi", "can chi năm mất", "năm mất can chi", "nam mat am lich", "can chi nam mat", "death.lunaryeartext", "death lunaryeartext", "death lunar year text", "death lunar year"], 0, fLimit);
     
     const solarBirthDate = birthYearRaw ? normalizeDateDisplayValue(birthYearRaw.trim()) : undefined;
     const solarDeathDate = deathYearRaw ? normalizeDateDisplayValue(deathYearRaw.trim()) : undefined;
@@ -642,7 +690,8 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
 
     if (
       (deathYear && deathYear.trim().length > 0 && deathYear.trim() !== "undefined") ||
-      (lunarDeathRaw && lunarDeathRaw.trim().length > 0)
+      (lunarDeathRaw && lunarDeathRaw.trim().length > 0) ||
+      (deathLunarYearTextRaw && deathLunarYearTextRaw.trim().length > 0)
     ) {
       isLiving = false;
     }
@@ -694,6 +743,7 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
       const fatherBirth = getValInBounds(["ngày sinh", "năm sinh"], fatherIdx, mLimit);
       const fatherDeath = getValInBounds(["ngày tháng năm mất", "năm mất", "ngày mất"], fatherIdx, mLimit);
       const fatherLunarDeath = getValInBounds(["ngày mất theo âm lịch", "ngày mất âm lịch", "ngày giỗ", "kỵ nhật", "lunar anniversary", "lunaranniversary", "ngay mat theo am lich", "ngay mat am lich", "ngay gio", "ky nhat"], fatherIdx, mLimit);
+      const fatherDeathLunarYearText = getValInBounds(["năm mất âm lịch", "năm mất âm lịch / can chi", "can chi năm mất", "năm mất can chi", "nam mat am lich", "can chi nam mat", "death lunaryeartext", "death lunar year text"], fatherIdx, mLimit);
       const fatherBurial = getValInBounds(["nơi an táng", "an táng"], fatherIdx, mLimit);
 
       let fatherIsLiving = true;
@@ -703,7 +753,7 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
           fatherIsLiving = false;
         }
       }
-      if ((fatherDeath && fatherDeath.trim()) || (fatherLunarDeath && fatherLunarDeath.trim())) {
+      if ((fatherDeath && fatherDeath.trim()) || (fatherLunarDeath && fatherLunarDeath.trim()) || (fatherDeathLunarYearText && fatherDeathLunarYearText.trim())) {
         fatherIsLiving = false;
       }
 
@@ -720,6 +770,7 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
         deathYear: fatherDeathYear || undefined,
         solarDeathDate: fatherSolarDeathDate,
         lunarAnniversary: fatherLunarDeath || undefined,
+        deathLunarYearText: fatherDeathLunarYearText || undefined,
         burialPlace: fatherBurial || undefined,
         deathPlace: fatherBurial || undefined,
         residence: fatherResidence || undefined,
@@ -735,6 +786,7 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
       const motherBirth = getValInBounds(["ngày sinh", "năm sinh"], motherIdx, sLimit);
       const motherDeath = getValInBounds(["ngày tháng năm mất", "năm mất", "ngày mất"], motherIdx, sLimit);
       const motherLunarDeath = getValInBounds(["ngày mất theo âm lịch", "ngày mất âm lịch", "ngày giỗ", "kỵ nhật", "lunar anniversary", "lunaranniversary", "ngay mat theo am lich", "ngay mat am lich", "ngay gio", "ky nhat"], motherIdx, sLimit);
+      const motherDeathLunarYearText = getValInBounds(["năm mất âm lịch", "năm mất âm lịch / can chi", "can chi năm mất", "năm mất can chi", "nam mat am lich", "can chi nam mat", "death lunaryeartext", "death lunar year text"], motherIdx, sLimit);
       const motherBurial = getValInBounds(["nơi an táng", "an táng"], motherIdx, sLimit);
 
       let motherIsLiving = true;
@@ -744,7 +796,7 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
           motherIsLiving = false;
         }
       }
-      if ((motherDeath && motherDeath.trim()) || (motherLunarDeath && motherLunarDeath.trim())) {
+      if ((motherDeath && motherDeath.trim()) || (motherLunarDeath && motherLunarDeath.trim()) || (motherDeathLunarYearText && motherDeathLunarYearText.trim())) {
         motherIsLiving = false;
       }
 
@@ -761,6 +813,7 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
         deathYear: motherDeathYear || undefined,
         solarDeathDate: motherSolarDeathDate,
         lunarAnniversary: motherLunarDeath || undefined,
+        deathLunarYearText: motherDeathLunarYearText || undefined,
         burialPlace: motherBurial || undefined,
         deathPlace: motherBurial || undefined,
         residence: motherResidence || undefined,
@@ -768,8 +821,71 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
       };
     }
 
+    const getColumnValueByTechnicalField = (field: string) => {
+      return getTechnicalRawValue(field);
+    };
+
+    const getIndexedSpouseDetailVal = (spouseNumber: number, field: "id" | "name" | "birthDate" | "status" | "deathDate" | "lunarAnniversary" | "graveLocation" | "note") => {
+      const technicalValue = getColumnValueByTechnicalField(`spouse.${spouseNumber}.${field}`);
+      if (technicalValue) return technicalValue;
+      if (!Array.isArray(rowObj._headers) || !Array.isArray(rowObj._rawValues)) return "";
+      const normalizedFieldLabels: Record<typeof field, string[]> = {
+        id: ["ma dinh danh", "ma vo", "ma chong", "ma phoi ngau", "id"],
+        name: ["ho va ten", "vo/chong", "vo chong", "phoi ngau"],
+        birthDate: ["ngay sinh", "nam sinh"],
+        status: ["tinh trang", "trang thai"],
+        deathDate: ["ngay thang nam mat", "ngay mat", "nam mat"],
+        lunarAnniversary: ["ngay gio", "ky nhat", "ngay mat am lich", "lunar anniversary", "lunaranniversary"],
+        graveLocation: ["noi an tang", "an tang", "mo phan"],
+        note: ["ghi chu", "thu tu"]
+      };
+      const spouseNeedles = [`vo/chong ${spouseNumber}`, `vo chong ${spouseNumber}`, `phoi ngau ${spouseNumber}`];
+      for (let i = 0; i < rowObj._headers.length; i++) {
+        const cleanH = normalizeHeaderForMatch(rowObj._headers[i]);
+        if (!spouseNeedles.some((needle) => cleanH.includes(needle))) continue;
+        if (normalizedFieldLabels[field].some((label) => cleanH.includes(label))) {
+          return String(rowObj._rawValues[i] || "").trim();
+        }
+      }
+      return "";
+    };
+
     // C. Process spouse details
     let spouseDetails: any[] = [];
+    for (const spouseNumber of [1, 2, 3]) {
+      const indexedSpouseId = getIndexedSpouseDetailVal(spouseNumber, "id");
+      const indexedSpouseName = getIndexedSpouseDetailVal(spouseNumber, "name");
+      if (!indexedSpouseName || indexedSpouseName === "undefined") continue;
+      const indexedSpouseBirth = getIndexedSpouseDetailVal(spouseNumber, "birthDate");
+      const indexedSpouseStatus = getIndexedSpouseDetailVal(spouseNumber, "status");
+      const indexedSpouseDeath = getIndexedSpouseDetailVal(spouseNumber, "deathDate");
+      const indexedSpouseLunarDeath = getIndexedSpouseDetailVal(spouseNumber, "lunarAnniversary");
+      const indexedSpouseBurial = getIndexedSpouseDetailVal(spouseNumber, "graveLocation");
+      const indexedSpouseNote = getIndexedSpouseDetailVal(spouseNumber, "note");
+      const indexedSpouseSolarBirthDate = indexedSpouseBirth ? normalizeDateDisplayValue(indexedSpouseBirth.trim()) : undefined;
+      const indexedSpouseSolarDeathDate = indexedSpouseDeath ? normalizeDateDisplayValue(indexedSpouseDeath.trim()) : undefined;
+      const indexedSpouseBirthYear = extractYearOnly(indexedSpouseSolarBirthDate || indexedSpouseBirth);
+      const indexedSpouseDeathYear = extractYearOnly(indexedSpouseSolarDeathDate || indexedSpouseDeath);
+      const normalizedStatus = indexedSpouseStatus.toLowerCase();
+      const indexedSpouseIsLiving = indexedSpouseDeath || indexedSpouseLunarDeath
+        ? false
+        : normalizedStatus
+          ? !(normalizedStatus.includes("mất") || normalizedStatus.includes("mat") || normalizedStatus.includes("khuất") || normalizedStatus.includes("khuat"))
+          : undefined;
+      spouseDetails.push({
+        id: indexedSpouseId || undefined,
+        name: indexedSpouseName.trim(),
+        birthYear: indexedSpouseBirthYear || undefined,
+        solarBirthDate: indexedSpouseSolarBirthDate,
+        isLiving: indexedSpouseIsLiving,
+        deathYear: indexedSpouseDeathYear || undefined,
+        solarDeathDate: indexedSpouseSolarDeathDate,
+        lunarAnniversary: indexedSpouseLunarDeath || undefined,
+        burialPlace: indexedSpouseBurial || undefined,
+        deathPlace: indexedSpouseBurial || undefined,
+        note: indexedSpouseNote || undefined
+      });
+    }
     if (spouseName && spouseName.trim()) {
       const spouseResidence = spouseIdx !== -1 ? getValInBounds(["nơi ở", "địa chỉ"], spouseIdx, cLimit) : "";
       const spousePhone = spouseIdx !== -1 ? getValInBounds(["số điện thoại", "sđt"], spouseIdx, cLimit) : "";
@@ -808,7 +924,8 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
       const spouseDetailBirthYear = extractYearOnly(spouseDetailBirth) || spouseBirthYr;
       const spouseDetailDeathYear = extractYearOnly(spouseDetailDeath) || spouseDeathYr;
 
-      spouseDetails.push({
+      const hasIndexedSpouse = spouseDetails.some((spouse) => cleanNameForMatching(spouse.name) === cleanNameForMatching(spouseName));
+      if (!hasIndexedSpouse) spouseDetails.push({
         name: spouseName.trim(),
         residence: spouseDetailResidence || undefined,
         phone1: normalizeImportedPhone(spouseDetailPhone),
@@ -824,9 +941,8 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
     }
 
     // D. Parse explicit linking IDs
-    const explicitIdVal = getVal(["mã số", "id", "mã thành viên", "mã", "ma ma", "ma so", "mã định danh cá nhân", "mã số định danh", "ma dinh danh", "mã số định danh cá nhân", "ma so dinh dan ca nhan"]);
-    const id = (explicitIdVal && explicitIdVal !== "undefined" && explicitIdVal.trim().length > 0) 
-      ? String(explicitIdVal).trim() 
+    const id = (explicitId && explicitId !== "undefined" && explicitId.trim().length > 0) 
+      ? String(explicitId).trim() 
       : (rowObj.id ? String(rowObj.id).trim() : `tv-${index + 1}`);
 
     const explicitParentVal = getVal(["mã cha", "mã số cha", "mã cha ruột", "mã người giám hộ", "parent id", "mã số cha ruột", "ma so cha", "ma cha", "parentid", "mã mẹ", "ma me", "ma so cha ruot"]);
@@ -845,9 +961,10 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
       solarBirthDate,
       solarDeathDate,
       lunarAnniversary: lunarDeathRaw || undefined,
+      deathLunarYearText: deathLunarYearTextRaw || undefined,
       isLiving,
       title,
-      spouse: spouseName,
+      spouse: spouseDetails.length > 0 ? spouseDetails.map((spouse) => spouse.name).filter(Boolean).join(", ") : spouseName,
       spouseDetails,
       phone1,
       phone2,
@@ -1059,6 +1176,9 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
         if (!fatherNode.solarDeathDate && fd.solarDeathDate) {
           fatherNode.solarDeathDate = fd.solarDeathDate;
         }
+        if (!fatherNode.deathLunarYearText && fd.deathLunarYearText) {
+          fatherNode.deathLunarYearText = fd.deathLunarYearText;
+        }
         if (!fatherNode.burialPlace && fd.burialPlace) {
           fatherNode.burialPlace = fd.burialPlace;
         }
@@ -1099,6 +1219,9 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
           if (!existingSpouse.solarDeathDate && md.solarDeathDate) {
             existingSpouse.solarDeathDate = md.solarDeathDate;
           }
+          if (!existingSpouse.deathLunarYearText && md.deathLunarYearText) {
+            existingSpouse.deathLunarYearText = md.deathLunarYearText;
+          }
           if (!existingSpouse.burialPlace && md.burialPlace) {
             existingSpouse.burialPlace = md.burialPlace;
             existingSpouse.deathPlace = md.burialPlace;
@@ -1117,6 +1240,7 @@ export function buildTreeFromFlatList(flatList: any[], existingTreeToMerge?: any
             isLiving: md.isLiving,
             deathYear: md.deathYear,
             solarDeathDate: md.solarDeathDate,
+            deathLunarYearText: md.deathLunarYearText,
             burialPlace: md.burialPlace,
             deathPlace: md.burialPlace,
             residence: md.residence,
@@ -1476,7 +1600,12 @@ export function mergeFlatLists(existingList: any[], newList: any[]): any[] {
         if (key === "spouseDetails" && Array.isArray(oldVal) && oldVal.length > 0) {
           const currentSpouses = Array.isArray(mergedObj.spouseDetails) ? [...mergedObj.spouseDetails] : [];
           oldVal.forEach((oldSpouse) => {
-            const sMatchIdx = currentSpouses.findIndex(os => cleanNameForMatching(os.name) === cleanNameForMatching(oldSpouse.name));
+            const sMatchIdx = currentSpouses.findIndex(os => {
+              const oldId = String(oldSpouse?.id || "").trim();
+              const currentId = String(os?.id || "").trim();
+              if (oldId && currentId && oldId === currentId) return true;
+              return cleanNameForMatching(os.name) === cleanNameForMatching(oldSpouse.name);
+            });
             if (sMatchIdx !== -1) {
               currentSpouses[sMatchIdx] = { ...oldSpouse, ...currentSpouses[sMatchIdx] };
             } else {
@@ -1496,6 +1625,13 @@ export function mergeFlatLists(existingList: any[], newList: any[]): any[] {
           mergedObj[key] = oldVal;
         }
       });
+
+      if (Array.isArray(mergedObj.spouseDetails) && mergedObj.spouseDetails.length > 0) {
+        mergedObj.spouse = mergedObj.spouseDetails
+          .map((spouse: any) => String(spouse?.name || "").trim())
+          .filter(Boolean)
+          .join(", ");
+      }
 
       mergedList[matchIdx] = mergedObj;
     } else {

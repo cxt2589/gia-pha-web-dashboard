@@ -129,14 +129,18 @@ async function main() {
       'person.title',
       'contact.phone3',
       'birth.lunarDate',
+      'death.lunarYearText',
+      'father.deathLunarYearText',
+      'mother.deathLunarYearText',
       'person.photo',
+      'spouse.1.id',
       'spouse.3.name',
       'archive.child.12.id',
       'bio.achievements'
     ];
     results.push(result(
       'field-reference-expanded',
-      fieldRef.response.ok && fields.length >= 109 && requiredExpandedFields.every((field) => fieldNames.has(field)),
+      fieldRef.response.ok && fields.length >= 112 && requiredExpandedFields.every((field) => fieldNames.has(field)),
       `${fields.length || 0} fields`
     ));
 

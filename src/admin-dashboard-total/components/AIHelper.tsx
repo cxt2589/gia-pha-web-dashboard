@@ -112,6 +112,23 @@ function getActiveAIEngine(aiConfig?: AIModelConfig, taskType = "chat") {
   return aiConfig?.engineChat || "gemini";
 }
 
+function getAIBotTypeForTask(taskType = "chat") {
+  const normalizedType = taskType.toLowerCase();
+  if (["ceremony", "prayer", "ritual", "han_nom", "han-nom"].includes(normalizedType)) {
+    return "prayer_writer";
+  }
+  if (["article", "articles", "appeal", "news"].includes(normalizedType)) {
+    return "article_writer";
+  }
+  if (["audit", "system_audit", "chatbox_policy", "policy"].includes(normalizedType)) {
+    return "ai_governor";
+  }
+  if (["zalo", "zalo_rule", "zalo-rule", "zalo_campaign"].includes(normalizedType)) {
+    return "zalo_bot";
+  }
+  return "dashboard_helper";
+}
+
 function getEngineLabel(aiConfig?: AIModelConfig, taskType = "chat") {
   const engine = getActiveAIEngine(aiConfig, taskType);
   if (engine === "local") return "AI nội bộ";
@@ -221,6 +238,7 @@ Ta sở học được nuôi dưỡng bằng lịch sử gia môn lâu đời, a
   const [isLoading, setIsLoading] = useState(false);
   const [loadMessage, setLoadMessage] = useState("Đang mài mực khảo thư...");
   const [errorText, setErrorText] = useState<string | null>(null);
+  const [pendingTaskType, setPendingTaskType] = useState("");
   const [shortcuts, setShortcuts] = useState<PrayerShortcut[]>(() => loadPrayerShortcuts());
   const [editingShortcutId, setEditingShortcutId] = useState<string | null>(null);
   const [shortcutTitle, setShortcutTitle] = useState("");
@@ -265,9 +283,10 @@ Ta sở học được nuôi dưỡng bằng lịch sử gia môn lâu đời, a
   useEffect(() => {
     if (initialPrompt) {
       setUserInput(initialPrompt);
+      setPendingTaskType(initialType || "chat");
       if (onClearInitialPrompt) onClearInitialPrompt();
     }
-  }, [initialPrompt]);
+  }, [initialPrompt, initialType, onClearInitialPrompt]);
 
   useEffect(() => {
     localStorage.setItem(AI_SHORTCUTS_KEY, JSON.stringify(shortcuts));
@@ -280,6 +299,7 @@ Ta sở học được nuôi dưỡng bằng lịch sử gia môn lâu đời, a
 
   const handleShortcutClick = (prompt: string) => {
     setUserInput(prompt);
+    setPendingTaskType("ceremony");
   };
 
   const openShortcutEditor = (shortcut?: PrayerShortcut) => {
@@ -354,7 +374,7 @@ Ta sở học được nuôi dưỡng bằng lịch sử gia môn lâu đời, a
 
     try {
       const selectedKnowledgeDocs = selectRelevantKnowledgeDocs(userPrompt, knowledgeDocs);
-      const taskType = initialType || "chat";
+      const taskType = pendingTaskType || initialType || "chat";
       const response = await fetch("/api/ai/chat", {
         method: "POST",
         headers: {
@@ -367,7 +387,7 @@ Ta sở học được nuôi dưỡng bằng lịch sử gia môn lâu đời, a
           ].join(""),
           prompt: userPrompt,
           type: taskType,
-          botType: "dashboard",
+          botType: getAIBotTypeForTask(taskType),
           intent: taskType,
           engine: getActiveAIEngine(aiConfig, taskType),
           documents: selectedKnowledgeDocs,
@@ -389,6 +409,7 @@ Ta sở học được nuôi dưỡng bằng lịch sử gia môn lâu đời, a
       console.error(err);
       setErrorText(err.message || "Không thể kết nối đến Trợ lý Hán Nôm AI. Kiểm tra GEMINI_API_KEY, model Gemini, quota và kết nối mạng của VPS.");
     } finally {
+      setPendingTaskType("");
       setIsLoading(false);
     }
   };

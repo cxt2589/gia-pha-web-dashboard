@@ -225,6 +225,11 @@ export function SelectedNodeProfileDetails({
                         Quy đổi Âm lịch: <strong>{convertSolarToLunarText(selectedNode.solarDeathDate)}</strong>
                       </div>
                     ) : null}
+                    {selectedNode.deathLunarYearText ? (
+                      <div className="text-[10px] text-rose-950 bg-white/80 border border-rose-100 px-2 py-1 rounded-sm mt-1 font-medium inline-block w-full">
+                        Năm mất âm lịch / Can chi: <strong>{selectedNode.deathLunarYearText}</strong>
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </div>
@@ -244,6 +249,11 @@ export function SelectedNodeProfileDetails({
                   {selectedNode.deathAnniversaryLunarStructured?.precision === 'day_month' && !selectedNode.deathYear && !selectedNode.solarDeathDate
                     ? '; nam mat: chua ro'
                     : ''}
+                </div>
+              )}
+              {selectedNode.deathLunarYearText && (
+                <div className="rounded border border-rose-100 bg-white/70 px-2 py-1 text-xs font-semibold text-primary">
+                  Năm mất âm lịch / Can chi: {selectedNode.deathLunarYearText}
                 </div>
               )}
               {(() => {
@@ -412,6 +422,9 @@ export function SelectedNodeProfileDetails({
                     {motherDetail.lunarAnniversary && (
                       <div className="sm:col-span-2"><span className="opacity-65">Kỵ nhật (Ngày giỗ):</span> <strong>{motherDetail.lunarAnniversary}</strong></div>
                     )}
+                    {motherDetail.deathLunarYearText && (
+                      <div className="sm:col-span-2"><span className="opacity-65">Năm mất âm lịch / Can chi:</span> <strong>{motherDetail.deathLunarYearText}</strong></div>
+                    )}
                     {(motherDetail.phone1 || motherDetail.phone2 || motherDetail.phone3) && (
                       <div className="sm:col-span-2 pt-1 uppercase text-[8px] tracking-wider leading-none text-rose-900/60 font-semibold font-mono">
                         📱 Điện thoại mẫu thân:
@@ -527,6 +540,9 @@ export function SelectedNodeProfileDetails({
                               )}
                               {sDetail.lunarAnniversary && (
                                 <div className="sm:col-span-2"><span className="text-ink-charcoal/45 font-medium">Kỵ nhật (Ngày giỗ):</span> <strong>{sDetail.lunarAnniversary}</strong></div>
+                              )}
+                              {sDetail.deathLunarYearText && (
+                                <div className="sm:col-span-2"><span className="text-ink-charcoal/45 font-medium">Năm mất âm lịch / Can chi:</span> <strong>{sDetail.deathLunarYearText}</strong></div>
                               )}
                               {(sDetail.phone1 || sDetail.phone2 || sDetail.phone3) && (
                                 <div className="sm:col-span-2 pt-1 font-semibold uppercase text-[8px] tracking-wider leading-none text-rose-900/60 font-mono">

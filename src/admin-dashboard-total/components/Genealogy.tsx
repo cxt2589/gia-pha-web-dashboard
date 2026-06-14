@@ -33,6 +33,7 @@ type FamilyColumnReferenceItem = {
 };
 
 const createSpouseColumnReference = (index: number): FamilyColumnReferenceItem[] => [
+  { excelColumn: `Mã định danh Vợ/Chồng ${index}`, dashboardField: `spouse.${index}.id` },
   { excelColumn: `Họ và tên Vợ/Chồng ${index}`, dashboardField: `spouse.${index}.name` },
   { excelColumn: `Nơi ở của Vợ/Chồng ${index}`, dashboardField: `spouse.${index}.residence` },
   { excelColumn: `Số điện thoại của Vợ/Chồng ${index}`, dashboardField: `spouse.${index}.phone` },
@@ -70,6 +71,7 @@ const FAMILY_COLUMN_REFERENCE_ITEMS: FamilyColumnReferenceItem[] = [
   { excelColumn: "Tình trạng (còn sống/đã mất)", dashboardField: "person.status" },
   { excelColumn: "(Nếu đã mất) Ngày tháng năm mất (dương lịch)", dashboardField: "death.solarDate" },
   { excelColumn: "(Nếu đã mất) Ngày tháng năm mất (âm lịch)", dashboardField: "death.lunarDate" },
+  { excelColumn: "(Nếu đã mất) Năm mất âm lịch / Can chi", dashboardField: "death.lunarYearText" },
   { excelColumn: "(Nếu đã mất) Nơi an táng", dashboardField: "grave.location" },
   { excelColumn: "Đời thứ mấy", dashboardField: "person.generation" },
   { excelColumn: "Ảnh chân dung", dashboardField: "person.photo" },
@@ -80,6 +82,7 @@ const FAMILY_COLUMN_REFERENCE_ITEMS: FamilyColumnReferenceItem[] = [
   { excelColumn: "Tình trạng (còn sống/đã mất)", dashboardField: "father.status" },
   { excelColumn: "(Nếu đã mất) Ngày tháng năm mất (dương lịch)", dashboardField: "father.deathDate" },
   { excelColumn: "(Nếu đã mất) Ngày tháng năm mất (âm lịch) của cha", dashboardField: "father.lunarAnniversary" },
+  { excelColumn: "(Nếu đã mất) Năm mất âm lịch / Can chi của cha", dashboardField: "father.deathLunarYearText" },
   { excelColumn: "(Nếu đã mất) Nơi an táng", dashboardField: "father.graveLocation" },
   { excelColumn: "Mã số cha", dashboardField: "father.id" },
   { excelColumn: "Ghi chú về cha", dashboardField: "father.note" },
@@ -90,6 +93,7 @@ const FAMILY_COLUMN_REFERENCE_ITEMS: FamilyColumnReferenceItem[] = [
   { excelColumn: "Tình trạng của mẹ (còn sống/đã mất)", dashboardField: "mother.status" },
   { excelColumn: "(Nếu đã mất) Ngày tháng năm mất (dương lịch)", dashboardField: "mother.deathDate" },
   { excelColumn: "(Nếu đã mất) Ngày tháng năm mất (âm lịch)", dashboardField: "mother.lunarAnniversary" },
+  { excelColumn: "(Nếu đã mất) Năm mất âm lịch / Can chi của mẹ", dashboardField: "mother.deathLunarYearText" },
   { excelColumn: "(Nếu đã mất) Nơi an táng", dashboardField: "mother.graveLocation" },
   { excelColumn: "Ghi chú về mẹ", dashboardField: "mother.note" },
   ...createSpouseColumnReference(1),
@@ -125,6 +129,7 @@ const DASHBOARD_FIELD_LABEL_OVERRIDES: Record<string, string> = {
   "birth.place": "Bản thân - Nơi sinh",
   "death.solarDate": "Bản thân - Ngày mất dương lịch",
   "death.lunarDate": "Bản thân - Ngày mất âm lịch",
+  "death.lunarYearText": "Bản thân - Năm mất âm lịch / Can chi",
   "grave.location": "Bản thân - Nơi an táng",
   "father.name": "Cha - Họ và tên",
   "father.residence": "Cha - Nơi ở",
@@ -133,6 +138,7 @@ const DASHBOARD_FIELD_LABEL_OVERRIDES: Record<string, string> = {
   "father.status": "Cha - Tình trạng còn sống/đã mất",
   "father.deathDate": "Cha - Ngày mất dương lịch",
   "father.lunarAnniversary": "Cha - Ngày mất âm lịch / kỵ nhật",
+  "father.deathLunarYearText": "Cha - Năm mất âm lịch / Can chi",
   "father.graveLocation": "Cha - Nơi an táng",
   "father.id": "Cha - Mã định danh",
   "father.note": "Cha - Ghi chú",
@@ -143,6 +149,7 @@ const DASHBOARD_FIELD_LABEL_OVERRIDES: Record<string, string> = {
   "mother.status": "Mẹ - Tình trạng còn sống/đã mất",
   "mother.deathDate": "Mẹ - Ngày mất dương lịch",
   "mother.lunarAnniversary": "Mẹ - Ngày mất âm lịch / kỵ nhật",
+  "mother.deathLunarYearText": "Mẹ - Năm mất âm lịch / Can chi",
   "mother.graveLocation": "Mẹ - Nơi an táng",
   "mother.note": "Mẹ - Ghi chú",
   "bio.summary": "Bản thân - Tóm tắt tiểu sử",
@@ -159,6 +166,7 @@ const createDashboardFieldLabel = (column: FamilyColumnReferenceItem) => {
   const spouseMatch = column.dashboardField.match(/^spouse\.(\d+)\.(.+)$/);
   if (spouseMatch) {
     const spouseFieldLabels: Record<string, string> = {
+      id: "Mã định danh",
       name: "Họ và tên",
       residence: "Nơi ở",
       phone: "Số điện thoại",
@@ -1074,6 +1082,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   const [newBirthYear, setNewBirthYear] = useState("");
   const [newDeathYear, setNewDeathYear] = useState("");
   const [newDeathLunar, setNewDeathLunar] = useState("");
+  const [newDeathLunarYearText, setNewDeathLunarYearText] = useState("");
   const [newGrave, setNewGrave] = useState("");
   const [newParentId, setNewParentId] = useState("");
   const [newParentSearch, setNewParentSearch] = useState("");
@@ -1370,6 +1379,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     setNewBirthYear("");
     setNewDeathYear("");
     setNewDeathLunar("");
+    setNewDeathLunarYearText("");
     setNewGrave("");
     setNewParentId("");
     setNewParentSearch("");
@@ -1401,6 +1411,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     setNewBirthYear(member.birthYear || "");
     setNewDeathYear(member.deathYear || "");
     setNewDeathLunar(member.deathAnniversaryLunar || "");
+    setNewDeathLunarYearText(member.deathLunarYearText || "");
     setNewGrave(member.graveLocation || "");
     setNewParentId(member.parentId || "");
     const parent = member.parentId ? members.find((item) => item.id === member.parentId) : undefined;
@@ -1457,6 +1468,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
       solarBirthDate: newSolarBirthDate || undefined,
       solarDeathDate: newIsDeceased ? (newSolarDeathDate || undefined) : undefined,
       deathAnniversaryLunar: newIsDeceased ? (newDeathLunar || undefined) : undefined,
+      deathLunarYearText: newIsDeceased ? (newDeathLunarYearText || undefined) : undefined,
       birthDateStructured: birthDateStructured.precision !== "unknown" ? birthDateStructured : undefined,
       deathDateStructured: newIsDeceased && deathDateStructured.precision !== "unknown" ? deathDateStructured : undefined,
       deathAnniversaryLunarStructured: newIsDeceased && deathAnniversaryLunarStructured.precision !== "unknown" ? deathAnniversaryLunarStructured : undefined,
@@ -1820,21 +1832,24 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
         const binData = event.target?.result;
         if (file.name.toLowerCase().endsWith(".csv")) {
           const decodedText = new TextDecoder("utf-8").decode(new Uint8Array(binData as ArrayBuffer));
-          const csvRows = parseCSVToObjects(decodedText);
-          const previewHeaders = csvRows[0]?._headers || Object.keys(csvRows[0] || {});
-          const previewValues = csvRows[0]?._rawValues || Object.values(csvRows[0] || {});
+          const workbook = XLSX.read(decodedText, { type: "string" });
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
+          const headerInfo = buildTwoLineExcelHeaderInfo(rawRows);
+          const parsedRows = parseWorksheetToRows(worksheet);
           await createExcelImportGateSession({
             fileName: file.name,
             fileSize: file.size,
             fileType: file.type || "text/csv",
-            headers: previewHeaders.map(String),
-            previewRows: csvRows.slice(0, 30).map((row: any) => row._rawValues || previewHeaders.map((header: string) => row[header] || "")),
-            rowCount: csvRows.length,
-            columnCount: previewHeaders.length,
+            headers: headerInfo.headers,
+            previewRows: rawRows.slice(headerInfo.dataStartIndex, headerInfo.dataStartIndex + 30),
+            rowCount: Math.max(0, rawRows.length - headerInfo.dataStartIndex),
+            columnCount: headerInfo.headers.length,
             appendFieldScope: appendFieldScopePayload
           });
-          runFormatVerification(previewHeaders, previewValues);
-          prepareStandardImportRows(csvRows, file.name);
+          runFormatVerification(headerInfo.headers, rawRows[headerInfo.dataStartIndex] || []);
+          prepareStandardImportRows(parsedRows, file.name);
         } else {
           const workbook = XLSX.read(new Uint8Array(binData as ArrayBuffer), { type: "array" });
           const firstSheetName = workbook.SheetNames[0];
@@ -1914,6 +1929,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
       birthYear: p.birthYear,
       deathYear: p.deathYear,
       deathAnniversaryLunar: p.deathAnniversaryLunar,
+      deathLunarYearText: p.deathLunarYearText,
       graveLocation: p.graveLocation,
       spouse: p.spouse,
       parentId: p.parentId,
@@ -1971,6 +1987,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
         "person.status": "Đã mất",
         "death.solarDate": "2019",
         "death.lunarDate": "12 tháng Giêng",
+        "death.lunarYearText": "Kỷ Hợi",
         "grave.location": "Nghĩa trang Trường Yên, Hoa Lư",
         "person.generation": "7",
         "father.name": "Cao Văn Trọng",
@@ -1979,12 +1996,15 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
         "father.status": "Đã mất",
         "father.deathDate": "1992",
         "father.lunarAnniversary": "mùng 9 tháng năm",
+        "father.deathLunarYearText": "Nhâm Thân",
         "father.graveLocation": "Bia phần chi họ Trường Yên",
         "father.id": "CAONB_M_0",
         "mother.name": "Nguyễn Thị Mận",
         "mother.residence": "Hoa Lư",
         "mother.birthDate": "1922",
         "mother.status": "Còn sống",
+        "mother.deathLunarYearText": "",
+        "spouse.1.id": "CAONB_M_1-v1",
         "spouse.1.name": "Lê Thị Thảo",
         "spouse.1.residence": "Yên Khánh",
         "spouse.1.birthDate": "1952",
@@ -2496,6 +2516,9 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                   )}
                   {bioAncestor?.isDeceased && bioAncestor.deathAnniversaryLunar && (
                     <p>Giỗ Tổ Âm lịch hàng năm: <strong className="text-amber-800 font-extrabold">{bioAncestor.deathAnniversaryLunar}</strong></p>
+                  )}
+                  {bioAncestor?.isDeceased && bioAncestor.deathLunarYearText && (
+                    <p>Năm mất âm lịch / Can chi: <strong className="text-amber-800 font-extrabold">{bioAncestor.deathLunarYearText}</strong></p>
                   )}
                 </div>
               </div>
@@ -3219,6 +3242,16 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                           placeholder="Ví dụ: 15/5 âm lịch hoặc mùng 5 tháng Giêng" 
                           value={newDeathLunar}
                           onChange={(e) => setNewDeathLunar(e.target.value)}
+                          className="w-full bg-white border border-stone-200 rounded px-2.5 py-1 focus:outline-none focus:border-red-800 text-stone-850"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-stone-600 block">Năm mất âm lịch / Can chi:</label>
+                        <input
+                          type="text"
+                          placeholder="Ví dụ: Kỷ Hợi, Nhâm Tý hoặc chưa rõ"
+                          value={newDeathLunarYearText}
+                          onChange={(e) => setNewDeathLunarYearText(e.target.value)}
                           className="w-full bg-white border border-stone-200 rounded px-2.5 py-1 focus:outline-none focus:border-red-800 text-stone-850"
                         />
                       </div>

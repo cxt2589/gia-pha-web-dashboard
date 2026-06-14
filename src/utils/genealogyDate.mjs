@@ -18,6 +18,22 @@ const MONTH_NAMES = new Map([
   ['chap', 12]
 ]);
 
+const DAY_NAMES = new Map([
+  ['mot', 1],
+  ['hai', 2],
+  ['ba', 3],
+  ['bon', 4],
+  ['tu', 4],
+  ['nam', 5],
+  ['lam', 5],
+  ['sau', 6],
+  ['bay', 7],
+  ['tam', 8],
+  ['chin', 9],
+  ['muoi', 10],
+  ['ram', 15]
+]);
+
 export function normalizeGenealogyDateText(value) {
   return String(value || '')
     .normalize('NFD')
@@ -53,6 +69,32 @@ function detectCalendar(normalized, defaultCalendar) {
 function monthNameToNumber(value) {
   const normalized = normalizeGenealogyDateText(value);
   if (MONTH_NAMES.has(normalized)) return MONTH_NAMES.get(normalized);
+  return null;
+}
+
+function dayNameToNumber(value) {
+  const normalized = normalizeGenealogyDateText(value)
+    .replace(/^(ngay|mung|mong)\s+/g, '')
+    .trim();
+  if (/^\d{1,2}$/.test(normalized)) return Number(normalized);
+  if (DAY_NAMES.has(normalized)) return DAY_NAMES.get(normalized);
+
+  const parts = normalized.split(/\s+/).filter(Boolean);
+  if (parts.length === 2 && parts[0] === 'muoi' && DAY_NAMES.has(parts[1])) {
+    return 10 + DAY_NAMES.get(parts[1]);
+  }
+  if (parts.length === 2 && parts[0] === 'hai' && parts[1] === 'muoi') {
+    return 20;
+  }
+  if (parts.length === 3 && parts[0] === 'hai' && parts[1] === 'muoi' && DAY_NAMES.has(parts[2])) {
+    return 20 + DAY_NAMES.get(parts[2]);
+  }
+  if (parts.length === 2 && parts[0] === 'ba' && parts[1] === 'muoi') {
+    return 30;
+  }
+  if (parts.length === 3 && parts[0] === 'ba' && parts[1] === 'muoi' && DAY_NAMES.has(parts[2])) {
+    return 30 + DAY_NAMES.get(parts[2]);
+  }
   return null;
 }
 
@@ -100,11 +142,11 @@ export function parseGenealogyDateText(value, defaultCalendar = 'unknown') {
     }
   }
 
-  const dayMonthWords = normalized.match(/\b(?:ngay|mung|mong)?\s*(\d{1,2})\s*thang\s*([a-z0-9\s]+?)(?:\b|$)/);
+  const dayMonthWords = normalized.match(/\b(?:ngay\s+)?(?:mung|mong)?\s*(\d{1,2}|[a-z]+(?:\s+[a-z]+){0,2})\s*thang\s*([a-z0-9\s]+?)(?:\b|$)/);
   if (dayMonthWords) {
     const monthRaw = dayMonthWords[2].replace(/\b(am|al|lich|duong|dl|nhuan)\b/g, '').trim();
     const month = /^\d{1,2}$/.test(monthRaw) ? Number(monthRaw) : monthNameToNumber(monthRaw);
-    const day = Number(dayMonthWords[1]);
+    const day = dayNameToNumber(dayMonthWords[1]);
     if (validDayMonth(day, month)) {
       result.day = day;
       result.month = month;

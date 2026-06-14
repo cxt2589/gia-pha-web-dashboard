@@ -15,6 +15,7 @@ export interface FamilyMember {
   solarBirthDate?: string;
   solarDeathDate?: string;
   deathAnniversaryLunar?: string;
+  deathLunarYearText?: string;
   birthDateStructured?: GenealogyDateStructured;
   deathDateStructured?: GenealogyDateStructured;
   deathAnniversaryLunarStructured?: GenealogyDateStructured;

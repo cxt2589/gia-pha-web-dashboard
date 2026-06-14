@@ -195,6 +195,11 @@ export function SelectedNodeMobileProfileDialog({
                         Quy đổi Âm lịch: <strong>{convertSolarToLunarText(selectedNode.solarDeathDate)}</strong>
                       </div>
                     ) : null}
+                    {selectedNode.deathLunarYearText ? (
+                      <div className="text-[10px] text-rose-950 bg-white/80 border border-rose-100 px-2 py-1 rounded-sm font-medium">
+                        Năm mất âm lịch / Can chi: <strong>{selectedNode.deathLunarYearText}</strong>
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </div>
@@ -231,6 +236,11 @@ export function SelectedNodeMobileProfileDialog({
                   {selectedNode.deathAnniversaryLunarStructured?.precision === 'day_month' && !selectedNode.deathYear && !selectedNode.solarDeathDate
                     ? '; nam mat: chua ro'
                     : ''}
+                </div>
+              )}
+              {selectedNode.deathLunarYearText && (
+                <div className="rounded border border-rose-100 bg-white/70 px-2 py-1 text-xs font-semibold text-primary">
+                  Năm mất âm lịch / Can chi: {selectedNode.deathLunarYearText}
                 </div>
               )}
               {(() => {
@@ -351,6 +361,7 @@ export function SelectedNodeMobileProfileDialog({
                   {motherDetail.burialPlace && motherDetail.burialPlace !== motherDetail.deathPlace && <div>• Nơi an táng: <strong>{motherDetail.burialPlace}</strong></div>}
                   {motherDetail.residence && <div>• Nơi ở: <strong>{motherDetail.residence}</strong></div>}
                   {motherDetail.lunarAnniversary && <div>• Ngày giỗ: <strong>{motherDetail.lunarAnniversary}</strong></div>}
+                  {motherDetail.deathLunarYearText && <div>• Năm mất âm lịch / Can chi: <strong>{motherDetail.deathLunarYearText}</strong></div>}
                 </div>
               )}
             </div>
@@ -412,6 +423,7 @@ export function SelectedNodeMobileProfileDialog({
                               {sDetail.burialPlace && sDetail.burialPlace !== sDetail.deathPlace && <div>• Nơi an táng: <strong>{sDetail.burialPlace}</strong></div>}
                               {sDetail.residence && <div>• Nơi cư trú: <strong>{sDetail.residence}</strong></div>}
                               {sDetail.lunarAnniversary && <div>• Ngày giỗ: <strong>{sDetail.lunarAnniversary}</strong></div>}
+                              {sDetail.deathLunarYearText && <div>• Năm mất âm lịch / Can chi: <strong>{sDetail.deathLunarYearText}</strong></div>}
                               {(sDetail.phone1 || sDetail.phone2 || sDetail.phone3) && (
                                 <div className="pt-1 font-mono text-[9px]">
                                   📞 SĐT liên hệ: {sDetail.phone1 || sDetail.phone2 || sDetail.phone3}

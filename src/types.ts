@@ -4,6 +4,7 @@
  */
 
 export interface SpouseDetail {
+  id?: string;
   name: string;
   birthYear?: string;
   deathYear?: string;
@@ -12,6 +13,7 @@ export interface SpouseDetail {
   burialPlace?: string;
   residence?: string;
   lunarAnniversary?: string;
+  deathLunarYearText?: string;
   phone1?: string;
   phone2?: string;
   phone3?: string;
@@ -22,6 +24,7 @@ export interface SpouseDetail {
   deathDateStructured?: GenealogyDateStructured;
   deathAnniversaryLunarStructured?: GenealogyDateStructured;
   email?: string;
+  note?: string;
 }
 
 export interface GenealogyDateStructured {
@@ -60,6 +63,7 @@ export interface AncestorNode {
   residence?: string; // Nơi cư trú
   burialPlace?: string; // Nơi an táng
   lunarAnniversary?: string; // Ngày giỗ Âm lịch
+  deathLunarYearText?: string;
   motherName?: string; // Con của vợ nào
   isLiving?: boolean; // Người còn sống
   phone1?: string; // Điện thoại liên lạc 1

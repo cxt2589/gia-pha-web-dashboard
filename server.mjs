@@ -1922,6 +1922,7 @@ function safeJsonParse(value, fallback) {
 
 function createExcelImportSpouseFields(index) {
   return [
+    [`spouse.${index}.id`, `Mã định danh Vợ/Chồng ${index}`],
     [`spouse.${index}.name`, `Họ và tên Vợ/Chồng ${index}`],
     [`spouse.${index}.residence`, `Nơi ở của Vợ/Chồng ${index}`],
     [`spouse.${index}.phone`, `Số điện thoại của Vợ/Chồng ${index}`],
@@ -1962,6 +1963,7 @@ const EXCEL_IMPORT_FIELD_REFERENCE = [
   ['person.status', 'Tình trạng (còn sống/đã mất)'],
   ['death.solarDate', '(Nếu đã mất) Ngày tháng năm mất (dương lịch)'],
   ['death.lunarDate', '(Nếu đã mất) Ngày tháng năm mất (âm lịch)'],
+  ['death.lunarYearText', '(Nếu đã mất) Năm mất âm lịch / Can chi'],
   ['grave.location', '(Nếu đã mất) Nơi an táng'],
   ['person.generation', 'Đời thứ mấy'],
   ['person.photo', 'Ảnh chân dung'],
@@ -1972,6 +1974,7 @@ const EXCEL_IMPORT_FIELD_REFERENCE = [
   ['father.status', 'Tình trạng (còn sống/đã mất)'],
   ['father.deathDate', '(Nếu đã mất) Ngày tháng năm mất (dương lịch)'],
   ['father.lunarAnniversary', '(Nếu đã mất) Ngày tháng năm mất (âm lịch) của cha'],
+  ['father.deathLunarYearText', '(Nếu đã mất) Năm mất âm lịch / Can chi của cha'],
   ['father.graveLocation', '(Nếu đã mất) Nơi an táng'],
   ['father.id', 'Mã số cha'],
   ['father.note', 'Ghi chú về cha'],
@@ -1982,6 +1985,7 @@ const EXCEL_IMPORT_FIELD_REFERENCE = [
   ['mother.status', 'Tình trạng của mẹ (còn sống/đã mất)'],
   ['mother.deathDate', '(Nếu đã mất) Ngày tháng năm mất (dương lịch)'],
   ['mother.lunarAnniversary', '(Nếu đã mất) Ngày tháng năm mất (âm lịch)'],
+  ['mother.deathLunarYearText', '(Nếu đã mất) Năm mất âm lịch / Can chi của mẹ'],
   ['mother.graveLocation', '(Nếu đã mất) Nơi an táng'],
   ['mother.note', 'Ghi chú về mẹ'],
   ...createExcelImportSpouseFields(1),
@@ -7270,6 +7274,7 @@ const MEMBER_PROFILE_EVIDENCE_FIELD_LABELS = {
   deathAnniversaryLunarStructured: 'Ngày giỗ âm lịch có cấu trúc',
   deathAnniversaryLunar: 'Ngày giỗ âm lịch',
   lunarAnniversary: 'Ngày giỗ âm lịch',
+  deathLunarYearText: 'Năm mất âm lịch / Can chi',
   hometown: 'Quê quán',
   birthPlace: 'Nơi sinh / quê quán',
   residence: 'Nơi ở',
@@ -9823,12 +9828,15 @@ function normalizeAIGatewayContext(body = {}, routeName = 'ai-chat') {
   const type = normalizeGatewayText(body.type || body.intent || 'chat') || 'chat';
   const explicitIntent = normalizeGatewayText(body.intent);
   const explicitBotType = normalizeGatewayText(body.botType || body.bot_type);
+  const inferredPrayerDraft = isPrayerDraftRequest([body.message, body.prompt].filter(Boolean).join(' '));
   let intent = explicitIntent || type;
   let botType = normalizeAIBotType(explicitBotType, type);
 
   if (type === 'webview_chat') {
-    botType = normalizeAIBotType(explicitBotType || 'webview_chat', type);
-    intent = explicitIntent || 'chat';
+    botType = inferredPrayerDraft
+      ? normalizeAIBotType(explicitBotType && explicitBotType !== 'webview_chat' ? explicitBotType : 'prayer_writer', type)
+      : normalizeAIBotType(explicitBotType || 'webview_chat', type);
+    intent = !explicitIntent || (inferredPrayerDraft && explicitIntent === 'chat') ? (inferredPrayerDraft ? 'ceremony' : 'chat') : explicitIntent;
   } else if (['zalo', 'zalo_campaign', 'campaign', 'zalo_rule_template'].includes(type)) {
     botType = normalizeAIBotType(explicitBotType || 'zalo_bot', type);
     intent = explicitIntent || (type === 'zalo_rule_template' ? 'zalo_rule_template' : 'campaign');
@@ -9836,11 +9844,15 @@ function normalizeAIGatewayContext(body = {}, routeName = 'ai-chat') {
     botType = normalizeAIBotType(explicitBotType || 'ai_governor', type);
     intent = explicitIntent || type;
   } else if (['ceremony', 'prayer', 'han_nom', 'han-nom', 'appeal'].includes(type)) {
-    botType = normalizeAIBotType(explicitBotType || 'prayer_writer', type);
-    intent = explicitIntent || 'ceremony';
+    const dashboardAliasBot = ['dashboard', 'dashboard_helper', 'admin', 'eval'].includes(explicitBotType);
+    botType = normalizeAIBotType(dashboardAliasBot ? 'prayer_writer' : (explicitBotType || 'prayer_writer'), type);
+    intent = !explicitIntent || explicitIntent === 'chat' ? 'ceremony' : explicitIntent;
   } else if (['article', 'article_template', 'webview_suggestion_article'].includes(type)) {
     botType = normalizeAIBotType(explicitBotType || 'article_writer', type);
     intent = explicitIntent || type;
+  } else if (inferredPrayerDraft) {
+    botType = normalizeAIBotType(explicitBotType && explicitBotType !== 'dashboard' ? explicitBotType : 'prayer_writer', type);
+    intent = !explicitIntent || explicitIntent === 'chat' ? 'ceremony' : explicitIntent;
   }
 
   return {
@@ -12475,11 +12487,12 @@ async function listZaloBotReplies({ limit = 50 } = {}) {
 }
 
 async function buildLocalAIResponse(req, message) {
-  const anniversaryAnswer = await buildAnniversaryLocalAnswer(message, req.body?.authScope || 'admin');
+  const prayerDraftRequest = isPrayerDraftRequest(message) || ['ceremony', 'prayer', 'han_nom', 'han-nom'].includes(normalizeGatewayText(req.body?.intent || req.body?.type));
+  const anniversaryAnswer = prayerDraftRequest ? null : await buildAnniversaryLocalAnswer(message, req.body?.authScope || 'admin');
   if (anniversaryAnswer) return anniversaryAnswer;
   const lineageMatches = Array.isArray(req.body?.lineageMatches) ? req.body.lineageMatches : [];
   const eventMatches = Array.isArray(req.body?.eventMatches) ? req.body.eventMatches : [];
-  if (isAnniversaryQuestion(message)) {
+  if (!prayerDraftRequest && isAnniversaryQuestion(message)) {
     const memberQuery = normalizeAnniversaryMemberQuery(message);
     const anniversaryMembers = lineageMatches.filter((member) => {
       if (!member?.deathAnniversaryLunar && !member?.solarDeathDate && !member?.deathYear) return false;
@@ -12509,6 +12522,28 @@ async function buildLocalAIResponse(req, message) {
   }
 
   const docsText = summarizeLocalDocuments(req.body?.documents || req.body?.knowledgeDocs || []);
+  if (prayerDraftRequest) {
+    const normalized = normalizeVietnameseSearch(message);
+    const targetSpirit = normalized.includes('lang')
+      ? 'cụ Cao Đình Lạng - Thủy Tổ'
+      : normalized.includes('thuat') || normalized.includes('cao to')
+        ? 'cụ Cao Đình Thuật - Cao Tổ'
+        : '[tên hương linh cần xác minh]';
+    const contextLine = docsText
+      ? `Căn cứ dữ liệu nội bộ liên quan:\n${docsText}`
+      : 'Căn cứ dữ liệu nội bộ: chưa có đoạn tài liệu đủ chi tiết kèm theo, các phần nghi lễ cần Ban trị sự kiểm chứng trước khi dùng.';
+    return [
+      'BẢN NHÁP SỚ/VĂN KHẤN GIỖ',
+      contextLine,
+      '',
+      'Kính cáo chư vị Tiên tổ, liệt vị hương linh dòng họ Cao.',
+      `Hôm nay, nhân ngày kỵ nhật, con cháu kính cẩn tưởng niệm ${targetSpirit}.`,
+      'Chúng con thành tâm sửa lễ hương hoa, dâng nén tâm hương, cúi xin hương linh chứng giám lòng thành.',
+      'Nguyện cầu tiên tổ phù hộ độ trì cho gia tộc thuận hòa, con cháu hiếu kính, học hành tấn tới, làm ăn chân chính, giữ gìn nề nếp gia phong.',
+      'Những thông tin về ngày tháng, niên đại, chức tước, mộ phần và chữ Hán Nôm nếu chưa có nguồn xác minh xin để Ban trị sự đối chiếu, không tự thêm vào bản chính.',
+      'Cẩn cáo.'
+    ].join('\n');
+  }
   const type = String(req.body?.type || 'chat');
   const header = type === 'ceremony'
     ? 'AI nội bộ đã nhận yêu cầu soạn văn sớ theo dữ liệu hiện có.'
@@ -12555,6 +12590,7 @@ function flattenLineageTree(node, parent = null, output = []) {
     solarDeathDate: String(node.solarDeathDate || '').trim(),
     deathAnniversaryLunar: String(node.deathAnniversaryLunar || node.lunarAnniversary || '').trim(),
     lunarAnniversary: String(node.lunarAnniversary || node.deathAnniversaryLunar || '').trim(),
+    deathLunarYearText: String(node.deathLunarYearText || '').trim(),
     birthDateStructured: node.birthDateStructured || null,
     deathDateStructured: node.deathDateStructured || null,
     deathAnniversaryLunarStructured: node.deathAnniversaryLunarStructured || null,
@@ -12671,6 +12707,14 @@ function isAnniversaryQuestion(message) {
   return /\b(gio|ky|ky nhat|ngay mat|mat ngay|le gio|cung gio)\b/.test(text);
 }
 
+function isPrayerDraftRequest(message) {
+  const text = normalizeVietnameseSearch(message);
+  const hasDraftVerb = /\b(tao|soan|viet|lap|dung|lam|thao)\b/.test(text);
+  const hasPrayerObject = /\b(so|van khan|van te|bai khan|loi khan|trac thu|the so|so van)\b/.test(text);
+  const hasRitualContext = /\b(gio|ky nhat|cung|le|te|huong linh|tien to|thuy to|cao to|cu lang|ong lang)\b/.test(text);
+  return hasDraftVerb && hasPrayerObject && hasRitualContext;
+}
+
 function isSensitiveGenealogyQuestion(message) {
   const text = normalizeVietnameseSearch(message);
   if (isAnniversaryQuestion(text)) return false;
@@ -12717,6 +12761,7 @@ function formatMemberContext(member, canShowPrivate) {
     member.branch ? `Chi/ngành: ${member.branch}` : '',
     member.isLiving ? 'Tình trạng: còn sống' : 'Tình trạng: đã mất',
     member.deathAnniversaryLunar ? `Ngày giỗ/kỵ nhật âm lịch: ${member.deathAnniversaryLunar}` : '',
+    member.deathLunarYearText ? `Năm mất âm lịch/Can chi: ${member.deathLunarYearText}` : '',
     member.solarDeathDate ? `Ngày mất dương lịch: ${member.solarDeathDate}` : '',
     member.deathYear ? `Năm mất: ${member.deathYear}` : ''
   ];
@@ -12926,6 +12971,33 @@ async function handleGeminiRequest(req, res) {
   }
 }
 
+function buildAIGeminiSystemPrompt(requestContext = {}) {
+  const lines = [
+    'Ban la tro ly AI cho he thong gia pha ho Cao.',
+    'Nguyen tac bat buoc: uu tien du lieu local/context duoc cung cap; khong bia nhan vat, quan he, ngay thang, dia danh, chuc tuoc, Han Nom hoac nien dai.',
+    'Neu du lieu thieu hoac mau thuan, noi ro phan can Ban tri su kiem chung thay vi doan chac.'
+  ];
+
+  const botType = String(requestContext.botType || '').toLowerCase();
+  const intent = String(requestContext.intent || requestContext.type || '').toLowerCase();
+  const botInstruction = String(requestContext.botConfig?.systemPromptShort || '').trim();
+  if (botInstruction) lines.push(`Cau hinh bot: ${botInstruction}`);
+
+  if (botType === 'prayer_writer' || ['ceremony', 'prayer', 'han_nom', 'han-nom'].includes(intent)) {
+    lines.push(
+      'Voi tac vu soan so, van te, van khan hoac trac thu: viet thanh ban nhap hoan chinh, trang trong, co bo cuc ro rang.',
+      'Khong tu them chu Han/Nom, my tu, than tich, huy hieu, chuc tuoc hay ngay gio neu context khong co. Neu can cho trong, ghi [can xac minh].',
+      'Khong tra loi qua ngan; neu yeu cau soan van ban, hay tao noi dung du de admin co the sua va dung.'
+    );
+  } else if (botType === 'webview_chat') {
+    lines.push('Voi chat cong khai: tra loi ngan gon, de hieu, va khong lo thong tin rieng neu nguoi hoi chua duoc phe duyet/KYC.');
+  } else {
+    lines.push('Voi admin dashboard: tra loi ro rang, co can cu, neu co nguon/citation thi neu nguon va muc can xac minh.');
+  }
+
+  return lines.join('\n');
+}
+
 async function callGeminiProvider({ apiKey, requestContext, message, requestId }) {
   const ai = new GoogleGenAI({ apiKey });
   const model = String(requestContext?.modelName || process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
@@ -12951,7 +13023,7 @@ async function callGeminiProvider({ apiKey, requestContext, message, requestId }
         model,
         ...(Object.keys(config).length ? { config } : {}),
         contents: [
-          'Bạn là trợ lý gia phả họ Cao. Trả lời ngắn gọn, cẩn trọng, chỉ dựa trên dữ liệu người dùng cung cấp hoặc kiến thức phổ thông về cách quản lý gia phả. Không bịa thông tin phả hệ cụ thể.',
+          buildAIGeminiSystemPrompt(requestContext),
           attemptMessage
         ].join('\n\nCau hoi: ')
       });
@@ -13035,6 +13107,7 @@ async function handleAIGatewayRequest(req, res) {
     return;
   }
   const requestType = requestContext.type;
+  const prayerDraftRequest = isPrayerDraftRequest(userQuery || message);
   let gatewayKnowledgeResult = null;
   const logGateway = (fields = {}) => logAIGatewayRequest({
     requestId,
@@ -13115,98 +13188,100 @@ async function handleAIGatewayRequest(req, res) {
       return;
     }
 
-    const anniversaryAnswer = await buildAnniversaryLocalAnswer(userQuery || message, requestContext.authScope || 'anonymous');
-    if (anniversaryAnswer) {
-      const knowledgeResponse = {
-        model: 'local-anniversary',
-        provider: 'local',
-        engine: 'local',
-        botType: requestContext.botType,
-        intent: requestContext.intent,
-        text: anniversaryAnswer,
-        knowledgeMatchesCount: 1,
-        knowledgeSourceIds: []
-      };
-      logGateway({
-        engine: 'local-anniversary',
-        model: 'local-anniversary',
-        status: 200,
-        cached: false,
-        durationMs: Date.now() - startedAt,
-        knowledgeMatchesCount: 1,
-        knowledgeSourceIds: []
-      });
-      res.json(knowledgeResponse);
-      return;
-    }
+    if (!prayerDraftRequest) {
+      const anniversaryAnswer = await buildAnniversaryLocalAnswer(userQuery || message, requestContext.authScope || 'anonymous');
+      if (anniversaryAnswer) {
+        const knowledgeResponse = {
+          model: 'local-anniversary',
+          provider: 'local',
+          engine: 'local',
+          botType: requestContext.botType,
+          intent: requestContext.intent,
+          text: anniversaryAnswer,
+          knowledgeMatchesCount: 1,
+          knowledgeSourceIds: []
+        };
+        logGateway({
+          engine: 'local-anniversary',
+          model: 'local-anniversary',
+          status: 200,
+          cached: false,
+          durationMs: Date.now() - startedAt,
+          knowledgeMatchesCount: 1,
+          knowledgeSourceIds: []
+        });
+        res.json(knowledgeResponse);
+        return;
+      }
 
-    const profileAnswer = await buildProfileLocalAnswer(userQuery || message, requestContext.authScope || 'anonymous');
-    if (profileAnswer) {
-      const profileResponse = {
-        model: 'local-profile',
-        provider: 'local',
-        engine: 'local',
-        botType: requestContext.botType,
-        intent: requestContext.intent,
-        text: profileAnswer.text,
-        knowledgeMatchesCount: profileAnswer.knowledgeMatchesCount,
-        knowledgeSourceIds: profileAnswer.knowledgeSourceIds,
-        profileCandidatesCount: profileAnswer.profileCandidatesCount,
-        appliedProfileFieldsUsed: profileAnswer.appliedProfileFieldsUsed,
-        pendingProfileCandidatesCount: profileAnswer.pendingProfileCandidatesCount
-      };
-      logGateway({
-        engine: 'local-profile',
-        model: 'local-profile',
-        status: 200,
-        cached: false,
-        durationMs: Date.now() - startedAt,
-        knowledgeMatchesCount: profileAnswer.knowledgeMatchesCount,
-        knowledgeSourceIds: profileAnswer.knowledgeSourceIds
-      });
-      res.json(profileResponse);
-      return;
-    }
+      const profileAnswer = await buildProfileLocalAnswer(userQuery || message, requestContext.authScope || 'anonymous');
+      if (profileAnswer) {
+        const profileResponse = {
+          model: 'local-profile',
+          provider: 'local',
+          engine: 'local',
+          botType: requestContext.botType,
+          intent: requestContext.intent,
+          text: profileAnswer.text,
+          knowledgeMatchesCount: profileAnswer.knowledgeMatchesCount,
+          knowledgeSourceIds: profileAnswer.knowledgeSourceIds,
+          profileCandidatesCount: profileAnswer.profileCandidatesCount,
+          appliedProfileFieldsUsed: profileAnswer.appliedProfileFieldsUsed,
+          pendingProfileCandidatesCount: profileAnswer.pendingProfileCandidatesCount
+        };
+        logGateway({
+          engine: 'local-profile',
+          model: 'local-profile',
+          status: 200,
+          cached: false,
+          durationMs: Date.now() - startedAt,
+          knowledgeMatchesCount: profileAnswer.knowledgeMatchesCount,
+          knowledgeSourceIds: profileAnswer.knowledgeSourceIds
+        });
+        res.json(profileResponse);
+        return;
+      }
 
-    const requiredAliasAnswer = buildRequiredAliasAnswer(userQuery || message);
-    const initialKnowledge = await searchKnowledgeWithAliases(userQuery || message, {
-      limit: botConfig.maxKnowledgeChunks,
-      authScope: requestContext.authScope || 'anonymous'
-    });
-    const initialKnowledgeAnswer = requiredAliasAnswer || buildAliasLookupAnswer(initialKnowledge);
-    if (initialKnowledgeAnswer) {
-      const knowledgeResponse = {
-        model: 'local-knowledge',
-        provider: 'local',
-        engine: 'local',
-        botType: requestContext.botType,
-        intent: requestContext.intent,
-        text: initialKnowledgeAnswer,
-        knowledgeMatchesCount: initialKnowledge.chunks.length,
-        knowledgeSourceIds: [...new Set(initialKnowledge.chunks.map((row) => row.source_id))],
-        citations: buildKnowledgeCitations(initialKnowledge, { query: userQuery || message }),
-        knowledge: {
-          aliases: initialKnowledge.aliases.slice(0, 4).map((row) => ({
-            canonicalName: row.canonical_name,
-            alias: row.alias,
-            requiredTitle: row.required_title,
-            generation: row.generation,
-            exampleOnly: Boolean(row.example_only),
-            needsVerification: Boolean(row.needs_verification)
-          }))
-        }
-      };
-      logGateway({
-        engine: 'local-knowledge',
-        model: 'local-knowledge',
-        status: 200,
-        cached: false,
-        durationMs: Date.now() - startedAt,
-        knowledgeMatchesCount: initialKnowledge.chunks.length,
-        knowledgeSourceIds: [...new Set(initialKnowledge.chunks.map((row) => row.source_id))]
+      const requiredAliasAnswer = buildRequiredAliasAnswer(userQuery || message);
+      const initialKnowledge = await searchKnowledgeWithAliases(userQuery || message, {
+        limit: botConfig.maxKnowledgeChunks,
+        authScope: requestContext.authScope || 'anonymous'
       });
-      res.json(knowledgeResponse);
-      return;
+      const initialKnowledgeAnswer = requiredAliasAnswer || buildAliasLookupAnswer(initialKnowledge);
+      if (initialKnowledgeAnswer) {
+        const knowledgeResponse = {
+          model: 'local-knowledge',
+          provider: 'local',
+          engine: 'local',
+          botType: requestContext.botType,
+          intent: requestContext.intent,
+          text: initialKnowledgeAnswer,
+          knowledgeMatchesCount: initialKnowledge.chunks.length,
+          knowledgeSourceIds: [...new Set(initialKnowledge.chunks.map((row) => row.source_id))],
+          citations: buildKnowledgeCitations(initialKnowledge, { query: userQuery || message }),
+          knowledge: {
+            aliases: initialKnowledge.aliases.slice(0, 4).map((row) => ({
+              canonicalName: row.canonical_name,
+              alias: row.alias,
+              requiredTitle: row.required_title,
+              generation: row.generation,
+              exampleOnly: Boolean(row.example_only),
+              needsVerification: Boolean(row.needs_verification)
+            }))
+          }
+        };
+        logGateway({
+          engine: 'local-knowledge',
+          model: 'local-knowledge',
+          status: 200,
+          cached: false,
+          durationMs: Date.now() - startedAt,
+          knowledgeMatchesCount: initialKnowledge.chunks.length,
+          knowledgeSourceIds: [...new Set(initialKnowledge.chunks.map((row) => row.source_id))]
+        });
+        res.json(knowledgeResponse);
+        return;
+      }
     }
   } catch (err) {
     console.warn('Failed to search initial local knowledge:', err?.message || err);
@@ -13288,130 +13363,132 @@ async function handleAIGatewayRequest(req, res) {
       authScope: requestContext.authScope || 'anonymous'
     });
     gatewayKnowledgeResult = localKnowledge;
-    const anniversaryCandidates = await searchExtractedAnniversaryCandidatesForQuery(userQuery || message, {
-      authScope: requestContext.authScope || 'anonymous',
-      limit: 5
-    });
-    const extractedAnniversaryAnswer = buildExtractedAnniversaryAnswer(userQuery || message, anniversaryCandidates);
-    if (extractedAnniversaryAnswer) {
-      const sourceIds = [...new Set(anniversaryCandidates.map((row) => row.source_id).filter(Boolean))];
-      const knowledgeResponse = {
-        model: 'local-knowledge',
-        provider: 'local',
-        engine: 'local',
-        botType: requestContext.botType,
-        intent: requestContext.intent,
-        text: extractedAnniversaryAnswer,
-        knowledgeMatchesCount: localKnowledge.chunks.length + anniversaryCandidates.length,
-        knowledgeSourceIds: sourceIds.length ? sourceIds : [...new Set(localKnowledge.chunks.map((row) => row.source_id))],
-        citations: buildKnowledgeCitations(localKnowledge, { query: userQuery || message, candidates: anniversaryCandidates })
-      };
-      logGateway({
-        engine: 'local-knowledge',
-        model: 'local-knowledge',
-        status: 200,
-        cached: false,
-        durationMs: Date.now() - startedAt,
-        knowledgeMatchesCount: knowledgeResponse.knowledgeMatchesCount,
-        knowledgeSourceIds: knowledgeResponse.knowledgeSourceIds
+    if (!prayerDraftRequest) {
+      const anniversaryCandidates = await searchExtractedAnniversaryCandidatesForQuery(userQuery || message, {
+        authScope: requestContext.authScope || 'anonymous',
+        limit: 5
       });
-      res.json(knowledgeResponse);
-      return;
-    }
-    const missingAnniversaryAnswer = buildMissingAnniversaryVerificationAnswer(userQuery || message, localKnowledge);
-    if (missingAnniversaryAnswer) {
-      const sourceIds = [...new Set(localKnowledge.chunks.map((row) => row.source_id))];
-      const knowledgeResponse = {
-        model: 'local-knowledge',
-        provider: 'local',
-        engine: 'local',
-        botType: requestContext.botType,
-        intent: requestContext.intent,
-        text: missingAnniversaryAnswer,
-        knowledgeMatchesCount: localKnowledge.chunks.length,
-        knowledgeSourceIds: sourceIds,
-        citations: buildKnowledgeCitations(localKnowledge, { query: userQuery || message })
-      };
-      logGateway({
-        engine: 'local-knowledge',
-        model: 'local-knowledge',
-        status: 200,
-        cached: false,
-        durationMs: Date.now() - startedAt,
-        knowledgeMatchesCount: localKnowledge.chunks.length,
-        knowledgeSourceIds: sourceIds
-      });
-      res.json(knowledgeResponse);
-      return;
-    }
-    const verificationAnswer = buildVerificationKnowledgeAnswer(userQuery || message, localKnowledge);
-    if (verificationAnswer) {
-      const sourceIds = [...new Set(verificationAnswer.chunks.map((row) => row.source_id))];
-      const knowledgeResponse = {
-        model: 'local-knowledge',
-        provider: 'local',
-        engine: 'local',
-        botType: requestContext.botType,
-        intent: requestContext.intent,
-        text: verificationAnswer.text,
-        knowledgeMatchesCount: verificationAnswer.chunks.length,
-        knowledgeSourceIds: sourceIds,
-        citations: buildKnowledgeCitations({ ...localKnowledge, chunks: verificationAnswer.chunks }, { query: userQuery || message })
-      };
-      logGateway({
-        engine: 'local-knowledge',
-        model: 'local-knowledge',
-        status: 200,
-        cached: false,
-        durationMs: Date.now() - startedAt,
-        knowledgeMatchesCount: verificationAnswer.chunks.length,
-        knowledgeSourceIds: sourceIds
-      });
-      res.json(knowledgeResponse);
-      return;
-    }
-    const localKnowledgeAnswer = buildAliasLookupAnswer(localKnowledge);
-    if (localKnowledgeAnswer) {
-      const knowledgeResponse = {
-        model: 'local-knowledge',
-        provider: 'local',
-        engine: 'local',
-        botType: requestContext.botType,
-        intent: requestContext.intent,
-        text: localKnowledgeAnswer,
-        knowledgeMatchesCount: localKnowledge.chunks.length,
-        knowledgeSourceIds: [...new Set(localKnowledge.chunks.map((row) => row.source_id))],
-        citations: buildKnowledgeCitations(localKnowledge, { query: userQuery || message }),
-        knowledge: {
-          aliases: localKnowledge.aliases.slice(0, 4).map((row) => ({
-            canonicalName: row.canonical_name,
-            alias: row.alias,
-            requiredTitle: row.required_title,
-            generation: row.generation,
-            exampleOnly: Boolean(row.example_only),
-            needsVerification: Boolean(row.needs_verification)
-          }))
-        }
-      };
-      const knowledgeCacheKey = buildAIGatewayCacheKey({
-        ...requestContext,
-        authScope: requestContext.authScope || 'none',
-        message,
-        prompt: userQuery,
-        localKnowledgeAnswer
-      });
-      setAIGatewayCachedResponse(knowledgeCacheKey, knowledgeResponse, botCacheOptions);
-      logGateway({
-        engine: 'local-knowledge',
-        model: 'local-knowledge',
-        status: 200,
-        cached: false,
-        durationMs: Date.now() - startedAt,
-        knowledgeMatchesCount: localKnowledge.chunks.length,
-        knowledgeSourceIds: [...new Set(localKnowledge.chunks.map((row) => row.source_id))]
-      });
-      res.json(knowledgeResponse);
-      return;
+      const extractedAnniversaryAnswer = buildExtractedAnniversaryAnswer(userQuery || message, anniversaryCandidates);
+      if (extractedAnniversaryAnswer) {
+        const sourceIds = [...new Set(anniversaryCandidates.map((row) => row.source_id).filter(Boolean))];
+        const knowledgeResponse = {
+          model: 'local-knowledge',
+          provider: 'local',
+          engine: 'local',
+          botType: requestContext.botType,
+          intent: requestContext.intent,
+          text: extractedAnniversaryAnswer,
+          knowledgeMatchesCount: localKnowledge.chunks.length + anniversaryCandidates.length,
+          knowledgeSourceIds: sourceIds.length ? sourceIds : [...new Set(localKnowledge.chunks.map((row) => row.source_id))],
+          citations: buildKnowledgeCitations(localKnowledge, { query: userQuery || message, candidates: anniversaryCandidates })
+        };
+        logGateway({
+          engine: 'local-knowledge',
+          model: 'local-knowledge',
+          status: 200,
+          cached: false,
+          durationMs: Date.now() - startedAt,
+          knowledgeMatchesCount: knowledgeResponse.knowledgeMatchesCount,
+          knowledgeSourceIds: knowledgeResponse.knowledgeSourceIds
+        });
+        res.json(knowledgeResponse);
+        return;
+      }
+      const missingAnniversaryAnswer = buildMissingAnniversaryVerificationAnswer(userQuery || message, localKnowledge);
+      if (missingAnniversaryAnswer) {
+        const sourceIds = [...new Set(localKnowledge.chunks.map((row) => row.source_id))];
+        const knowledgeResponse = {
+          model: 'local-knowledge',
+          provider: 'local',
+          engine: 'local',
+          botType: requestContext.botType,
+          intent: requestContext.intent,
+          text: missingAnniversaryAnswer,
+          knowledgeMatchesCount: localKnowledge.chunks.length,
+          knowledgeSourceIds: sourceIds,
+          citations: buildKnowledgeCitations(localKnowledge, { query: userQuery || message })
+        };
+        logGateway({
+          engine: 'local-knowledge',
+          model: 'local-knowledge',
+          status: 200,
+          cached: false,
+          durationMs: Date.now() - startedAt,
+          knowledgeMatchesCount: localKnowledge.chunks.length,
+          knowledgeSourceIds: sourceIds
+        });
+        res.json(knowledgeResponse);
+        return;
+      }
+      const verificationAnswer = buildVerificationKnowledgeAnswer(userQuery || message, localKnowledge);
+      if (verificationAnswer) {
+        const sourceIds = [...new Set(verificationAnswer.chunks.map((row) => row.source_id))];
+        const knowledgeResponse = {
+          model: 'local-knowledge',
+          provider: 'local',
+          engine: 'local',
+          botType: requestContext.botType,
+          intent: requestContext.intent,
+          text: verificationAnswer.text,
+          knowledgeMatchesCount: verificationAnswer.chunks.length,
+          knowledgeSourceIds: sourceIds,
+          citations: buildKnowledgeCitations({ ...localKnowledge, chunks: verificationAnswer.chunks }, { query: userQuery || message })
+        };
+        logGateway({
+          engine: 'local-knowledge',
+          model: 'local-knowledge',
+          status: 200,
+          cached: false,
+          durationMs: Date.now() - startedAt,
+          knowledgeMatchesCount: verificationAnswer.chunks.length,
+          knowledgeSourceIds: sourceIds
+        });
+        res.json(knowledgeResponse);
+        return;
+      }
+      const localKnowledgeAnswer = buildAliasLookupAnswer(localKnowledge);
+      if (localKnowledgeAnswer) {
+        const knowledgeResponse = {
+          model: 'local-knowledge',
+          provider: 'local',
+          engine: 'local',
+          botType: requestContext.botType,
+          intent: requestContext.intent,
+          text: localKnowledgeAnswer,
+          knowledgeMatchesCount: localKnowledge.chunks.length,
+          knowledgeSourceIds: [...new Set(localKnowledge.chunks.map((row) => row.source_id))],
+          citations: buildKnowledgeCitations(localKnowledge, { query: userQuery || message }),
+          knowledge: {
+            aliases: localKnowledge.aliases.slice(0, 4).map((row) => ({
+              canonicalName: row.canonical_name,
+              alias: row.alias,
+              requiredTitle: row.required_title,
+              generation: row.generation,
+              exampleOnly: Boolean(row.example_only),
+              needsVerification: Boolean(row.needs_verification)
+            }))
+          }
+        };
+        const knowledgeCacheKey = buildAIGatewayCacheKey({
+          ...requestContext,
+          authScope: requestContext.authScope || 'none',
+          message,
+          prompt: userQuery,
+          localKnowledgeAnswer
+        });
+        setAIGatewayCachedResponse(knowledgeCacheKey, knowledgeResponse, botCacheOptions);
+        logGateway({
+          engine: 'local-knowledge',
+          model: 'local-knowledge',
+          status: 200,
+          cached: false,
+          durationMs: Date.now() - startedAt,
+          knowledgeMatchesCount: localKnowledge.chunks.length,
+          knowledgeSourceIds: [...new Set(localKnowledge.chunks.map((row) => row.source_id))]
+        });
+        res.json(knowledgeResponse);
+        return;
+      }
     }
 
     const localKnowledgeContext = compactText(formatKnowledgeContextForAI(localKnowledge), botConfig.maxKnowledgeChars);
