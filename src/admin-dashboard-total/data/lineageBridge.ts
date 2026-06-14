@@ -247,6 +247,52 @@ function updateMemberInTree(tree: AncestorNode, member: FamilyMember, persist = 
   return collectMembers(tree);
 }
 
+function countDescendants(node: AncestorNode): number {
+  return (node.children ?? []).reduce((sum, child) => sum + 1 + countDescendants(child), 0);
+}
+
+function removeMemberFromTree(tree: AncestorNode, memberId: string, persist = true): FamilyMember[] {
+  if (!memberId) {
+    throw new Error("Thiếu mã thành viên cần xóa.");
+  }
+  const targetNode = findNodeById(tree, memberId);
+  if (!targetNode) {
+    throw new Error("Không tìm thấy thành viên để xóa.");
+  }
+  if (tree.id === memberId || Number(targetNode.generation) === 0) {
+    throw new Error("Không thể xóa Cao Tổ / gốc phả hệ.");
+  }
+
+  let removedNode: AncestorNode | null = null;
+
+  const walk = (node: AncestorNode) => {
+    const nextChildren: AncestorNode[] = [];
+    for (const child of node.children ?? []) {
+      if (child.id === memberId) {
+        removedNode = child;
+        continue;
+      }
+      walk(child);
+      nextChildren.push(child);
+    }
+    node.children = nextChildren;
+  };
+
+  walk(tree);
+
+  if (!removedNode) {
+    throw new Error("Không tìm thấy thành viên để xóa.");
+  }
+
+  const descendantCount = countDescendants(removedNode);
+  if (descendantCount > 0) {
+    console.warn(`Removed lineage member ${memberId} with ${descendantCount} descendant node(s).`);
+  }
+
+  if (persist) savePersistedTreeData(tree);
+  return collectMembers(tree);
+}
+
 export function addDashboardMemberToSharedTree(member: FamilyMember): FamilyMember[] {
   const tree = structuredClone(getPersistedTreeData(ANCESTRAL_TREE)) as AncestorNode;
   return addMemberToTree(tree, member);
@@ -255,6 +301,11 @@ export function addDashboardMemberToSharedTree(member: FamilyMember): FamilyMemb
 export function updateDashboardMemberInSharedTree(member: FamilyMember): FamilyMember[] {
   const tree = structuredClone(getPersistedTreeData(ANCESTRAL_TREE)) as AncestorNode;
   return updateMemberInTree(tree, member);
+}
+
+export function deleteDashboardMemberFromSharedTree(memberId: string): FamilyMember[] {
+  const tree = structuredClone(getPersistedTreeData(ANCESTRAL_TREE)) as AncestorNode;
+  return removeMemberFromTree(tree, memberId);
 }
 
 export async function addDashboardMemberToSharedTreeAsync(member: FamilyMember): Promise<FamilyMember[]> {
@@ -267,6 +318,13 @@ export async function addDashboardMemberToSharedTreeAsync(member: FamilyMember):
 export async function updateDashboardMemberInSharedTreeAsync(member: FamilyMember): Promise<FamilyMember[]> {
   const tree = structuredClone(await hydratePersistedTreeDataFromBackend(ANCESTRAL_TREE)) as AncestorNode;
   const nextMembers = updateMemberInTree(tree, member, false);
+  await savePersistedTreeDataAsync(tree);
+  return nextMembers;
+}
+
+export async function deleteDashboardMemberFromSharedTreeAsync(memberId: string): Promise<FamilyMember[]> {
+  const tree = structuredClone(await hydratePersistedTreeDataFromBackend(ANCESTRAL_TREE)) as AncestorNode;
+  const nextMembers = removeMemberFromTree(tree, memberId, false);
   await savePersistedTreeDataAsync(tree);
   return nextMembers;
 }

@@ -1,7 +1,7 @@
 ﻿import React, { useEffect, useState, useMemo, useRef } from "react";
 import * as XLSX from "xlsx";
 import { motion, AnimatePresence } from "motion/react";
-import { Search, Filter, ShieldAlert, User, UserCheck, Award, Heart, Edit3, Plus, ArrowRight, X, Calendar, MapPin, Eye, Database, Copy, Check, Upload, Download, AlertCircle, RefreshCw } from "lucide-react";
+import { Search, Filter, ShieldAlert, User, UserCheck, Award, Heart, Edit3, Plus, ArrowRight, X, Calendar, MapPin, Eye, Database, Copy, Check, Upload, Download, AlertCircle, RefreshCw, Trash2 } from "lucide-react";
 import { FamilyMember } from "../types";
 import { analyzeImportRows } from "../../utils/importValidation";
 import { flattenTreeToList, getPersistedTreeData, parseCSVToObjects, savePersistedTreeData } from "../../utils/configManager";
@@ -346,6 +346,7 @@ interface GenealogyProps {
   members: FamilyMember[];
   onAddMember: (member: FamilyMember) => void | Promise<void>;
   onUpdateMember?: (member: FamilyMember) => void | Promise<void>;
+  onDeleteMember?: (memberId: string) => void | Promise<void>;
   onBulkImport?: (newMembers: FamilyMember[], mode: "replace" | "append") => void;
 }
 
@@ -468,7 +469,7 @@ type MemberEvidenceResponse = {
   pendingEvidence?: MemberEvidenceItem[];
 };
 
-export default function Genealogy({ members, onAddMember, onUpdateMember, onBulkImport }: GenealogyProps) {
+export default function Genealogy({ members, onAddMember, onUpdateMember, onDeleteMember, onBulkImport }: GenealogyProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedBranch, setSelectedBranch] = useState("all");
   const [selectedGen, setSelectedGen] = useState<number | "T\u1ea5t c\u1ea3 \u0111\u1eddi">("T\u1ea5t c\u1ea3 \u0111\u1eddi");
@@ -722,6 +723,24 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+
+  const getGenealogySearchVariants = (value: unknown) => {
+    const normalized = normalizeGenealogyLookupText(value);
+    const variants = new Set<string>(normalized ? [normalized] : []);
+    const tokenVariants: Record<string, string[]> = {
+      ruc: ["duc"],
+      duc: ["ruc"]
+    };
+
+    normalized.split(/\s+/).forEach((token) => {
+      tokenVariants[token]?.forEach((alias) => {
+        variants.add(alias);
+        variants.add(normalized.replace(new RegExp(`\\b${token}\\b`, "g"), alias));
+      });
+    });
+
+    return Array.from(variants).filter(Boolean);
+  };
 
   const uniqueDisplayTexts = (values: unknown[]) => {
     const seen = new Set<string>();
@@ -1349,18 +1368,12 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
   };
 
   const parentSearchMatches = useMemo(() => {
-    const normalizedQuery = String(newParentSearch || "")
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase();
+    const queryVariants = getGenealogySearchVariants(newParentSearch);
     return members
       .filter((member) => {
-        if (!normalizedQuery) return true;
-        return getParentOptionLabel(member)
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
-          .toLowerCase()
-          .includes(normalizedQuery);
+        if (!queryVariants.length) return true;
+        const optionLabel = normalizeGenealogyLookupText(getParentOptionLabel(member));
+        return queryVariants.some((query) => optionLabel.includes(query));
       })
       .slice(0, 12);
   }, [members, newParentSearch]);
@@ -1500,6 +1513,60 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
     setActiveBioMemberId(newMember.id);
     
     // Reset form & Close
+    resetMemberForm();
+    setIsAddOpen(false);
+  };
+
+  const getDescendantIds = (memberId: string) => {
+    const childrenByParent = new Map<string, string[]>();
+    members.forEach((member) => {
+      if (!member.parentId) return;
+      const children = childrenByParent.get(member.parentId) || [];
+      children.push(member.id);
+      childrenByParent.set(member.parentId, children);
+    });
+
+    const descendantIds: string[] = [];
+    const walk = (parentId: string) => {
+      (childrenByParent.get(parentId) || []).forEach((childId) => {
+        descendantIds.push(childId);
+        walk(childId);
+      });
+    };
+
+    walk(memberId);
+    return descendantIds;
+  };
+
+  const handleDeleteEditingMember = async () => {
+    const member = originalEditingMember;
+    if (!member || !onDeleteMember) return;
+
+    if (Number(member.generation) === 0 || normalizeGenealogyLookupText(member.name).includes("cao dinh thuat")) {
+      alert("Không thể xóa Cao Tổ / gốc phả hệ. Nếu dữ liệu gốc sai, cần sửa thông tin thay vì xóa.");
+      return;
+    }
+
+    const descendants = getDescendantIds(member.id);
+    const message = descendants.length > 0
+      ? `Bạn đang xóa ${displayText(member.name)} và ${descendants.length} hậu duệ bên dưới. Hành động này dùng cho dữ liệu nhập nhầm và không thể hoàn tác tự động.`
+      : `Bạn đang xóa ${displayText(member.name)} khỏi cây phả hệ. Hành động này dùng cho dữ liệu nhập nhầm và không thể hoàn tác tự động.`;
+
+    if (!window.confirm(message)) return;
+
+    if (descendants.length > 0) {
+      const token = `XOA ${member.id}`;
+      const confirmedToken = window.prompt(`Để xác nhận xóa cả nhánh, nhập đúng: ${token}`);
+      if (confirmedToken !== token) return;
+    }
+
+    try {
+      await onDeleteMember(member.id);
+    } catch {
+      return;
+    }
+
+    setActiveBioMemberId(null);
     resetMemberForm();
     setIsAddOpen(false);
   };
@@ -2035,10 +2102,7 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
 
   // Filter members based on user choice
   const filteredMembers = useMemo(() => {
-    const normalizedSearch = searchTerm
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase();
+    const searchVariants = getGenealogySearchVariants(searchTerm);
     return members.filter((member) => {
       const memberBranchNames = branchNamesByMemberId.get(member.id) || [];
       const leaderNamesForMemberBranches = memberBranchNames
@@ -2055,11 +2119,9 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
         member.title,
         ...memberBranchNames,
         ...leaderNamesForMemberBranches
-      ].filter(Boolean).join(" ")
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
-      const matchSearch = !normalizedSearch || searchableText.includes(normalizedSearch);
+      ].filter(Boolean).join(" ");
+      const normalizedSearchableText = normalizeGenealogyLookupText(searchableText);
+      const matchSearch = !searchVariants.length || searchVariants.some((query) => normalizedSearchableText.includes(query));
       const branchConfig = managedBranches.find((branch) => branch.name === selectedBranch);
       const computedBranch = computedBranchByName.get(selectedBranch);
       const explicitBranchMember = Boolean(branchConfig?.memberIds?.includes(member.id));
@@ -3332,23 +3394,37 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onBulk
                 </div>
 
                 {/* Footer Buttons */}
-                <div className="flex gap-2 justify-end pt-3 border-t border-stone-100">
-                  <button 
-                    type="button" 
-                    onClick={() => {
-                      resetMemberForm();
-                      setIsAddOpen(false);
-                    }}
-                    className="bg-stone-100 border border-stone-200 hover:bg-stone-200 rounded-lg px-4 py-2 font-semibold transition-all cursor-pointer text-stone-800"
-                  >
-                    Hạ sớ Hủy
-                  </button>
-                  <button 
-                    type="submit" 
-                    className="bg-red-800 hover:bg-red-950 text-white rounded-lg px-4 py-2 font-semibold transition-all cursor-pointer flex items-center gap-1"
-                  >
-                    {editingMemberId ? "Lưu chỉnh sửa" : "Kính lập Biên phả"}
-                  </button>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pt-3 border-t border-stone-100">
+                  <div>
+                    {editingMemberId && onDeleteMember && (
+                      <button
+                        type="button"
+                        onClick={handleDeleteEditingMember}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-2 text-[11px] font-bold text-red-800 hover:bg-red-50 transition-all cursor-pointer"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Xóa tộc nhân nhầm
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex gap-2 justify-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        resetMemberForm();
+                        setIsAddOpen(false);
+                      }}
+                      className="bg-stone-100 border border-stone-200 hover:bg-stone-200 rounded-lg px-4 py-2 font-semibold transition-all cursor-pointer text-stone-800"
+                    >
+                      Hạ sớ Hủy
+                    </button>
+                    <button
+                      type="submit"
+                      className="bg-red-800 hover:bg-red-950 text-white rounded-lg px-4 py-2 font-semibold transition-all cursor-pointer flex items-center gap-1"
+                    >
+                      {editingMemberId ? "Lưu chỉnh sửa" : "Kính lập Biên phả"}
+                    </button>
+                  </div>
                 </div>
               </form>
             </motion.div>

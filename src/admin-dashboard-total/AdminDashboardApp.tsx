@@ -10,7 +10,7 @@ import ZaloManager from "./components/ZaloManager";
 import ArticlesManager from "./components/ArticlesManager";
 import SettingsManager from "./components/SettingsManager";
 import MemberAccountsManager from "./components/MemberAccountsManager";
-import { addDashboardMemberToSharedTreeAsync, getOutstandingMembersFromFamilyMembers, getWebViewFamilyMembers, hydrateWebViewFamilyMembers, updateDashboardMemberInSharedTreeAsync } from "./data/lineageBridge";
+import { addDashboardMemberToSharedTreeAsync, deleteDashboardMemberFromSharedTreeAsync, getOutstandingMembersFromFamilyMembers, getWebViewFamilyMembers, hydrateWebViewFamilyMembers, updateDashboardMemberInSharedTreeAsync } from "./data/lineageBridge";
 import { getWebViewArticles, getWebViewClanEvents, getWebViewKnowledgeDocs, getWebViewTreasuryTransactions } from "./data/webViewBridge";
 import { FamilyMember, ClanEvent, TreasuryTx, OutstandingMember, WebThemeConfig, AIModelConfig, UserSession, KnowledgeBaseDocument, WebArticle, ZaloAutoReply } from "./types";
 import { KeyRound, MapPin, HelpCircle, Activity, Sun, Moon, CalendarDays } from "lucide-react";
@@ -689,6 +689,17 @@ export default function App() {
     }
   };
 
+  const handleDeleteMember = async (memberId: string) => {
+    try {
+      const nextMembers = await deleteDashboardMemberFromSharedTreeAsync(memberId);
+      setMembers(nextMembers);
+      setOutstandingMembers(getOutstandingMembersFromFamilyMembers(nextMembers));
+    } catch (err: any) {
+      alert(err?.message || "Không thể xóa thành viên khỏi cây phả.");
+      throw err;
+    }
+  };
+
   const handleBulkImport = (newMems: FamilyMember[], mode: "replace" | "append") => {
     if (mode === "replace") {
       setMembers(newMems);
@@ -847,6 +858,7 @@ export default function App() {
                 members={members} 
                 onAddMember={handleAddMember} 
                 onUpdateMember={handleUpdateMember}
+                onDeleteMember={handleDeleteMember}
                 onBulkImport={handleBulkImport}
               />
             )}

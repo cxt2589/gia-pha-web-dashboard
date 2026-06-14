@@ -77,6 +77,34 @@ const hasVerifiedKyc = (session: WebviewAuthSession | null) => {
   return !!session && (!!session.isKYCed || session.kycStatus === 'verified');
 };
 
+const normalizeTreeSearchText = (value: unknown) => String(value || '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/\u0111/g, 'd')
+  .replace(/\u0110/g, 'D')
+  .toLowerCase()
+  .replace(/[^a-z0-9\s]/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const getTreeSearchVariants = (value: unknown) => {
+  const normalized = normalizeTreeSearchText(value);
+  const variants = new Set<string>(normalized ? [normalized] : []);
+  const tokenVariants: Record<string, string[]> = {
+    ruc: ['duc'],
+    duc: ['ruc']
+  };
+
+  normalized.split(/\s+/).forEach((token) => {
+    tokenVariants[token]?.forEach((alias) => {
+      variants.add(alias);
+      variants.add(normalized.replace(new RegExp(`\\b${token}\\b`, 'g'), alias));
+    });
+  });
+
+  return Array.from(variants).filter(Boolean);
+};
+
 export default function GiaPhaTree() {
   const [treeData, setTreeData] = React.useState<AncestorNode>(() => getPersistedTreeData(ANCESTRAL_TREE));
   const [searchTerm, setSearchTerm] = React.useState('');
@@ -576,14 +604,14 @@ export default function GiaPhaTree() {
   }, [nodeByIdMap]);
 
   const doesNodeMatchSearch = React.useCallback((node: AncestorNode, rawTerm: string) => {
-    const term = rawTerm.trim().toLowerCase();
-    if (!term) return false;
+    const terms = getTreeSearchVariants(rawTerm);
+    if (!terms.length) return false;
     const spouseText = [
       node.spouse,
       ...(node.spouseDetails?.map(detail => detail.name) || [])
     ].filter(Boolean).join(' ');
 
-    return [
+    const searchableText = normalizeTreeSearchText([
       node.name,
       node.title,
       node.birthYear,
@@ -591,7 +619,9 @@ export default function GiaPhaTree() {
       node.motherName,
       spouseText,
       node.generation ? `đời ${node.generation}` : ''
-    ].some(value => String(value || '').toLowerCase().includes(term));
+    ].filter(Boolean).join(' '));
+
+    return terms.some((term) => searchableText.includes(term));
   }, []);
 
   const searchMatches = React.useMemo(
