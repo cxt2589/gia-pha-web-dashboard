@@ -20,6 +20,44 @@ import { Sparkles, Bot, MessageSquare, X, Send, BookOpen } from 'lucide-react';
 const AdminDashboardApp = React.lazy(() => import('./admin-dashboard-total/AdminDashboardApp'));
 const WEBVIEW_ACTIVE_TAB_KEY = 'caogia_webview_active_tab_v1';
 const WEBVIEW_TABS = new Set(['tin-tuc', 'gia-pha', 'pha-ky', 'toc-uoc', 'lich-gio', 'lich-am', 'admin-dashboard']);
+const WEBVIEW_TAB_PATHS: Record<string, string> = {
+  'tin-tuc': '/tin-tuc',
+  'gia-pha': '/gia-pha',
+  'pha-ky': '/pha-ky',
+  'toc-uoc': '/toc-uoc',
+  'lich-gio': '/lich-gio',
+  'lich-am': '/lich-am',
+  'admin-dashboard': '/admin-dashboard'
+};
+const WEBVIEW_PATH_TABS = new Map(Object.entries(WEBVIEW_TAB_PATHS).map(([tab, path]) => [path, tab]));
+
+const getWebviewTabFromLocation = () => {
+  const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/';
+  const pathTab = WEBVIEW_PATH_TABS.get(normalizedPath);
+  if (pathTab) return pathTab;
+
+  const params = new URLSearchParams(window.location.search);
+  const queryTab = params.get('tab');
+  if (queryTab && WEBVIEW_TABS.has(queryTab)) return queryTab;
+  const hashTab = window.location.hash.replace(/^#\/?/, '').trim();
+  if (hashTab && WEBVIEW_TABS.has(hashTab)) return hashTab;
+  return '';
+};
+
+const getWebviewPathForTab = (tab: string) => WEBVIEW_TAB_PATHS[tab] || '/pha-ky';
+
+const normalizeWebviewUrlForTab = (tab: string, mode: 'push' | 'replace' = 'push') => {
+  const targetPath = getWebviewPathForTab(tab);
+  const currentPath = window.location.pathname.replace(/\/+$/, '') || '/';
+  const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  const nextUrl = targetPath;
+  if (currentPath === targetPath && !window.location.search && !window.location.hash) return;
+  if (mode === 'replace') {
+    window.history.replaceState({ tab }, '', nextUrl);
+    return;
+  }
+  if (currentUrl !== nextUrl) window.history.pushState({ tab }, '', nextUrl);
+};
 
 export default function App() {
   if (window.location.pathname === '/admin' || window.location.pathname.startsWith('/admin/')) {
@@ -32,6 +70,8 @@ export default function App() {
 
   const [activeTab, setActiveTab] = React.useState<string>(() => {
     try {
+      const urlTab = getWebviewTabFromLocation();
+      if (urlTab) return urlTab;
       const saved = window.localStorage.getItem(WEBVIEW_ACTIVE_TAB_KEY);
       return saved && WEBVIEW_TABS.has(saved) ? saved : 'pha-ky';
     } catch {
@@ -44,6 +84,34 @@ export default function App() {
     { role: 'assistant', text: 'Kính chào hiền nhân họ Cao. Thư phòng dòng tộc sẵn sàng hỗ trợ tra tuyển Phả cổ, giải nghĩa Tộc ước và trích lục phả hệ ngũ chi. Tôi giúp gì được cho quý vị trong ngày hôm nay?' }
   ]);
   const [isGenerating, setIsGenerating] = React.useState(false);
+
+  const setWebviewTab = React.useCallback((tab: string) => {
+    if (!WEBVIEW_TABS.has(tab)) return;
+    setActiveTab(tab);
+    try {
+      window.localStorage.setItem(WEBVIEW_ACTIVE_TAB_KEY, tab);
+      normalizeWebviewUrlForTab(tab, 'push');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch {
+      // Ignore URL/storage failures in restricted browsers.
+    }
+  }, []);
+
+  React.useEffect(() => {
+    const syncTabFromLocation = () => {
+      const urlTab = getWebviewTabFromLocation();
+      if (!urlTab) return;
+      setActiveTab(urlTab);
+      normalizeWebviewUrlForTab(urlTab, 'replace');
+    };
+    syncTabFromLocation();
+    window.addEventListener('popstate', syncTabFromLocation);
+    window.addEventListener('hashchange', syncTabFromLocation);
+    return () => {
+      window.removeEventListener('popstate', syncTabFromLocation);
+      window.removeEventListener('hashchange', syncTabFromLocation);
+    };
+  }, []);
 
   // Apply visual configurations reactive styling dynamically
   React.useEffect(() => {
@@ -138,11 +206,11 @@ export default function App() {
   return (
     <div className="flex flex-col min-h-screen bg-silk-paper text-ink-charcoal scroll-smooth select-text" id="app-root-frame">
       {/* Dynamic Header Nav */}
-      <Header activeTab={activeTab} setActiveTab={setActiveTab} />
+      <Header activeTab={activeTab} setActiveTab={setWebviewTab} />
 
       <div className="flex flex-1 w-full max-w-7xl mx-auto" id="app-main-layout">
         {/* Left Side Slim Sidebar */}
-        <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
+        <Sidebar activeTab={activeTab} setActiveTab={setWebviewTab} />
 
         {/* Content canvas with editorial padding & asymmetrical flow */}
         <main className="flex-1 px-4 sm:px-6 lg:px-12 py-8 overflow-hidden" id="app-main-view">
@@ -151,7 +219,7 @@ export default function App() {
       </div>
 
       {/* Styled Footer */}
-      <Footer setActiveTab={setActiveTab} />
+      <Footer setActiveTab={setWebviewTab} />
 
       {/* Luxury AI Assistant floating bubble - representing high premium class */}
       <div className="fixed bottom-6 right-6 z-40" id="ai-floating-bubble-hub">

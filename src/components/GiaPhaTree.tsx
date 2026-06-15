@@ -8,6 +8,7 @@ import { ANCESTRAL_TREE } from '../data/lineageData';
 import { AncestorNode, GenealogyDateStructured } from '../types';
 import { deriveLunarAnniversaryFromSolarDeathDate, getAnniversaryCountdown } from '../utils/lunarConverter';
 import { parseGenealogyDateText } from '../utils/genealogyDate.mjs';
+import { createVietnameseSearchQuery, matchesVietnameseSearch } from '../utils/vietnameseSearch';
 import { getPersistedTreeData, hydratePersistedTreeDataFromBackend, savePersistedTreeData, getAppSettings } from '../utils/configManager';
 import {
   computeClanLeaderRules,
@@ -77,32 +78,12 @@ const hasVerifiedKyc = (session: WebviewAuthSession | null) => {
   return !!session && (!!session.isKYCed || session.kycStatus === 'verified');
 };
 
-const normalizeTreeSearchText = (value: unknown) => String(value || '')
-  .normalize('NFD')
-  .replace(/[\u0300-\u036f]/g, '')
-  .replace(/\u0111/g, 'd')
-  .replace(/\u0110/g, 'D')
-  .toLowerCase()
-  .replace(/[^a-z0-9\s]/g, ' ')
-  .replace(/\s+/g, ' ')
-  .trim();
-
-const getTreeSearchVariants = (value: unknown) => {
-  const normalized = normalizeTreeSearchText(value);
-  const variants = new Set<string>(normalized ? [normalized] : []);
-  const tokenVariants: Record<string, string[]> = {
-    ruc: ['duc'],
-    duc: ['ruc']
-  };
-
-  normalized.split(/\s+/).forEach((token) => {
-    tokenVariants[token]?.forEach((alias) => {
-      variants.add(alias);
-      variants.add(normalized.replace(new RegExp(`\\b${token}\\b`, 'g'), alias));
-    });
-  });
-
-  return Array.from(variants).filter(Boolean);
+const treeSearchAliases = {
+  strictAliases: {
+    'rục': ['dục'],
+    'dục': ['rục']
+  },
+  looseAliases: {}
 };
 
 export default function GiaPhaTree() {
@@ -172,6 +153,7 @@ export default function GiaPhaTree() {
     let timerId = 0;
 
     const centerRoot = () => {
+      if (userInteractedWithTreeRef.current) return;
       const viewport = viewportRef.current;
       const card = document.getElementById(cardId);
       attempts += 1;
@@ -278,6 +260,7 @@ export default function GiaPhaTree() {
   // Dragging state for desktop space dragging pan scroll
   const viewportRef = React.useRef<HTMLDivElement>(null);
   const centeredRootKeyRef = React.useRef("");
+  const userInteractedWithTreeRef = React.useRef(false);
   const [isDragging, setIsDragging] = React.useState(false);
   const [startX, setStartX] = React.useState(0);
   const [startY, setStartY] = React.useState(0);
@@ -327,6 +310,10 @@ export default function GiaPhaTree() {
   const [spouseSolarDeathDate, setSpouseSolarDeathDate] = React.useState('');
 
   // Mouse pan event handlers
+  const markTreeInteraction = React.useCallback(() => {
+    userInteractedWithTreeRef.current = true;
+  }, []);
+
   const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
     if (e.button !== 0 && e.button !== 1) return;
     const target = e.target as HTMLElement;
@@ -341,6 +328,7 @@ export default function GiaPhaTree() {
       return;
     }
     if (viewportRef.current) {
+      markTreeInteraction();
       e.preventDefault(); // Ngăn hiển thị bôi đen chữ hoặc cơ chế kéo mặc định của trình duyệt để có thể giữ chuột trái kéo lướt mượt mà
       setIsDragging(true);
       setStartX(e.clientX - viewportRef.current.offsetLeft);
@@ -385,25 +373,9 @@ export default function GiaPhaTree() {
 
   const handleReturnToRoot = React.useCallback(() => {
     if (!treeData?.id) return;
+    userInteractedWithTreeRef.current = false;
     window.setTimeout(() => scrollNodeIntoCanvas(treeData.id), 120);
   }, [scrollNodeIntoCanvas, treeData?.id]);
-
-  React.useEffect(() => {
-    if (!treeData?.id) return;
-    let attempts = 0;
-    let timerId = 0;
-
-    const centerRootInCanvas = () => {
-      attempts += 1;
-      scrollNodeIntoCanvas(treeData.id, attempts <= 2 ? 'auto' : 'smooth');
-      if (attempts < 10) {
-        timerId = window.setTimeout(centerRootInCanvas, attempts < 3 ? 180 : 320);
-      }
-    };
-
-    timerId = window.setTimeout(centerRootInCanvas, 220);
-    return () => window.clearTimeout(timerId);
-  }, [isMobile, orientation, scrollNodeIntoCanvas, treeData?.id]);
 
   // Launching panels helpers
   const startAddChild = () => {
@@ -604,14 +576,14 @@ export default function GiaPhaTree() {
   }, [nodeByIdMap]);
 
   const doesNodeMatchSearch = React.useCallback((node: AncestorNode, rawTerm: string) => {
-    const terms = getTreeSearchVariants(rawTerm);
-    if (!terms.length) return false;
+    const query = createVietnameseSearchQuery(rawTerm, treeSearchAliases);
+    if (!query.strict && !query.loose) return false;
     const spouseText = [
       node.spouse,
       ...(node.spouseDetails?.map(detail => detail.name) || [])
     ].filter(Boolean).join(' ');
 
-    const searchableText = normalizeTreeSearchText([
+    const improvedSearchableText = [
       node.name,
       node.title,
       node.birthYear,
@@ -619,9 +591,9 @@ export default function GiaPhaTree() {
       node.motherName,
       spouseText,
       node.generation ? `đời ${node.generation}` : ''
-    ].filter(Boolean).join(' '));
+    ].filter(Boolean).join(' ');
 
-    return terms.some((term) => searchableText.includes(term));
+    return matchesVietnameseSearch(improvedSearchableText, query);
   }, []);
 
   const searchMatches = React.useMemo(
@@ -1834,6 +1806,8 @@ export default function GiaPhaTree() {
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseLeave}
+            onWheel={markTreeInteraction}
+            onTouchStart={markTreeInteraction}
             className={`overflow-auto w-full ${isFullTreeView ? 'max-h-[calc(100vh-260px)]' : 'max-h-[640px]'} pb-10 scrollbar-thin relative ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
             id="tree-viewport-canvas"
           >

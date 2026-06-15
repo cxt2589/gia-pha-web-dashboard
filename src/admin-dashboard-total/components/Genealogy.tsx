@@ -10,6 +10,7 @@ import { mapLineageNodesToDashboardMembers } from "../data/lineageBridge";
 import { ANCESTRAL_TREE } from "../../data/lineageData";
 import { convertSolarToLunarText, convertSolarToLunarTextFromLich247, deriveLunarAnniversaryFromSolarDeathDate, deriveLunarAnniversaryFromSolarDeathDateViaLich247 } from "../../utils/lunarConverter";
 import { parseGenealogyDateText } from "../../utils/genealogyDate.mjs";
+import { createVietnameseSearchQuery, matchesVietnameseSearch } from "../../utils/vietnameseSearch";
 
 const SKIP_DASHBOARD_FIELD = "__skip";
 const SKIP_DASHBOARD_LABEL = "Không ghi nhận / bỏ qua cột";
@@ -724,24 +725,6 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onDele
     .replace(/\s+/g, " ")
     .trim();
 
-  const getGenealogySearchVariants = (value: unknown) => {
-    const normalized = normalizeGenealogyLookupText(value);
-    const variants = new Set<string>(normalized ? [normalized] : []);
-    const tokenVariants: Record<string, string[]> = {
-      ruc: ["duc"],
-      duc: ["ruc"]
-    };
-
-    normalized.split(/\s+/).forEach((token) => {
-      tokenVariants[token]?.forEach((alias) => {
-        variants.add(alias);
-        variants.add(normalized.replace(new RegExp(`\\b${token}\\b`, "g"), alias));
-      });
-    });
-
-    return Array.from(variants).filter(Boolean);
-  };
-
   const uniqueDisplayTexts = (values: unknown[]) => {
     const seen = new Set<string>();
     return values
@@ -759,6 +742,50 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onDele
     const containerKey = normalizeGenealogyLookupText(container);
     const valueKey = normalizeGenealogyLookupText(value);
     return Boolean(containerKey && valueKey && containerKey.includes(valueKey));
+  };
+
+  const genealogySearchAliases = {
+    strictAliases: {
+      "rục": ["dục"],
+      "dục": ["rục"]
+    },
+    looseAliases: {}
+  };
+
+  const memberSearchText = (member: FamilyMember, scope: "primary" | "extended") => {
+    const anyMember = member as any;
+    const spouseDetails = Array.isArray(anyMember.spouseDetails)
+      ? anyMember.spouseDetails.map((detail: any) => detail?.name)
+      : [];
+    const baseFields = [
+      member.id,
+      member.name,
+      anyMember.alias,
+      member.rankRole,
+      member.title,
+      member.customSuffix,
+      member.birthYear,
+      member.deathYear
+    ];
+
+    if (scope === "primary") return baseFields.filter(Boolean).join(" ");
+
+    return [
+      ...baseFields,
+      anyMember.fatherName,
+      member.motherName,
+      member.spouse,
+      ...spouseDetails,
+      member.residence,
+      member.birthPlace,
+      member.deathPlace,
+      member.solarBirthDate,
+      member.solarDeathDate,
+      member.deathAnniversaryLunar,
+      member.graveLocation,
+      member.bio,
+      ...(member.achievements || [])
+    ].filter(Boolean).join(" ");
   };
 
   const getMemberTitleLine = (member?: FamilyMember) => {
@@ -1368,12 +1395,11 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onDele
   };
 
   const parentSearchMatches = useMemo(() => {
-    const queryVariants = getGenealogySearchVariants(newParentSearch);
+    const query = createVietnameseSearchQuery(newParentSearch, genealogySearchAliases);
     return members
       .filter((member) => {
-        if (!queryVariants.length) return true;
-        const optionLabel = normalizeGenealogyLookupText(getParentOptionLabel(member));
-        return queryVariants.some((query) => optionLabel.includes(query));
+        if (!query.strict && !query.loose) return true;
+        return matchesVietnameseSearch(getParentOptionLabel(member), query);
       })
       .slice(0, 12);
   }, [members, newParentSearch]);
@@ -2102,26 +2128,9 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onDele
 
   // Filter members based on user choice
   const filteredMembers = useMemo(() => {
-    const searchVariants = getGenealogySearchVariants(searchTerm);
-    return members.filter((member) => {
-      const memberBranchNames = branchNamesByMemberId.get(member.id) || [];
-      const leaderNamesForMemberBranches = memberBranchNames
-        .map((branchName) => {
-          const leaderId = getBranchLeaderId(branchName);
-          return leaderId ? members.find((item) => item.id === leaderId)?.name : "";
-        })
-        .filter(Boolean);
-      const searchableText = [
-        member.name,
-        member.bio,
-        member.branch,
-        member.rankRole,
-        member.title,
-        ...memberBranchNames,
-        ...leaderNamesForMemberBranches
-      ].filter(Boolean).join(" ");
-      const normalizedSearchableText = normalizeGenealogyLookupText(searchableText);
-      const matchSearch = !searchVariants.length || searchVariants.some((query) => normalizedSearchableText.includes(query));
+    const searchQuery = createVietnameseSearchQuery(searchTerm, genealogySearchAliases);
+    const hasSearch = Boolean(searchQuery.strict || searchQuery.loose);
+    const scopedMembers = members.filter((member) => {
       const branchConfig = managedBranches.find((branch) => branch.name === selectedBranch);
       const computedBranch = computedBranchByName.get(selectedBranch);
       const explicitBranchMember = Boolean(branchConfig?.memberIds?.includes(member.id));
@@ -2134,9 +2143,20 @@ export default function Genealogy({ members, onAddMember, onUpdateMember, onDele
       );
       const matchGen = selectedGen === "T\u1ea5t c\u1ea3 \u0111\u1eddi" || member.generation === Number(selectedGen);
 
-      return matchSearch && matchBranch && matchGen;
+      return matchBranch && matchGen;
     });
-  }, [branchFilterMode, branchNamesByMemberId, computedBranchByName, managedBranches, members, searchTerm, selectedBranch, selectedGen]);
+
+    if (!hasSearch) return scopedMembers;
+
+    const primaryMatches = scopedMembers.filter((member) =>
+      matchesVietnameseSearch(memberSearchText(member, "primary"), searchQuery)
+    );
+    if (primaryMatches.length > 0) return primaryMatches;
+
+    return scopedMembers.filter((member) =>
+      matchesVietnameseSearch(memberSearchText(member, "extended"), searchQuery)
+    );
+  }, [branchFilterMode, computedBranchByName, managedBranches, members, searchTerm, selectedBranch, selectedGen]);
 
   // Parent names resolver helper
   const getParentName = (parentId?: string) => {
