@@ -1159,12 +1159,10 @@ export default function GiaPhaTree() {
     width: `${connectorThickness}px`,
     height
   });
-  const getChildBranchMinWidth = (child: AncestorNode) => {
-    const childHasChildren = (child.children || []).some(grandChild => grandChild?.name?.trim());
-    if (isMobile) return childHasChildren ? '140px' : '112px';
-    const nodeWidth = Number(settings.treeNodeWidth) || 170;
+  const getChildBranchMinWidth = () => {
+    if (isMobile) return '140px';
     const branchSpacing = Number(settings.treeSpacingX) || 185;
-    return `${childHasChildren ? branchSpacing : Math.min(branchSpacing, nodeWidth)}px`;
+    return `${branchSpacing}px`;
   };
 
   // RECURSIVE RENDERER FOR VERTICAL TREE DESCENDANT
@@ -1411,7 +1409,7 @@ export default function GiaPhaTree() {
               {childNodes.map((child, idx) => {
                 const totalKids = childNodes.length;
                 return (
-                  <div key={child.id} className="relative flex flex-col items-center pt-6" style={{ minWidth: getChildBranchMinWidth(child) }}>
+                  <div key={child.id} className="relative flex flex-col items-center pt-6" style={{ minWidth: getChildBranchMinWidth() }}>
                     
                     {/* Horizontal link spanning across children */}
                     {totalKids > 1 && (
