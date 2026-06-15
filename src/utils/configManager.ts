@@ -91,12 +91,71 @@ export const DEFAULT_CONFIG: AppConfig = {
 const LOCAL_STORAGE_KEY = "caogia_app_settings_cfg";
 const APP_SETTINGS_API_URL = "/api/state/app-settings";
 
+const CANONICAL_APP_TEXT = {
+  homeTitle: "GIA TỘC HỌ CAO",
+  homeSubtitle: "Ninh Bình",
+  footerText: "Ban trị sự GIA TỘC HỌ CAO",
+  tabTintucLabel: "Tin tức",
+  tabGiaphaLabel: "Gia phả",
+  tabPhakyLabel: "Phả ký",
+  tabTocuocLabel: "Tộc ước",
+  tabLichgioLabel: "Lịch giỗ",
+  tabLichamLabel: "Đổi lịch âm",
+  tabDashboardLabel: "Quản trị",
+  brandChar: "高"
+} as const;
+
+const hasMojibake = (value: unknown) =>
+  typeof value === "string" &&
+  /(?:\u00c3|\u00c4|\u00c6|\u00c2|\u00e9\u00ab|\u00e5|[\u00a4-\u00be])/.test(value);
+
+const normalizeAppSettings = (config: AppConfig): AppConfig => {
+  const normalized = { ...config };
+  const title = String(normalized.homeTitle || "").trim();
+  if (!title || title.includes("Cao Ninh") || title === "Gia Tộc Họ Cao" || hasMojibake(title)) {
+    normalized.homeTitle = CANONICAL_APP_TEXT.homeTitle;
+  }
+  if (!normalized.homeSubtitle || hasMojibake(normalized.homeSubtitle)) {
+    normalized.homeSubtitle = CANONICAL_APP_TEXT.homeSubtitle;
+  }
+  const footer = String(normalized.footerText || "").trim();
+  if (!footer || footer.includes("Cao Ninh") || hasMojibake(footer)) {
+    normalized.footerText = CANONICAL_APP_TEXT.footerText;
+  }
+  const textKeys: Array<keyof Pick<AppConfig,
+    "tabTintucLabel" |
+    "tabGiaphaLabel" |
+    "tabPhakyLabel" |
+    "tabTocuocLabel" |
+    "tabLichgioLabel" |
+    "tabLichamLabel" |
+    "tabDashboardLabel"
+  >> = [
+    "tabTintucLabel",
+    "tabGiaphaLabel",
+    "tabPhakyLabel",
+    "tabTocuocLabel",
+    "tabLichgioLabel",
+    "tabLichamLabel",
+    "tabDashboardLabel"
+  ];
+  textKeys.forEach((key) => {
+    if (!normalized[key] || hasMojibake(normalized[key])) {
+      normalized[key] = CANONICAL_APP_TEXT[key];
+    }
+  });
+  if (!normalized.brandChar || hasMojibake(normalized.brandChar)) {
+    normalized.brandChar = CANONICAL_APP_TEXT.brandChar;
+  }
+  return normalized;
+};
+
 export const getAppSettings = (): AppConfig => {
   try {
     const savedString = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (!savedString) return DEFAULT_CONFIG;
+    if (!savedString) return normalizeAppSettings(DEFAULT_CONFIG);
     const parsed = JSON.parse(savedString);
-    const merged = { ...DEFAULT_CONFIG, ...parsed };
+    const merged = normalizeAppSettings({ ...DEFAULT_CONFIG, ...parsed });
     // Clear old unrequested background image URLs from cached states
     if (merged.backgroundImageUrl === "https://images.unsplash.com/photo-1605721911519-3dfeb3be25e7?q=80&w=1000") {
       merged.backgroundImageUrl = "";
@@ -110,8 +169,9 @@ export const getAppSettings = (): AppConfig => {
 
 export const saveAppSettings = (settings: AppConfig): void => {
   try {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(settings));
-    void persistAppSettingsToBackend(settings);
+    const normalized = normalizeAppSettings(settings);
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(normalized));
+    void persistAppSettingsToBackend(normalized);
     // Dispatch a custom event so other components know configs updated
     window.dispatchEvent(new Event("caogia_settings_updated"));
   } catch (err) {
@@ -121,10 +181,11 @@ export const saveAppSettings = (settings: AppConfig): void => {
 
 export const resetAppSettings = (): AppConfig => {
   try {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(DEFAULT_CONFIG));
-    void persistAppSettingsToBackend(DEFAULT_CONFIG);
+    const normalized = normalizeAppSettings(DEFAULT_CONFIG);
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(normalized));
+    void persistAppSettingsToBackend(normalized);
     window.dispatchEvent(new Event("caogia_settings_updated"));
-    return DEFAULT_CONFIG;
+    return normalized;
   } catch (err) {
     console.error("Failed to reset settings:", err);
     return DEFAULT_CONFIG;
@@ -150,7 +211,7 @@ export const hydrateAppSettingsFromBackend = async (): Promise<AppConfig> => {
     if (response.status === 404) return getAppSettings();
     if (!response.ok) throw new Error(`Settings API returned ${response.status}`);
     const payload = await response.json();
-    const merged = { ...DEFAULT_CONFIG, ...(payload?.value || {}) };
+    const merged = normalizeAppSettings({ ...DEFAULT_CONFIG, ...(payload?.value || {}) });
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(merged));
     window.dispatchEvent(new Event("caogia_settings_updated"));
     return merged;

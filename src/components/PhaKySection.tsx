@@ -29,7 +29,7 @@ export default function PhaKySection() {
           </h1>
           
           <p className="text-base text-ink-charcoal/80 leading-relaxed font-sans max-w-lg">
-            Nơi gìn giữ hồn cốt của dòng họ Cao Ninh Bình, quy chiếu theo cây phả hiện tại từ Cao Tổ Cao Đình Thuật và Thủy Tổ Cao Đình Lạng.
+            Nơi gìn giữ hồn cốt của GIA TỘC HỌ CAO, quy chiếu theo cây phả hiện tại từ Cao Tổ Cao Đình Thuật và Thủy Tổ Cao Đình Lạng.
           </p>
           
           <div className="flex items-center space-x-4 pt-2">
@@ -53,7 +53,7 @@ export default function PhaKySection() {
           <div className="aspect-[4/3] lg:aspect-auto lg:h-[420px] w-full overflow-hidden rounded-sm relative shadow-xl">
             <img 
               src={COMPONENT_IMAGES.inkLandscape} 
-              alt="Họ Cao Ninh Bình - tranh thủy mặc" 
+              alt="GIA TỘC HỌ CAO - tranh thủy mặc"
               className="object-cover w-full h-full transform scale-100 group-hover:scale-105 transition-transform duration-1000 grayscale-[10%]"
               referrerPolicy="no-referrer"
             />
@@ -63,7 +63,7 @@ export default function PhaKySection() {
             {/* Floating red seal tag representing the branch */}
             <div className="absolute bottom-6 left-6 bg-primary py-3 px-5 shadow-lg max-w-[200px]">
               <span className="block font-serif text-lg font-semibold text-silk-paper tracking-wide">
-                Họ Cao Ninh Bình
+                GIA TỘC HỌ CAO
               </span>
               <span className="block font-sans text-[10px] uppercase tracking-widest text-silk-paper/70 mt-1 font-mono">
                 Đệ ngũ thế hệ

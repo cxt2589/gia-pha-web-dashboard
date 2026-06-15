@@ -69,7 +69,7 @@ function AdminLoginPage({ session }: { session: AdminAuthSession | null }) {
       `}</style>
       <header className="sticky top-0 z-20 border-b border-[#e0bfbf] bg-[#fbf9f5]/95 backdrop-blur">
         <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:flex-nowrap sm:px-6 md:px-16">
-          <a href="/" className="min-w-0 font-serif text-xl font-bold leading-tight text-[#570013] sm:text-2xl">Gia Tộc Họ Cao</a>
+          <a href="/" className="min-w-0 font-serif text-xl font-bold leading-tight text-[#570013] sm:text-2xl">GIA TỘC HỌ CAO</a>
           <a href="/" className="shrink-0 rounded border border-[#775a19]/40 px-3 py-2 text-[10px] font-bold uppercase tracking-wide text-[#570013] hover:bg-[#fed488]/30 sm:px-4 sm:text-xs">
             Về web gia phả
           </a>
@@ -213,11 +213,17 @@ function sanitizeAIModelConfig(config: AIModelConfig): AIModelConfig {
 }
 
 function sanitizeThemeConfig(config: WebThemeConfig): WebThemeConfig {
-  const siteName = config.siteName === "Họ Cao Ninh Bình" ? "Họ Cao" : config.siteName;
+  const legacySiteNames = new Set(["Họ Cao Ninh Bình", "Họ Cao", "Gia Tộc Cao Ninh Bình", "Gia Tộc Họ Cao"]);
+  const legacySlogans = new Set([
+    "Uống nước nhớ nguồn - Lê triều khởi thủy",
+    "Uống nước nhớ nguồn - Kính tộc phụng tiên"
+  ]);
+  const siteName = legacySiteNames.has(config.siteName) ? "GIA TỘC HỌ CAO" : config.siteName;
+  const slogan = legacySlogans.has(config.slogan) ? "Uống nước nhớ nguồn - Kính tiên phụng tổ" : config.slogan;
   return {
     ...config,
     siteName: sanitizeDefaultAIText(siteName),
-    slogan: sanitizeDefaultAIText(config.slogan)
+    slogan: sanitizeDefaultAIText(slogan)
   };
 }
 
@@ -357,8 +363,8 @@ export default function App() {
 
   // Configuration Settings State
   const [themeConfig, setThemeConfig] = useState<WebThemeConfig>(() => loadStored(DASHBOARD_THEME_KEY, {
-    siteName: "Họ Cao",
-    slogan: "Uống nước nhớ nguồn - Kính tộc phụng tiên",
+    siteName: "GIA TỘC HỌ CAO",
+    slogan: "Uống nước nhớ nguồn - Kính tiên phụng tổ",
     primaryColor: "royal-red",
     fontFamily: "Inter",
     showBanner: true,
@@ -786,6 +792,7 @@ export default function App() {
         onSelectTab={setActiveTab} 
         serverHealth={serverHealth} 
         currentUser={currentUser}
+        themeConfig={themeConfig}
       />
 
       {/* Main content body canvas */}
@@ -797,7 +804,7 @@ export default function App() {
             {/* Ninh Binh Location Coordinates */}
             <MapPin className="h-4 w-4 text-red-800" />
             <span className="font-serif font-bold text-stone-880">
-              Trụ sở Từ đường: Thôn Trung, xã Trường Yên, Hoa Lư, Ninh Bình
+              Trụ sở Từ đường: Thôn Phú Mỹ, Xã Trực Ninh, Tỉnh Ninh Bình
             </span>
           </div>
           

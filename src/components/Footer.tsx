@@ -5,17 +5,29 @@
 
 import React from 'react';
 import { Share2, Printer, Download } from 'lucide-react';
+import { getAppSettings } from '../utils/configManager';
 
 interface FooterProps {
   setActiveTab: (tab: string) => void;
 }
 
 export default function Footer({ setActiveTab }: FooterProps) {
+  const [settings, setSettings] = React.useState(getAppSettings());
+
+  React.useEffect(() => {
+    const handleTrigger = () => setSettings(getAppSettings());
+    window.addEventListener("caogia_settings_updated", handleTrigger);
+    return () => window.removeEventListener("caogia_settings_updated", handleTrigger);
+  }, []);
+
+  const displaySiteName = settings.homeTitle || "GIA TỘC HỌ CAO";
+  const displayFooterText = settings.footerText || "Ban trị sự GIA TỘC HỌ CAO";
+
   const handleShare = () => {
     if (navigator.share) {
       navigator.share({
-        title: 'Họ Cao Ninh Bình - Di sản Dòng họ',
-        text: 'Chiêm bái Phả ký, Gia phả và Tộc ước dòng họ Cao Ninh Bình.',
+        title: `${displaySiteName} - Di sản dòng họ`,
+        text: `Chiêm bái Phả ký, Gia phả và Tộc ước ${displaySiteName}.`,
         url: window.location.href,
       }).catch(console.error);
     } else {
@@ -36,21 +48,21 @@ export default function Footer({ setActiveTab }: FooterProps) {
       <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
         {/* Left Side copyright and branding */}
         <div className="space-y-1 text-center md:text-left">
-          <h4 className="font-serif text-sm font-bold text-primary">Họ Cao Ninh Bình</h4>
-          <p>© 2026 Ban Trị Sự Họ Cao Ninh Bình. Dữ liệu phả hệ đang được kiểm chứng và số hóa.</p>
+          <h4 className="font-serif text-sm font-bold text-primary">{displaySiteName}</h4>
+          <p>© 2026 {displayFooterText}. Dữ liệu phả hệ đang được kiểm chứng và số hóa.</p>
         </div>
 
         {/* Right side links and tools */}
         <div className="flex flex-col sm:flex-row items-center gap-6">
           <div className="flex items-center space-x-6 font-semibold">
             <button 
-              onClick={() => alert('Liên hệ Ban trị sự họ Cao Ninh Bình qua kênh liên lạc chính thức của dòng họ.')}
+              onClick={() => alert(`Liên hệ ${displayFooterText} qua kênh liên lạc chính thức của dòng họ.`)}
               className="hover:text-primary transition-colors cursor-pointer"
             >
               Liên hệ
             </button>
             <button 
-              onClick={() => alert('Đường dẫn bản đồ từ đường họ Cao Ninh Bình đang được Ban trị sự cập nhật.')} 
+              onClick={() => alert('Đường dẫn bản đồ từ đường GIA TỘC HỌ CAO đang được Ban trị sự cập nhật.')}
               className="hover:text-primary transition-colors cursor-pointer"
             >
               Bản đồ

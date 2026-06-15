@@ -1159,6 +1159,13 @@ export default function GiaPhaTree() {
     width: `${connectorThickness}px`,
     height
   });
+  const getChildBranchMinWidth = (child: AncestorNode) => {
+    const childHasChildren = (child.children || []).some(grandChild => grandChild?.name?.trim());
+    if (isMobile) return childHasChildren ? '140px' : '112px';
+    const nodeWidth = Number(settings.treeNodeWidth) || 170;
+    const branchSpacing = Number(settings.treeSpacingX) || 185;
+    return `${childHasChildren ? branchSpacing : Math.min(branchSpacing, nodeWidth)}px`;
+  };
 
   // RECURSIVE RENDERER FOR VERTICAL TREE DESCENDANT
   const renderVerticalNode = (node: AncestorNode): React.ReactNode => {
@@ -1382,7 +1389,7 @@ export default function GiaPhaTree() {
           {hasChildren && (
             <button
               onClick={(e) => toggleCollapse(node.id, e)}
-              className={`absolute -bottom-2 right-1 lg:right-auto lg:left-1/2 lg:-translate-x-1/2 w-4.5 h-4.5 rounded-full border flex items-center justify-center shadow-md transition-colors ${
+              className={`absolute -bottom-2 right-1 z-30 lg:right-auto lg:left-1/2 lg:-translate-x-1/2 w-4.5 h-4.5 rounded-full border flex items-center justify-center shadow-md transition-colors ${
                 isSelected 
                   ? 'bg-secondary border-primary text-silk-paper' 
                   : 'bg-white border-[#8c716e]/20 text-secondary hover:bg-silk-paper'
@@ -1397,14 +1404,14 @@ export default function GiaPhaTree() {
         {hasChildren && !isCollapsed && (
           <div className="flex flex-col items-center w-full" id={`vt-node-branches-${node.id}`}>
             {/* Split parent bottom vertical node line */}
-            <div style={connectorVerticalStyle('24px')}></div>
+            <div className="mt-2" style={connectorVerticalStyle('16px')}></div>
 
             {/* Horizontal line row container */}
             <div className="flex justify-center relative w-full">
               {childNodes.map((child, idx) => {
                 const totalKids = childNodes.length;
                 return (
-                  <div key={child.id} className="relative flex flex-col items-center pt-6" style={{ minWidth: isMobile ? '140px' : `${settings.treeSpacingX}px` }}>
+                  <div key={child.id} className="relative flex flex-col items-center pt-6" style={{ minWidth: getChildBranchMinWidth(child) }}>
                     
                     {/* Horizontal link spanning across children */}
                     {totalKids > 1 && (
@@ -1651,7 +1658,7 @@ export default function GiaPhaTree() {
           {hasChildren && (
             <button
               onClick={(e) => toggleCollapse(node.id, e)}
-              className={`absolute -right-2 top-1/2 -translate-y-1/2 w-4.5 h-4.5 rounded-full border flex items-center justify-center shadow-md transition-colors ${
+              className={`absolute -right-2 top-1/2 z-30 -translate-y-1/2 w-4.5 h-4.5 rounded-full border flex items-center justify-center shadow-md transition-colors ${
                 isSelected 
                   ? 'bg-secondary border-primary text-silk-paper font-bold' 
                   : 'bg-white border-[#8c716e]/20 text-secondary hover:bg-silk-paper'

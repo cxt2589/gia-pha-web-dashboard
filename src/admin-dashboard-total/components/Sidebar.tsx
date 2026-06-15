@@ -1,12 +1,13 @@
 import React, { useState } from "react";
 import { Activity, Award, BrainCircuit, Calendar, FileText, Heart, Landmark, Menu, MessageSquare, Settings, UserCheck, Users, X } from "lucide-react";
-import { UserSession } from "../types";
+import { UserSession, WebThemeConfig } from "../types";
 
 interface SidebarProps {
   activeTab: string;
   onSelectTab: (tab: string) => void;
   serverHealth: boolean;
   currentUser: UserSession;
+  themeConfig: WebThemeConfig;
 }
 
 const roleLabels: Record<string, string> = {
@@ -17,8 +18,10 @@ const roleLabels: Record<string, string> = {
   user: "Thành viên"
 };
 
-export default function Sidebar({ activeTab, onSelectTab, serverHealth, currentUser }: SidebarProps) {
+export default function Sidebar({ activeTab, onSelectTab, serverHealth, currentUser, themeConfig }: SidebarProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const displaySiteName = (themeConfig.siteName || "GIA TỘC HỌ CAO").trim();
+  const displaySlogan = (themeConfig.slogan || "Uống nước nhớ nguồn - Kính tiên phụng tổ").trim();
 
   const menuItems = [
     { id: "overview", name: "Tổng quan điện thờ", icon: Landmark },
@@ -49,7 +52,7 @@ export default function Sidebar({ activeTab, onSelectTab, serverHealth, currentU
             Cao
           </div>
           <span className="font-serif font-bold text-xs tracking-wide text-amber-100">
-            Họ Cao Ninh Bình
+            {displaySiteName}
           </span>
         </div>
         <button
@@ -83,9 +86,9 @@ export default function Sidebar({ activeTab, onSelectTab, serverHealth, currentU
             </div>
             <div>
               <h1 className="font-serif font-extrabold text-sm tracking-widest text-amber-450 text-center uppercase">
-                Gia Tộc Cao Ninh Bình
+                {displaySiteName}
               </h1>
-              <p className="text-[10px] text-stone-500 font-medium">Uống nước nhớ nguồn - Lê triều khởi thủy</p>
+              <p className="text-[10px] text-stone-500 font-medium">{displaySlogan}</p>
             </div>
           </div>
 

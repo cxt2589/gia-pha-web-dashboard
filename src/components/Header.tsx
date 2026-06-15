@@ -15,6 +15,8 @@ interface HeaderProps {
 export default function Header({ activeTab, setActiveTab }: HeaderProps) {
   const [isOpen, setIsOpen] = React.useState(false);
   const [settings, setSettings] = React.useState(getAppSettings());
+  const displaySubtitle = settings.homeSubtitle || "Ninh B\u00ecnh";
+  const displayFooterText = settings.footerText || "Ban tr\u1ecb s\u1ef1 GIA T\u1ed8C H\u1ecc CAO";
 
   React.useEffect(() => {
     const handleTrigger = () => {
@@ -81,7 +83,7 @@ export default function Header({ activeTab, setActiveTab }: HeaderProps) {
         <div className="hidden lg:flex items-center space-x-4" id="header-right-utility">
           <div className="flex items-center text-xs text-ink-charcoal/50 space-x-1.5 font-mono bg-ink-charcoal/5 py-1 px-2.5 rounded-sm">
             <Globe className="w-3.5 h-3.5 text-secondary" />
-            <span>Ninh Bình</span>
+            <span>{displaySubtitle}</span>
           </div>
           <div className="w-8 h-8 rounded-full border border-primary/20 flex items-center justify-center bg-primary/5 text-primary cursor-pointer hover:bg-primary hover:text-silk-paper transition-all duration-300">
             <User className="w-4 h-4" />
@@ -130,7 +132,7 @@ export default function Header({ activeTab, setActiveTab }: HeaderProps) {
             })}
             <div className="pt-2 border-t border-ink-charcoal/5 flex items-center space-x-2 pl-2">
               <Globe className="w-4 h-4 text-secondary" />
-              <span className="font-mono text-xs text-ink-charcoal/60">Ban trị sự họ Cao Ninh Bình</span>
+              <span className="font-mono text-xs text-ink-charcoal/60">{displayFooterText}</span>
             </div>
           </div>
         </div>

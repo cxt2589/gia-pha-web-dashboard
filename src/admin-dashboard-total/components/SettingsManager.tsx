@@ -41,6 +41,15 @@ export default function SettingsManager({
   const [showBanner, setShowBanner] = useState(themeConfig.showBanner);
   const [logoText, setLogoText] = useState(themeConfig.logoText);
 
+  React.useEffect(() => {
+    setSiteName(themeConfig.siteName);
+    setSlogan(themeConfig.slogan);
+    setPrimaryColor(themeConfig.primaryColor);
+    setFontFamily(themeConfig.fontFamily);
+    setShowBanner(themeConfig.showBanner);
+    setLogoText(themeConfig.logoText);
+  }, [themeConfig]);
+
   // Buffer states for AI settings
   const [modelName, setModelName] = useState(aiConfig.modelName);
   const [temperature, setTemperature] = useState(aiConfig.temperature);
